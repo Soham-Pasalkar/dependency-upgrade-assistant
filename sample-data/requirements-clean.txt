@@ -1,0 +1,6 @@
+# Up-to-date Python requirements matching catalog baseline
+requests==2.32.3
+urllib3==2.2.3
+flask==3.1.0
+pytest==8.3.3
+black==24.10.0
