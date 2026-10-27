@@ -2,8 +2,14 @@
 from __future__ import annotations
 
 import io
+import sys
 from pathlib import Path
 from typing import Set
+
+# Ensure project root is in sys.path when invoked via `streamlit run src/app.py`
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import streamlit as st
 
@@ -12,6 +18,7 @@ from src.core.diff_generator import generate_unified_diff, synthesize_updated_re
 from src.core.models import UpgradeStatus
 from src.core.parser import parse_requirements_content
 from src.data.catalog_loader import Catalog, load_catalog
+
 
 # Page configuration
 st.set_page_config(
