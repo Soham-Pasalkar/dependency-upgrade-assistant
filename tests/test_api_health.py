@@ -79,14 +79,13 @@ def test_database_init_and_connectivity(test_db_path):
     assert msg == "connected"
 
 
-def test_database_connectivity_failure_handled(tmp_path):
-    """Verify database connectivity probe handles unopenable paths gracefully."""
-    invalid_path = str(tmp_path / "nonexistent_dir" / "nested" / "invalid.db")
-    # Do not create directory; attempt to connect
-    ok, msg = check_db_connectivity(invalid_path)
-    # Depending on sqlite3 version and OS, creating in nonexistent dir fails
-    assert isinstance(ok, bool)
-    assert isinstance(msg, str)
+def test_database_connectivity_failure_handled():
+    """Verify check_db_connectivity returns False and diagnostic error when connection fails."""
+    with patch("src.api.database.create_connection", side_effect=sqlite3.OperationalError("unable to open database file")):
+        ok, msg = check_db_connectivity()
+        assert ok is False
+        assert "database connection error:" in msg
+        assert "unable to open database file" in msg
 
 
 def test_health_endpoint_healthy(client):
@@ -147,3 +146,4 @@ def test_cors_headers_returned(client):
     )
     assert response.status_code == 200
     assert response.headers.get("access-control-allow-origin") == "http://localhost:5173"
+

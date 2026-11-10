@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-10T14:32:19Z",
+  "updated": "2026-11-10T14:45:16Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -56,7 +56,7 @@
         {
           "text": "SQLite persistence foundation initialized",
           "verified": true,
-          "proof": "SQLite persistence module in src/api/database.py initialized with WAL mode, foreign keys, repositories, analysis_runs, and pending_cleanups tables, verified by test_database_init_and_connectivity"
+          "proof": "SQLite persistence module in src/api/database.py initialized with individual connection lifecycle management and WAL mode; verified by deterministic failure test test_database_connectivity_failure_handled asserting ok is False on mocked OperationalError"
         },
         {
           "text": "Backend test suite passes",
@@ -99,12 +99,33 @@
           "result": "HTTP/1.1 200 OK live probe verified direct backend and Vite proxy communication",
           "file": null,
           "sha256": null
+        },
+        {
+          "at": "2026-11-10T14:44:19Z",
+          "cmd": "python3 .agents/skills/ai-dlc-engineering/scripts/scan_secrets.py src/ frontend/ docs/ .aidlc/",
+          "result": "PASS: 0 finding(s) across all source, frontend, documentation, and governance files",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T14:44:43Z",
+          "cmd": "python3 .agents/skills/ai-dlc-engineering/scripts/validate_artifacts.py --artifact milestone-report --id M1",
+          "result": "PASS: 0 error(s), 0 warning(s) confirming all required sections and schema compliance",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T14:44:49Z",
+          "cmd": ".venv/bin/pytest tests/test_api_health.py -k database -v",
+          "result": "2 passed in 0.13s: verified init and deterministic failure assertion (ok is False) via connection mock",
+          "file": null,
+          "sha256": null
         }
       ],
       "approval": null,
-      "rework": 0,
+      "rework": 1,
       "started": "2026-11-10T14:19:43Z",
-      "note": null
+      "note": "Rework requested: correct database failure test in test_api_health.py and clarify SQLite connection lifecycle terminology in M1 report"
     },
     {
       "id": "M2",
@@ -371,5 +392,5 @@
       "at": "2026-11-09T13:32:28Z"
     }
   ],
-  "head": "ff8fb1fd8db00b419c8f332ddddb6726bb733aec16ce12b3287a05d9befbf312"
+  "head": "aa10ae1555a07b6768c7c9b6aabd9adc00020334e354c8facdf9e06ebecc75a0"
 }
