@@ -3,51 +3,111 @@
 <!-- Gate G3. One milestone = one bolt: independently verifiable, ideally hours to a day or two.
      Order by risk. Every milestone must also be registered with `aidlc.py milestone add`. -->
 
-## Scope and Boundary
+## Scope and Delivery Cutline
 
-### Must-Have Functionality (Prototype Delivery)
-- Multi-ecosystem manifest upload and parsing supporting `requirements.txt` and `package.json`.
-- Deterministic dependency scanning querying PyPI JSON API and npm registry API to identify outdated packages.
-- Provider-independent upgrade recommendation architecture supporting local Ollama models with automatic model discovery.
-- Deterministic heuristic fallback recommendations activating automatically when Ollama is offline or unconfigured.
-- Ground-truth validation guaranteeing that AI recommendations never suggest unverified or hallucinated package versions.
-- Surgical manifest modification and standard unified diff (`.diff` / `.patch`) generation.
-- Explicit human review and approval gate required prior to workspace modification.
-- Sandboxed Docker test validation enforcing security limits (`--network none`, resource caps, read-only mounts) with truthful `PASS`, `FAIL`, and `NOT_RUNNABLE` status reporting.
-- Sanitized artifact export (`.patch` file, execution logs, SHA-256 checksums) with automated secret scanning.
-- Responsive, high-density React + TypeScript frontend providing the complete end-to-end workflow: Upload -> Scan -> Recommend -> Diff -> Review -> Test -> Export.
+### P0 — Required for Demonstration (Target Delivery: Today, 10 November 2026)
+- **FastAPI Backend Application:** Running with structured configuration, CORS, and `/api/health` endpoint.
+- **React + TypeScript Frontend:** Scaffolded with Vite and connected to backend via unified API client.
+- **Multi-Ecosystem Manifest Ingestion:**
+  - `requirements.txt`: Safe parsing of PEP 508 / pip requirements (package names, version specifiers `==`, `>=`, `<=`, `~=`, `!=`, `<`, `>`, environment markers `; python_version >= ...`, inline comments `# ...`). Unsupported directives (`-e`, `-r`, `--find-links`, raw URLs) safely rejected with structured diagnostic warnings without executing untrusted code on the host.
+  - `package.json`: Safe JSON parsing of `dependencies` and `devDependencies`. Preserves all unrelated manifest fields (`name`, `version`, `scripts`, `peerDependencies`, `license`) and formats with standard 2-space indentation. (Note: Standard JSON per RFC 8259 does not support comments; no JSON comment preservation is claimed).
+- **Authoritative Package Registry Lookup:** Querying PyPI JSON API and npm registry API with in-memory TTL caching to determine latest releases and deprecation metadata.
+- **Dependency Classification & Upgrade Recommendations:** Classifying dependencies into Up to Date, Upgrade Available, or Preserved. Generating semantic version recommendations with deterministic fallback active when AI is offline.
+- **Surgical Manifest Modification & Unified Diff Generation:** Producing standard unified diffs (`.diff` / `.patch`) while preserving surrounding whitespace, environment markers, and inline comments in `requirements.txt`, and standard JSON formatting in `package.json`.
+- **Human Review & Approval Gate:** Enforcing explicit user review and confirmation before workspace modifications are committed to the session.
+- **Sanitized Artifact Export:** Generating downloadable unified `.patch` bundles, execution summaries, and SHA-256 checksums with automated secret scanning.
+- **Minimum Working Demonstration Definition:**
+  $$\text{Upload Manifest} \longrightarrow \text{Scan Dependencies} \longrightarrow \text{Query PyPI/npm} \longrightarrow \text{Recommend Upgrades} \longrightarrow \text{Review Diff} \longrightarrow \text{Human Approve} \longrightarrow \text{Export Patch}$$
+  Successful delivery is established when a user can complete this complete end-to-end loop in the browser.
 
-### Important but Deferrable Functionality
-- Complex lockfile graph resolution (e.g. `poetry.lock`, `pnpm-lock.yaml`, `package-lock.json`).
-- Multi-container distributed testing suites (e.g. Docker Compose orchestrations).
+### P1 — Implement with Graceful Degradation (Feasible Today)
+- **Ollama AI Integration (M3):** Provider-independent AI abstraction, dynamic model discovery (`/api/tags`), and prompt formatting. When Ollama daemon is inactive, automatically activates the deterministic SemVer fallback without blocking the user.
+- **Docker Sandboxed Validation (M5):** Implemented with `--network none`, resource caps, and read-only mounts. Unit-tested with mocks. In the current host environment where Docker is unavailable, the environmental probe returns a truthful, diagnostic `NOT_RUNNABLE` status with actionable explanations.
+- **Automated Secret Scanning (M6/M8):** Ensuring exported artifacts contain zero credentials, API keys, or sensitive environment tokens.
+
+### P2 — Explicitly Deferred
+- Complex multi-manifest lockfile graph solvers (`poetry.lock`, `package-lock.json`, `pnpm-lock.yaml`).
+- Multi-container distributed test suites (Docker Compose orchestrations).
 - Cloud AI provider integrations (OpenAI, Anthropic, Gemini BYOK).
-- In-browser free-form line-level patch editing.
+- In-browser free-form line-by-line interactive patch editing.
+- Production deployment infrastructure (Kubernetes, Celery, Redis).
 
-### Explicitly Out-of-Scope Functionality
-- Automated or unattended Git branching, committing, or remote GitHub Pull Request opening without human export.
-- Auto-merging of dependencies without human review and confirmation.
-- Multi-tenant cloud hosting, distributed message brokers (Celery, RabbitMQ, Redis), or Kubernetes deployment.
-- Paid commercial APIs or subscription dependencies.
-- Host-level execution of untrusted repository code or build scripts.
+## Delivery Schedule & Realistic Time Allocation (10 November 2026)
+
+| Milestone | Scope & Priority | Target Duration | Window (Local Time) | Feasibility on Current Workstation |
+|:----------|:-----------------|:----------------|:--------------------|:------------------------------------|
+| **M1** | Application foundation (`fastapi`, React scaffold, SQLite) [P0] | 35 min | 19:30 – 20:05 | Fully feasible; installs `fastapi` in `.venv`; Node/npm available |
+| **M2** | Manifest ingestion & dependency analysis (PyPI/npm) [P0] | 40 min | 20:05 – 20:45 | Fully feasible; real HTTP calls to public registries with caching |
+| **M3** | Upgrade recommendations & AI provider (Ollama + Fallback) [P0/P1] | 35 min | 20:45 – 21:20 | Fully feasible; mock tests for Ollama; deterministic fallback active |
+| **M4** | Upgrade planning, surgical diff & human review gate [P0] | 35 min | 21:20 – 21:55 | Fully feasible; pure Python AST/regex modification & unified diff |
+| **M5** | Sandboxed validation (`--network none` runner & probe) [P1] | 30 min | 21:55 – 22:25 | Fully feasible; mock unit tests; probe reports `NOT_RUNNABLE` |
+| **M6** | Artifact export (sanitized patch, checksums, secret scan) [P0] | 25 min | 22:25 – 22:50 | Fully feasible; file serialization, checksums, secret scanner |
+| **M7** | Frontend integration & end-to-end interactive demo [P0] | 40 min | 22:50 – 23:30 | Fully feasible; React UI connecting all P0 endpoints |
+| **M8** | Final verification, regression pass & demo guide [P0] | 25 min | 23:30 – 23:55 | Fully feasible; 246 baseline tests + new unit tests |
+| **Total** | **Complete Working Prototype** | **4h 25m** | **Finishes 23:55 (Today)** | **100% within 10 November 2026 deadline** |
+
+## Docker Sandbox Execution Design
+
+To enforce defense-in-depth while allowing dependencies to be tested under strict network isolation (`--network none`), the sandbox runner utilizes a **2-stage decoupled execution model**:
+
+```
+[ Stage 1: Preparation / Staging ]
+   (Controlled staging environment with outbound network access)
+   pip download --dest /staging/wheels -r requirements.txt (or npm pack/cache)
+                       │
+                       ▼
+[ Stage 2: Sandboxed Test Execution ]
+   docker run --network none \
+              --read-only \
+              -v /staging/wheels:/cache:ro \
+              -v /workspace/repo:/workspace/repo:ro \
+              --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+              --tmpfs /workspace/scratch:rw,size=128m \
+              --memory=512m --cpus=1.0 --pids-limit=64 \
+              --security-opt=no-new-privileges --cap-drop=ALL \
+              --user 1000:1000 \
+              test-image pytest
+```
+
+1. **Dependency Acquisition (Stage 1):** Dependencies are downloaded in a separate preparation stage into a local staging directory (`/staging/wheels` for Python, local cache for npm) without executing target project test suites or arbitrary build scripts.
+2. **Offline Dependency Availability (Stage 2):** The prepared wheel/tarball cache is mounted into the test container as a **read-only volume** (`-v /staging/wheels:/cache:ro`). The test container installs dependencies strictly from local files (`pip install --no-index --find-links=/cache -r requirements.txt`) under `--network none`.
+3. **Read-Only Mounts:** Root filesystem (`--read-only`), repository source reference (`/workspace/repo:ro`), and dependency cache (`/cache:ro`) are mounted strictly read-only.
+4. **Writable Mounts:** Only isolated RAM tmpfs mounts (`--tmpfs /tmp:rw,noexec,nosuid,size=64m` and `--tmpfs /workspace/scratch:rw,size=128m`) are writable. Host repository files are never mounted read-write.
+5. **Resource Limits & Containment:** `--memory=512m`, `--cpus=1.0`, `--pids-limit=64`, `--security-opt=no-new-privileges`, `--cap-drop=ALL`, `--user 1000:1000`.
+6. **Timeouts & Cleanup:** Hard 60-second execution timeout via Python subprocess wrapper (`SIGTERM` followed by `SIGKILL` after 5s grace period). Container cleanup runs fail-closed via `docker rm -f <id>` inside `try...finally`, integrated with the Universal Lock-First protocol.
+7. **Truthful Environment Reporting:** When Docker is not installed or the daemon socket is inaccessible, the runner probes the environment and returns an explicit, truthful `NOT_RUNNABLE` status with diagnostic explanation (`"Docker daemon not detected on host workstation. Sandboxed test execution skipped."`). Mocked tests are never represented as live container runs.
+
+## Current Environment Limitations & Operational Impact
+
+1. **Python Environment:** Python 3.12 active in `.venv`. `fastapi` and `python-multipart` are not yet installed. M1 includes installing them into `.venv`.
+2. **Docker Daemon:** Command `docker` is not installed on PATH. Live container execution cannot run on this workstation. M5 implements the runner, tests it with unit mocks, and verifies that the live environment probe returns `NOT_RUNNABLE`.
+3. **Ollama Service:** Ollama client v0.40.14 is installed, but daemon is inactive. M3 implements the client with mock tests, and the deterministic fallback provides immediate, zero-downtime version recommendations.
+4. **Node.js & npm:** Node v25.9.0 and npm 11.12.1 are present and fully operational for scaffolding, building, and serving the React frontend.
 
 ## Milestones
 | ID | Title | Depends on | Acceptance criteria | Test approach | Risk |
 |----|-------|------------|---------------------|---------------|------|
-| M1 | Application foundation | none | FastAPI backend initialized with configuration, CORS, and health endpoint; React frontend scaffolded with Vite; SQLite persistence foundation initialized; backend test suite passes | Unit and integration tests for FastAPI startup, health checks, config loading, and SQLite connection | Full-stack setup overhead; mitigated by lightweight Vite scaffold and modular FastAPI routers |
-| M2 | Manifest ingestion and dependency analysis | M1 | Multipart and raw manifest upload endpoints accept `requirements.txt` and `package.json`; dependencies safely parsed without code execution; PyPI and npm registry clients query available versions with caching; outdated packages classified; malformed manifests fail gracefully | Unit tests on manifest fixtures, mock PyPI/npm API responses, invalid syntax error handling, and registry timeout simulation | Registry rate limits or network latency; mitigated by in-memory caching and mock fallbacks |
+| M1 | Application foundation | none | FastAPI backend initialized with configuration, CORS, and `/api/health` endpoint; React frontend scaffolded with Vite; SQLite persistence foundation initialized; backend test suite passes | Unit and integration tests for FastAPI startup, health checks, config loading, and SQLite connection | Fast-paced full-stack setup overhead; mitigated by lightweight Vite scaffold and modular FastAPI routers |
+| M2 | Manifest ingestion and dependency analysis | M1 | Multipart and raw upload endpoints accept `requirements.txt` and `package.json`; PEP 508 requirements safely parsed; PyPI and npm registry clients query available versions with caching; outdated packages classified; unsupported directives and malformed manifests fail gracefully with diagnostic errors | Unit tests on manifest fixtures, mock PyPI/npm API responses, invalid syntax error handling, and registry timeout simulation | Registry rate limits or network latency; mitigated by in-memory caching and mock fallbacks |
 | M3 | Upgrade recommendations and AI provider | M2 | Provider-independent AI interface defined; Ollama service implemented with dynamic model discovery; structured recommendation output generated; AI versions validated against registry ground truth; deterministic fallback operates when Ollama is offline | Unit tests for Ollama client mocking, model discovery, prompt construction, structured parsing, registry verification, and fallback activation | Ollama daemon offline; mitigated by deterministic semantic-versioning fallback ensuring continuous operation |
-| M4 | Upgrade planning and patch generation | M3 | Upgrade plan endpoint accepts selected candidate packages; manifest modifier applies changes preserving formatting and comments; unified diff generator produces standard diffs; human approval gate enforced prior to workspace mutation | Unit tests for manifest modification accuracy, formatting preservation, unified diff syntax validation, and approval gate enforcement | Formatting corruption; mitigated by AST/regex surgical line replacements preserving whitespace and comments |
+| M4 | Upgrade planning and patch generation | M3 | Upgrade plan endpoint accepts selected candidate packages; manifest modifier applies changes preserving formatting and comments in `requirements.txt` and standard formatting in `package.json`; unified diff generator produces standard diffs; human approval gate enforced prior to workspace mutation | Unit tests for manifest modification accuracy, formatting preservation, unified diff syntax validation, and approval gate enforcement | Formatting corruption; mitigated by AST/regex surgical line replacements preserving whitespace and comments |
 | M5 | Sandboxed validation | M4 | Docker runner executes test commands inside container with `--network none` and resource caps; execution logs and exit codes captured; truthful reporting of `PASS`, `FAIL`, and `NOT_RUNNABLE` when Docker is unavailable; fail-closed container cleanup | Integration tests mocking Docker CLI/socket, container execution timeout simulation, exit code parsing, and verification of truthful `NOT_RUNNABLE` reporting | Docker daemon not installed or running; mitigated by environment probe returning diagnostic `NOT_RUNNABLE` status |
 | M6 | Artifact export | M5 | Export service bundles changes into downloadable `.patch` files and JSON execution summaries; complete execution logs and SHA-256 checksums generated; secret sanitization scanner verifies zero credential leakage; download endpoints functional | Unit tests for export file integrity, checksum calculation, secret redaction filter verification, and export endpoint testing | Accidental secret leakage in logs; mitigated by pre-export secret scanner and header/token redaction filters |
 | M7 | Frontend integration and end-to-end demonstration | M6 | React UI connects to FastAPI across complete workflow (Upload -> Scan -> Recommend -> Diff -> Review -> Test -> Export); displays dependency badges, metadata, and diffs; displays test logs and truthful status badges; implements responsive loading, empty, and error states | Component tests, mock API integration tests, responsive state checks, and accessibility contrast verification | Integration mismatches or CORS errors; mitigated by shared TypeScript interfaces and unified Vite proxy |
 | M8 | Final verification | M7 | Full test suite passes 100% green with zero regressions across pre-existing and new tests; end-to-end workflow verified against Python and Node.js fixtures; secret scanning and artifact validation pass with 0 errors; setup and demo guide documented | Full pytest test suite execution, secret scanner audit, end-to-end verification script, and artifact verification | Time pressure before end-of-day deadline; mitigated by tightly scoped vertical slices and continuous verification |
 
 ## Test strategy
-- Unit tests: Fast, isolated unit tests covering manifest parsing (`requirements.txt`, `package.json`), version comparison logic, registry response caching, prompt formatting, diff synthesis, and checksum calculation.
-- Integration tests: Endpoint-level tests for FastAPI routes (upload, analyze, recommend, plan, validate, export) using `httpx.AsyncClient` or Starlette `TestClient` with mocked external services (PyPI, npm, Ollama, Docker).
-- Sandboxed execution validation: Dedicated isolation tests verifying Docker execution commands, timeout handling, exit code interpretation, and environmental probing that returns `NOT_RUNNABLE` when Docker is unavailable.
-- Characterization and regression safety: Preservation of all 246 existing tests in `tests/`, ensuring zero regression in existing catalog loader, AST parser, diff generator, and recovery reference models.
-- Security and NFR verification: Automated execution of `scan_secrets.py` on all exports and workspace files; validation of fail-closed file locks; and verification of `NOT_RUNNABLE` truthful reporting.
+The verification strategy distinguishes six distinct testing layers to ensure honest reporting without conflating mock validations with live environment capabilities:
+
+1. **Existing Baseline Tests (246 tests in `tests/`):** All pre-existing tests covering catalog loading, AST parsing, diff generation, and concurrency reference models must remain 100% green across all development activities.
+2. **New Unit Tests:** Fast, isolated unit tests covering manifest parsing (`requirements.txt`, `package.json`), surgical line modification, registry response caching, prompt formatting, unified diff synthesis, and checksum calculations.
+3. **Mocked Integration Tests:** FastAPI `TestClient` endpoint tests verifying request validation, session state, and error handling with mocked external dependencies (PyPI, npm, Ollama, Docker socket). Mocked tests prove code correctness and error handling, but are never represented as proof of live external service availability.
+4. **Real Environment Verification (Host Workstation):**
+   - **Docker:** Probed via environment capability check; correctly and truthfully reports `NOT_RUNNABLE` due to absent daemon.
+   - **Ollama:** Probed via local HTTP check; correctly and truthfully activates deterministic fallback when daemon is inactive.
+   - **Package Registries:** Real outbound HTTP GET queries to PyPI JSON API and npm registry API for public metadata.
+5. **Real End-to-End Browser Verification:** Manual and automated localhost walkthrough of the complete user workflow (Upload -> Scan -> Recommend -> Diff -> Review -> Test -> Export) on `http://localhost:5173`.
+6. **Secret Scanning Verification:** Automated scanning via `scan_secrets.py` verifying that all newly created code, manifests, and exported artifacts contain zero credentials, while recognizing the 4 pre-existing mock test fixtures in `tests/test_code_inspector.py`.
 
 ## Risks
 - Docker daemon unavailable or unprivileged: Target environments (such as developer workstations without Docker or restricted CI environments) cannot run Docker containers. Mitigation: Environmental detection probe checks Docker daemon connectivity and returns an honest, diagnostic `NOT_RUNNABLE` status with actionable explanations, never falsely claiming test success.
@@ -55,4 +115,4 @@
 - Local Ollama instance offline or model missing: Developers may not have Ollama running or the requested model pulled. Mitigation: The AI provider abstraction automatically falls back to deterministic heuristic version recommendations based on semantic versioning rules, ensuring the entire workflow functions without blocking.
 - LLM version hallucination: AI models may recommend nonexistent, vulnerable, or malicious package versions. Mitigation: Strict ground-truth validation checks all AI recommendations against verified package versions retrieved from PyPI/npm registries, discarding any unverified version before presenting it to the user.
 - Secret or credential leakage: Uploaded manifests, environment variables, or test outputs might contain sensitive tokens or keys. Mitigation: In-memory-only token handling (`GIT_ASKPASS`), automated regex-based secret scanning on all exported files, and strict `.gitignore` enforcement.
-- Manifest formatting clobbering: Parsing and serializing manifests might inadvertently strip comments, whitespace, or environment markers. Mitigation: Surgical line-replacement modifiers preserve surrounding lines, indentation, and inline comments in both `requirements.txt` and `package.json`.
+- Manifest formatting clobbering: Parsing and serializing manifests might inadvertently strip comments, whitespace, or environment markers. Mitigation: Surgical line-replacement modifiers preserve surrounding lines, indentation, and inline comments in `requirements.txt`, and standard 2-space indentation in `package.json` (noting standard JSON does not support comments).
