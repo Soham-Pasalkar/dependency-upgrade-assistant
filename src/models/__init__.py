@@ -19,6 +19,17 @@ from src.models.recommendation import (
     RecommendationPriority,
     ValidationStatus,
 )
+from src.models.plan import (
+    PlannedUpgradeItem,
+    PatchIntegrityResult,
+    ProposalStatus,
+    SelectedPackageUpgrade,
+    UpgradeAction,
+    UpgradePlanRequest,
+    UpgradeProposalResponse,
+    WorkspaceApplyRequest,
+    WorkspaceApplyResponse,
+)
 
 __all__ = [
     "AnalyzedDependency",
@@ -37,4 +48,13 @@ __all__ = [
     "RecommendationCategory",
     "RecommendationPriority",
     "ValidationStatus",
+    "PlannedUpgradeItem",
+    "PatchIntegrityResult",
+    "ProposalStatus",
+    "SelectedPackageUpgrade",
+    "UpgradeAction",
+    "UpgradePlanRequest",
+    "UpgradeProposalResponse",
+    "WorkspaceApplyRequest",
+    "WorkspaceApplyResponse",
 ]

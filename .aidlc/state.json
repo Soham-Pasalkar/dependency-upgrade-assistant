@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-10T17:00:48Z",
+  "updated": "2026-11-10T17:27:25Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -522,33 +522,95 @@
       "depends_on": [
         "M3"
       ],
-      "status": "planned",
+      "status": "done",
       "criteria": [
         {
           "text": "Upgrade plan endpoint accepts selected candidate packages",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "tests/test_plan_api.py (6 passed) and tests/test_upgrade_planner.py (9 passed): verifies POST /api/plan/generate and /api/v1/plan/generate accept candidate packages and user-selected subset, constructing deterministic proposals without modifying original manifests"
         },
         {
           "text": "Manifest modifier applies changes preserving formatting and comments",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "tests/test_manifest_modifier.py (12 passed): verifies surgical line replacements in requirements.txt preserving leading whitespace, comments, extras, markers, blank lines, and pip flags, and package.json preserving 2-space indentation and SemVer prefixes"
         },
         {
           "text": "Unified diff generator produces standard diffs",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "tests/test_patch_service.py (8 passed) and tests/test_diff_generator.py (5 passed): verifies standard unified diff generation with control headers, hunk metadata, multi-hunk diffs, clean in-memory applicability, and full reversibility"
         },
         {
           "text": "Human approval gate enforced prior to workspace mutation",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "tests/test_plan_api.py (test_api_apply_workspace_mutation_gate_enforcement) and tests/test_upgrade_planner.py (test_workspace_mutation_requires_human_approval): verifies workspace mutation strictly rejected with HTTP 403 when approved=false, and applied only upon explicit user confirmation"
         }
       ],
-      "evidence": [],
-      "approval": null,
+      "evidence": [
+        {
+          "at": "2026-11-10T17:25:33Z",
+          "cmd": ".venv/bin/pytest tests/test_plan_api.py -v",
+          "result": "6 passed in 0.38s verifying POST /api/plan/generate and /api/v1/plan/generate accept candidate packages and user selections",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T17:25:39Z",
+          "cmd": ".venv/bin/pytest tests/test_manifest_modifier.py -v",
+          "result": "12 passed in 0.06s verifying surgical manifest modification preserving comments, whitespace, extras, markers, and npm range prefixes",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T17:25:44Z",
+          "cmd": ".venv/bin/pytest tests/test_patch_service.py tests/test_diff_generator.py -v",
+          "result": "13 passed in 0.03s verifying standard unified diff output, hunk metadata, diff applicability, and reversibility",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T17:25:49Z",
+          "cmd": ".venv/bin/pytest tests/test_patch_validator.py -v",
+          "result": "5 passed in 0.09s verifying multi-point patch integrity: syntax, applicability, reversibility, traceability, and path safety",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T17:25:54Z",
+          "cmd": ".venv/bin/pytest tests/test_upgrade_planner.py -v",
+          "result": "9 passed in 0.10s verifying upgrade planning, conflict detection, deterministic proposals, and human approval gate enforcement",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T17:25:59Z",
+          "cmd": ".venv/bin/python3 .agents/skills/ai-dlc-engineering/scripts/scan_secrets.py .",
+          "result": "Secret scanner audited codebase: PASS with 0 finding(s)",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T17:26:08Z",
+          "cmd": ".venv/bin/pytest -q",
+          "result": "428 passed in 9.03s with zero regressions across pre-existing baseline and M1-M4 test suites",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T17:26:12Z",
+          "cmd": "cd frontend && npm test -- --run && npm run build && npm run lint",
+          "result": "13 frontend component tests passed in vitest; Vite production build built in 71ms; 0 lint errors",
+          "file": null,
+          "sha256": null
+        }
+      ],
+      "approval": {
+        "at": "2026-11-10T17:27:25Z",
+        "note": "Agent review verified all 4 criteria, 12 modifier tests, 8 patch service tests, 5 validator tests, 9 planner tests, 6 API tests, 428 total regression tests (0 failures), secret scan (0 findings), and report validation.",
+        "actor": "agent",
+        "type": "agent_acceptance"
+      },
       "rework": 0,
-      "started": null,
+      "started": "2026-11-10T17:11:17Z",
       "note": null
     },
     {
@@ -701,5 +763,5 @@
       "at": "2026-11-09T13:32:28Z"
     }
   ],
-  "head": "bc38b96e20a514abe8289ed73e917817c25a46045d30e38b0d6ae62c7d09f3eb"
+  "head": "0ce39708c845e504afcbeac8891e24dd658e442af48fba1cd6f1ead454d54e7f"
 }
