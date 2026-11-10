@@ -245,7 +245,10 @@ def next_action(state: dict) -> str:
             return f"WAIT: {gid} is presented and needs the user's approval. Do not continue."
     awaiting = [m for m in ms if m["status"] == "awaiting_approval"]
     if awaiting:
-        return f"WAIT: {awaiting[0]['id']} is submitted and needs the user's approval (G4)."
+        return (
+            f"Review and accept {awaiting[0]['id']}: run independent review and verification, then "
+            f"`milestone accept {awaiting[0]['id']} --note \"...\"` (or `milestone reject {awaiting[0]['id']}` if issues found)."
+        )
     active = [m for m in ms if m["status"] == "in_progress"]
     if active:
         m = active[0]
@@ -535,6 +538,27 @@ def cmd_milestone(args):
         m["status"] = "awaiting_approval"
         commit(root, state, "milestone.submit", {"id": mid})
         print(f"{mid} submitted (G4). STOP: present the milestone report and wait for approval.")
+    elif act == "accept":
+        if m["status"] != "awaiting_approval":
+            raise AidlcError(f"{mid} is '{m['status']}', not awaiting_approval")
+        if not args.note or len(args.note.strip()) < 5:
+            raise AidlcError("--note is required: provide acceptance rationale and verification summary")
+        problems = []
+        if not m["evidence"]:
+            problems.append("no evidence logged")
+        if unverified(m):
+            problems.append(f"unverified criteria: {unverified(m)}")
+        errs, warns = va.check_artifact(root, "milestone-report", mid, state["tier"])
+        problems += errs
+        for w in warns:
+            print("WARN ", w)
+        if problems:
+            for p in problems:
+                print("ERROR", p)
+            raise AidlcError(f"cannot accept {mid}: acceptance prerequisites not met")
+        m.update(status="done", approval={"at": now(), "note": args.note, "actor": "agent", "type": "agent_acceptance"})
+        commit(root, state, "milestone.accept", {"id": mid, "note": args.note, "by": "agent"}, actor="agent")
+        print(f"{mid} accepted by agent.\nnext:", next_action(state))
     elif act == "approve":
         if m["status"] != "awaiting_approval":
             raise AidlcError(f"{mid} is '{m['status']}', not awaiting_approval")
@@ -551,6 +575,7 @@ def cmd_milestone(args):
         m["status"] = "in_progress"
         m["rework"] = m.get("rework", 0) + 1
         m["note"] = args.note
+        m["approval"] = None
         for c in m["criteria"]:
             c.update(verified=False, proof=None)
         commit(root, state, "milestone.reject", {"id": mid, "note": args.note})
@@ -700,7 +725,7 @@ def derived_approvals(events: list):
             gates.add(d["gate"])
         elif t in ("gate.reject", "gate.reset"):
             gates.discard(d["gate"])
-        elif t == "milestone.approve":
+        elif t in ("milestone.approve", "milestone.accept"):
             ms.add(d["id"])
         elif t in ("milestone.reject", "milestone.reopen", "milestone.remove"):
             ms.discard(d["id"])
@@ -797,7 +822,7 @@ def verify(root: Path, state: dict):
             if unverified(m):
                 errs.append(f"{m['id']}: {m['status']} with unverified criteria {unverified(m)}")
         if m["status"] == "done" and m["id"] not in m_ev:
-            errs.append(f"{m['id']} is done in state.json but has no approval event")
+            errs.append(f"{m['id']} is done in state.json but has no approval or acceptance event")
         for ev in m["evidence"]:
             if ev.get("file"):
                 fp = root / ev["file"]
@@ -876,7 +901,7 @@ def build_parser():
 
     p = sub.add_parser("milestone", help="manage milestones (one bolt = one milestone)")
     p.add_argument("action", choices=["add", "remove", "start", "evidence", "verify", "submit",
-                                      "approve", "reject", "block", "unblock", "reopen"])
+                                      "accept", "approve", "reject", "block", "unblock", "reopen"])
     p.add_argument("id")
     p.add_argument("--title")
     p.add_argument("--depends")

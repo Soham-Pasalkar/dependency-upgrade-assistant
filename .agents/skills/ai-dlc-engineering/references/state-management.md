@@ -19,7 +19,7 @@ docs/aidlc/              human-authored artifacts
 Gates:   G1 --approve--> G2 --approve--> G3 --approve--> (construction) ... --all milestones done--> G5
          each gate:  pending -> presented -> approved | changes_requested -> (revise) -> presented
 
-Milestone:  planned --start--> in_progress --submit--> awaiting_approval --approve--> done
+Milestone:  planned --start--> in_progress --submit--> awaiting_approval --accept/approve--> done
                                    ^   |                      |
                                    |   +--block--> blocked    +--reject (rework+1, criteria reset)
                                    +------------------------------+
@@ -30,7 +30,7 @@ Invariants the CLI enforces:
 - Gates go in order. `milestone start` needs G1, G2 and G3 approved
 - At most one milestone is `in_progress` or `awaiting_approval`
 - `submit` needs at least one logged evidence entry, every criterion verified, and a valid report
-- `approve` only from `awaiting_approval`. `gate approve` only from `presented`
+- `accept` (agent) or `approve` (human) only from `awaiting_approval`. `gate approve` only from `presented`
 - `reject` resets every criterion; all must be re-verified. Three rejections raises a STOP
 - Changing an approved plan needs `--replan`, which resets G3 and G5
 - Presenting a gate fails if the artifact still contains placeholders, TODOs or missing sections

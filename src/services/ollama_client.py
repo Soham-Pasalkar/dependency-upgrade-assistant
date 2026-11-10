@@ -227,12 +227,10 @@ class OllamaClient:
         """
         raw_url = base_url or os.environ.get("OLLAMA_HOST") or DEFAULT_OLLAMA_ENDPOINT
         if allow_remote is None:
-            if base_url is not None:
-                # Explicit programmatic base_url allows custom host unless ALLOW_REMOTE_OLLAMA is explicitly disabled
-                allow_remote = os.environ.get("ALLOW_REMOTE_OLLAMA", "true").lower() in ("true", "1", "yes")
-            else:
-                allow_remote = os.environ.get("ALLOW_REMOTE_OLLAMA", "false").lower() in ("true", "1", "yes")
-        self.allow_remote = allow_remote
+            env_val = os.environ.get("ALLOW_REMOTE_OLLAMA", "false").strip().lower()
+            self.allow_remote = env_val in ("true", "1", "yes")
+        else:
+            self.allow_remote = bool(allow_remote)
         self.base_url = validate_and_sanitize_ollama_endpoint(raw_url, allow_remote=self.allow_remote)
         self.default_timeout = max(1.0, float(timeout))
         self._session = session or requests.Session()

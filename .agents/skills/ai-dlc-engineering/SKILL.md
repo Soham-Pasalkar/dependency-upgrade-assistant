@@ -122,7 +122,7 @@ and proceed on their terms. A waiver of ceremony is fine; a request to misreport
 AIDLC status | next | verify | log | render
 AIDLC gate present|approve|reject|reset G1|G2|G3|G5 [--note "user said: ..."]
 AIDLC milestone add M1 --title T --accept "criterion" [--depends M0] [--replan]
-AIDLC milestone start|submit|approve|reject|block|unblock|reopen M1 [--note ...]
+AIDLC milestone start|submit|accept|approve|reject|block|unblock|reopen M1 [--note ...]
 AIDLC milestone evidence M1 --cmd "pytest -q" --result "42 passed" [--file logs/m1.txt]
 AIDLC milestone verify M1 --criterion 1 --proof "test_x passes, see log"
 AIDLC note add --kind decision|risk|deviation|blocker|waiver --text "..."   |   adr "Title"

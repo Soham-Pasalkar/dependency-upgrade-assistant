@@ -316,4 +316,159 @@ def test_historical_invalid_new_type_rejected(tmp_path):
     assert "must be a boolean" in (res.stdout + res.stderr)
 
 
+# ---------------------------------------------------------------------------
+# Autonomous Milestone Acceptance (G4) Tests
+# ---------------------------------------------------------------------------
+
+def _setup_project_at_m1_submitted(tmp_path):
+    import shutil
+    repo_root = Path(__file__).resolve().parent.parent
+    run_aidlc(["init", "--project", "TestProj", "--tier", "2"], tmp_path)
+    docs_dest = tmp_path / "docs" / "aidlc"
+    docs_dest.mkdir(parents=True, exist_ok=True)
+    for name in ("requirements.md", "architecture.md", "threat-model.md"):
+        shutil.copy(repo_root / "docs" / "aidlc" / name, docs_dest / name)
+
+    (docs_dest / "milestone-plan.md").write_text(
+        "# Milestone plan: TestProj\n\n"
+        "## Milestones\n"
+        "| # | Milestone | Depends on | Acceptance criteria | Test approach |\n"
+        "|---|---|---|---|---|\n"
+        "| M1 | Core slice | none | Unit tests pass | automated pytest |\n\n"
+        "## Test strategy\nRun automated pytest suite.\n\n"
+        "## Risks\nNone identified.\n",
+        encoding="utf-8"
+    )
+
+    run_aidlc(["gate", "present", "G1", "--summary", "Requirements"], tmp_path)
+    run_aidlc(["gate", "approve", "G1", "--note", "Approved G1"], tmp_path)
+    run_aidlc(["gate", "present", "G2", "--summary", "Design"], tmp_path)
+    run_aidlc(["gate", "approve", "G2", "--note", "Approved G2"], tmp_path)
+    run_aidlc(["milestone", "add", "M1", "--title", "Core slice", "--accept", "Pass unit tests"], tmp_path)
+    run_aidlc(["gate", "present", "G3", "--summary", "Plan"], tmp_path)
+    run_aidlc(["gate", "approve", "G3", "--note", "Approved G3"], tmp_path)
+    run_aidlc(["milestone", "start", "M1"], tmp_path)
+    run_aidlc(["milestone", "evidence", "M1", "--cmd", "pytest", "--result", "1 passed"], tmp_path)
+    run_aidlc(["milestone", "verify", "M1", "--criterion", "1", "--proof", "pytest passes"], tmp_path)
+    
+    report_path = docs_dest / "reports" / "M1.md"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        "# Milestone report: M1 Core slice\n\n"
+        "## Summary\nM1 is complete.\n\n"
+        "## Changes\n- Created core slice\n\n"
+        "## Tests run\n| Command | Result |\n|---|---|\n| pytest | 1 passed |\n\n"
+        "## Acceptance criteria\n| # | Criterion | Status | Evidence |\n|---|---|---|---|\n| 1 | Pass unit tests | PASS | 1 passed |\n\n"
+        "## Lens review\n- Architecture: pass\n- Security: pass\n- QA: pass\n- UX: pass\n- SRE: pass\n\n"
+        "## Known limitations\nNone.\n\n"
+        "## Deviations\nNone.\n",
+        encoding="utf-8"
+    )
+    run_aidlc(["milestone", "submit", "M1"], tmp_path)
+
+
+def test_milestone_accept_success_transition(tmp_path):
+    """Verifies that milestone accept records an agent acceptance event and marks milestone done."""
+    _setup_project_at_m1_submitted(tmp_path)
+    
+    # Milestone is awaiting_approval
+    status_res = run_aidlc(["status", "--json"], tmp_path)
+    state = json.loads(status_res.stdout)
+    m1 = next(m for m in state["milestones"] if m["id"] == "M1")
+    assert m1["status"] == "awaiting_approval"
+
+    # Accept milestone via autonomous agent action
+    res = run_aidlc(["milestone", "accept", "M1", "--note", "Agent verified all tests and criteria"], tmp_path)
+    assert "M1 accepted by agent" in res.stdout
+
+    # Verify state is done
+    status_res = run_aidlc(["status", "--json"], tmp_path)
+    state = json.loads(status_res.stdout)
+    m1 = next(m for m in state["milestones"] if m["id"] == "M1")
+    assert m1["status"] == "done"
+    assert m1["approval"]["actor"] == "agent"
+    assert m1["approval"]["type"] == "agent_acceptance"
+
+    # Verify event log contains milestone.accept event with actor agent
+    events_file = tmp_path / ".aidlc" / "events.jsonl"
+    events = [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
+    accept_ev = events[-1]
+    assert accept_ev["type"] == "milestone.accept"
+    assert accept_ev["actor"] == "agent"
+    assert accept_ev["data"]["id"] == "M1"
+
+    # Verify hash chain and invariants pass
+    run_aidlc(["verify"], tmp_path, expect_code=0)
+
+
+def test_milestone_accept_requires_awaiting_approval(tmp_path):
+    """Verifies that milestone accept cannot be run on a milestone that is in_progress or planned."""
+    import shutil
+    repo_root = Path(__file__).resolve().parent.parent
+    run_aidlc(["init", "--project", "TestProj", "--tier", "2"], tmp_path)
+    docs_dest = tmp_path / "docs" / "aidlc"
+    docs_dest.mkdir(parents=True, exist_ok=True)
+    for name in ("requirements.md", "architecture.md", "threat-model.md"):
+        shutil.copy(repo_root / "docs" / "aidlc" / name, docs_dest / name)
+
+    (docs_dest / "milestone-plan.md").write_text(
+        "# Milestone plan: TestProj\n\n"
+        "## Milestones\n"
+        "| # | Milestone | Depends on | Acceptance criteria | Test approach |\n"
+        "|---|---|---|---|---|\n"
+        "| M1 | Core slice | none | Unit tests pass | automated pytest |\n\n"
+        "## Test strategy\nRun automated pytest suite.\n\n"
+        "## Risks\nNone identified.\n",
+        encoding="utf-8"
+    )
+
+    run_aidlc(["gate", "present", "G1", "--summary", "Reqs"], tmp_path)
+    run_aidlc(["gate", "approve", "G1", "--note", "Approved G1"], tmp_path)
+    run_aidlc(["gate", "present", "G2", "--summary", "Design"], tmp_path)
+    run_aidlc(["gate", "approve", "G2", "--note", "Approved G2"], tmp_path)
+    run_aidlc(["milestone", "add", "M1", "--title", "Core slice", "--accept", "Pass"], tmp_path)
+    run_aidlc(["gate", "present", "G3", "--summary", "Plan"], tmp_path)
+    run_aidlc(["gate", "approve", "G3", "--note", "Approved G3"], tmp_path)
+
+    # Attempt accept on planned milestone
+    res = run_aidlc(["milestone", "accept", "M1", "--note", "Premature accept"], tmp_path, expect_code=1)
+    assert "not awaiting_approval" in (res.stdout + res.stderr)
+
+
+def test_milestone_accept_reopen_invalidates_acceptance(tmp_path):
+    """Verifies that reopening an accepted milestone resets approval and criteria."""
+    _setup_project_at_m1_submitted(tmp_path)
+    run_aidlc(["milestone", "accept", "M1", "--note", "Agent accepted M1"], tmp_path)
+    
+    # Reopen M1
+    run_aidlc(["milestone", "reopen", "M1", "--note", "Regression discovered"], tmp_path)
+    status_res = run_aidlc(["status", "--json"], tmp_path)
+    state = json.loads(status_res.stdout)
+    m1 = next(m for m in state["milestones"] if m["id"] == "M1")
+    assert m1["status"] == "in_progress"
+    assert m1["approval"] is None
+    assert all(not c["verified"] for c in m1["criteria"])
+
+    # Audit log verification still passes
+    run_aidlc(["verify"], tmp_path, expect_code=0)
+
+
+def test_milestone_accept_requires_note_and_report_validation(tmp_path):
+    """Verifies that milestone accept requires note and validates milestone report."""
+    _setup_project_at_m1_submitted(tmp_path)
+
+    # Empty/short note rejected
+    res = run_aidlc(["milestone", "accept", "M1", "--note", "bad"], tmp_path, expect_code=1)
+    assert "--note is required" in (res.stdout + res.stderr)
+
+    # Corrupt milestone report with missing sections
+    report_path = tmp_path / "docs" / "aidlc" / "reports" / "M1.md"
+    report_path.write_text("# Invalid Report\n\nNo required sections.", encoding="utf-8")
+
+    res = run_aidlc(["milestone", "accept", "M1", "--note", "Valid note but invalid report"], tmp_path, expect_code=1)
+    assert "acceptance prerequisites not met" in (res.stdout + res.stderr) or "cannot accept" in (res.stdout + res.stderr)
+
+
+
+
 

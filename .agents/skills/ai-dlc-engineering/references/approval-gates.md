@@ -5,7 +5,7 @@
 | G1 | Are these the right requirements? | `requirements.md` | `gate present G1` |
 | G2 | Is this the right design and risk posture? | `architecture.md`, `threat-model.md` | `gate present G2` |
 | G3 | Is this the right plan and sequence? | `milestone-plan.md` plus registered milestones | `gate present G3` |
-| G4 | Is this milestone done? (one per milestone) | `reports/Mx.md` | `milestone submit Mx` |
+| G4 | Is this milestone done? (one per milestone) | `reports/Mx.md` | `milestone submit Mx` -> `milestone accept Mx` |
 | G5 | Is it ready to release? | `completion-report.md` | `gate present G5` |
 
 Order is enforced: G2 needs G1, G3 needs G2, construction needs G1 to G3, G5 needs all milestones done.
@@ -37,6 +37,11 @@ Order is enforced: G2 needs G1, G3 needs G2, construction needs G1 to G3, G5 nee
   at a real terminal and types `approve`. Tell the user the exact command to run in their own shell.
   Use for tier 3, shared repos, or when trust in unattended runs is low. Not available where there is
   no human-accessible terminal.
+- **Agent Milestone Acceptance (G4):** The engineering agent independently reviews and accepts completed
+  construction milestones via `milestone accept <ID> --note "..."` once all acceptance criteria are verified,
+  evidence is logged, and the milestone report is validated. The audit log records the transition as
+  `milestone.accept` by actor `agent`. Human approval (`milestone approve`) remains supported for
+  backward compatibility. Gates G1–G3 and G5 continue to require explicit human authorization.
 
 ## Re-approval triggers
 

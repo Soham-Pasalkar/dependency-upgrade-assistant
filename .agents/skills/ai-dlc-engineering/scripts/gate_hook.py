@@ -120,8 +120,8 @@ def check_path(root: Path, cwd: Path, raw: str, state: dict, *, require_mileston
         return "allow", ""
     waiting = [m["id"] for m in ms if m["status"] == "awaiting_approval"]
     if waiting:
-        return "deny", (f"AI-DLC: {waiting[0]} is submitted and awaiting the user's approval; "
-                        "code is frozen until it is approved or rejected.")
+        return "deny", (f"AI-DLC: {waiting[0]} is submitted and awaiting approval or acceptance; "
+                        "code is frozen until it is accepted or approved.")
     return "deny", ("AI-DLC: no milestone is in progress. Run `aidlc.py next` and "
                     "`aidlc.py milestone start <ID>` (or `milestone add --replan` for new work).")
 
