@@ -9,6 +9,78 @@ export type DependencyType = 'runtime' | 'development';
 export type DependencyStatus = 'UP_TO_DATE' | 'UPGRADE_AVAILABLE' | 'PRESERVED';
 export type RegistryLookupStatus = 'SUCCESS' | 'NOT_FOUND' | 'RATE_LIMITED' | 'NETWORK_ERROR' | 'SKIPPED';
 
+export type RecommendationCategory =
+  | 'RECOMMENDED'
+  | 'CAUTION'
+  | 'NO_UPGRADE_NEEDED'
+  | 'PRESERVED_UNSUPPORTED';
+
+export type RecommendationPriority = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+
+export type ValidationStatus =
+  | 'VALIDATED'
+  | 'REJECTED_HALLUCINATION'
+  | 'FALLBACK_DETERMINISTIC'
+  | 'SKIPPED';
+
+export interface ModelMetadata {
+  name: string;
+  model?: string | null;
+  size_bytes?: number;
+  modified_at?: string | null;
+  digest?: string | null;
+  family?: string | null;
+  parameter_size?: string | null;
+  display_label?: string | null;
+}
+
+export interface PackageUpgradeRecommendation {
+  package_name: string;
+  ecosystem: Ecosystem;
+  current_version: string | null;
+  declared_specifier: string;
+  latest_registry_version: string | null;
+  candidate_version: string | null;
+  category: RecommendationCategory;
+  priority: RecommendationPriority;
+  explanation: string;
+  breaking_changes_summary: string | null;
+  confidence_score: number;
+  provider_used: string;
+  model_used: string | null;
+  is_ai_generated: boolean;
+  validation_status: ValidationStatus;
+  raw_line: string | null;
+  line_number: number | null;
+}
+
+export interface RecommendationBatchRequest {
+  manifest_analysis: ManifestAnalysisResponse;
+  preferred_model?: string | null;
+  force_deterministic?: boolean;
+}
+
+export interface RecommendationBatchResponse {
+  manifest_type: string;
+  ecosystem: Ecosystem;
+  recommendations: PackageUpgradeRecommendation[];
+  provider_used: string;
+  model_used: string | null;
+  is_offline_fallback: boolean;
+  total_upgrades_recommended: number;
+  total_caution: number;
+  summary: string;
+}
+
+export interface AIProviderStatusResponse {
+  is_available: boolean;
+  provider_name: string;
+  endpoint: string;
+  discovered_models: ModelMetadata[];
+  default_model: string | null;
+  message: string;
+}
+
 export interface DatabaseHealth {
   status: string;
   path: string;
@@ -200,5 +272,83 @@ export async function uploadManifest(
     }
     const message = error instanceof Error ? error.message : 'Unknown error';
     throw new ApiError(`Failed to upload manifest: ${message}`);
+  }
+}
+
+/**
+ * Check AI provider connectivity and discovered models.
+ */
+export async function getAiStatus(): Promise<AIProviderStatusResponse> {
+  const url = `${config.apiBaseUrl}/api/ai/status`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      throw new ApiError(`AI status check failed (${response.status})`, response.status);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return {
+      is_available: false,
+      provider_name: 'ollama',
+      endpoint: 'http://127.0.0.1:11434',
+      discovered_models: [],
+      default_model: null,
+      message: `Offline (${message})`,
+    };
+  }
+}
+
+/**
+ * Generate upgrade recommendations for analyzed manifest dependencies.
+ */
+export async function generateRecommendations(
+  request: RecommendationBatchRequest
+): Promise<RecommendationBatchResponse> {
+  const url = `${config.apiBaseUrl}/api/recommendations/generate`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errorData;
+      try {
+        errorData = JSON.parse(errorText);
+      } catch {
+        errorData = errorText;
+      }
+      const message =
+        typeof errorData === 'object' && errorData?.detail
+          ? String(errorData.detail)
+          : `Recommendation generation failed (${response.status})`;
+      throw new ApiError(message, response.status, errorData);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    throw new ApiError(`Failed to generate recommendations: ${message}`);
   }
 }

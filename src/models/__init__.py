@@ -9,6 +9,16 @@ from src.models.manifest import (
     ParsedDependency,
     RegistryLookupStatus,
 )
+from src.models.recommendation import (
+    AIProviderStatusResponse,
+    ModelMetadata,
+    PackageUpgradeRecommendation,
+    RecommendationBatchRequest,
+    RecommendationBatchResponse,
+    RecommendationCategory,
+    RecommendationPriority,
+    ValidationStatus,
+)
 
 __all__ = [
     "AnalyzedDependency",
@@ -19,5 +29,12 @@ __all__ = [
     "ManifestAnalysisResponse",
     "ParsedDependency",
     "RegistryLookupStatus",
+    "AIProviderStatusResponse",
+    "ModelMetadata",
+    "PackageUpgradeRecommendation",
+    "RecommendationBatchRequest",
+    "RecommendationBatchResponse",
+    "RecommendationCategory",
+    "RecommendationPriority",
+    "ValidationStatus",
 ]
-
