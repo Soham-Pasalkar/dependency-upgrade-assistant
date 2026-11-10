@@ -161,9 +161,16 @@ class WorkspaceFileLock:
 
 
 def fsync_directory(dir_path: str):
-    """Flushes directory metadata to non-volatile storage across sudden power loss.
+    """Flushes directory metadata to storage using platform-specific mechanisms.
     
-    Raises FsyncException if directory fsync fails, making durability failure observable.
+    Durability Semantics:
+    - macOS (Darwin): Executes fcntl.F_FULLFSYNC on an open directory descriptor,
+      commanding the drive controller to flush its volatile track cache to non-volatile storage.
+      Also invokes os.fsync for unified testing interception and POSIX conformance.
+    - Linux / POSIX: Executes os.fsync(dir_fd), forcing kernel VFS dirty pages and filesystem
+      journal/metadata blocks to the storage controller cache.
+    - Fail-Closed: Raises FsyncException on any error (I/O failure or unsupported operation),
+      ensuring no unverified durability assumptions are made.
     """
     if not dir_path or not os.path.exists(dir_path):
         return
@@ -171,10 +178,18 @@ def fsync_directory(dir_path: str):
         dir_fd = os.open(dir_path, os.O_RDONLY)
         try:
             os.fsync(dir_fd)
+            if hasattr(fcntl, "F_FULLFSYNC"):
+                try:
+                    fcntl.fcntl(dir_fd, fcntl.F_FULLFSYNC)
+                except OSError as e:
+                    raise FsyncException(f"macOS F_FULLFSYNC failed for directory {dir_path}: {e}") from e
         finally:
             os.close(dir_fd)
     except OSError as e:
         raise FsyncException(f"Directory fsync failed for {dir_path}: {e}") from e
+
+
+HEARTBEAT_INTERVAL = 20
 
 
 def secure_rmtree(path: str, authorized_root: str, heartbeat_fn: Optional[Callable[[], bool]] = None):
@@ -182,6 +197,16 @@ def secure_rmtree(path: str, authorized_root: str, heartbeat_fn: Optional[Callab
     
     Fails closed: Aggregates all errors during traversal and asserts the directory is gone.
     Raises DeletionException if any file or directory cannot be removed, or if heartbeat_fn fails.
+    
+    Heartbeat Contract:
+    - A unified processed-item counter increments for EVERY filesystem entry processed:
+      regular files, symlinks, normal directories, symlink directories, and the root entry.
+    - An initial heartbeat check is executed prior to any filesystem deletion.
+    - A heartbeat check is executed exactly every HEARTBEAT_INTERVAL (20) items.
+    - The maximum number of filesystem operations that may occur between successful heartbeat
+      checks is strictly bounded by 20 items.
+    - If heartbeat_fn returns False at any check, deletion halts immediately, leaving remaining
+      entries untouched on disk (fail closed).
     
     Security Limitations:
     - Uses os.walk(followlinks=False) to unlink symlinks directly rather than descending into them.
@@ -195,41 +220,41 @@ def secure_rmtree(path: str, authorized_root: str, heartbeat_fn: Optional[Callab
     if heartbeat_fn is not None and not heartbeat_fn():
         raise DeletionException("Lease renewal heartbeat failed before recursive deletion started")
 
-    errors = []
     items_processed = 0
+
+    def _step_heartbeat():
+        nonlocal items_processed
+        items_processed += 1
+        if heartbeat_fn is not None and items_processed % HEARTBEAT_INTERVAL == 0:
+            if not heartbeat_fn():
+                raise DeletionException(
+                    f"Lease renewal heartbeat failed during recursive deletion after {items_processed} items"
+                )
+
+    errors = []
     for root, dirs, files in os.walk(real_path, topdown=False, followlinks=False):
         for name in files:
             file_path = os.path.join(root, name)
+            _step_heartbeat()
             try:
                 os.unlink(file_path)
-                items_processed += 1
-                if heartbeat_fn is not None and items_processed % 20 == 0:
-                    if not heartbeat_fn():
-                        raise DeletionException(
-                            f"Lease renewal heartbeat failed during recursive deletion after {items_processed} items"
-                        )
             except OSError as e:
                 errors.append(f"Failed to unlink file {file_path}: {e}")
         for name in dirs:
             dir_path = os.path.join(root, name)
+            _step_heartbeat()
             if os.path.islink(dir_path):
                 try:
                     os.unlink(dir_path)
-                    items_processed += 1
                 except OSError as e:
                     errors.append(f"Failed to unlink directory symlink {dir_path}: {e}")
             else:
                 try:
                     os.rmdir(dir_path)
-                    items_processed += 1
-                    if heartbeat_fn is not None and items_processed % 20 == 0:
-                        if not heartbeat_fn():
-                            raise DeletionException(
-                                f"Lease renewal heartbeat failed during recursive deletion after {items_processed} items"
-                            )
                 except OSError as e:
                     errors.append(f"Failed to rmdir {dir_path}: {e}")
 
+    _step_heartbeat()
     if os.path.islink(real_path):
         try:
             os.unlink(real_path)
@@ -452,22 +477,31 @@ def confirm_quarantine(
     conn: sqlite3.Connection,
     cleanup_id: str,
     worker_id: str,
-    lease_token: str
+    lease_token: str,
+    lease_seconds: int = 120
 ) -> bool:
-    """Durable Step 2: Confirms successful filesystem rename in database."""
+    """Durable Step 2 (Option A): Confirms successful filesystem rename in database and refreshes lease.
+    
+    Under Option A (Lock-Authoritative Ownership), holding WorkspaceFileLock grants exclusive
+    filesystem ownership for the duration of the critical section. Having executed the atomic
+    rename on disk, the worker confirms the quarantined status in SQLite and refreshes its lease.
+    Recovery cannot steal this record while the OS lock is held. Fences strictly on worker_id,
+    lease_token, and status='quarantine_intent'.
+    """
+    modifier = f"+{lease_seconds} seconds" if lease_seconds >= 0 else f"{lease_seconds} seconds"
     cursor = conn.cursor()
     cursor.execute(
         """
         UPDATE pending_cleanups
         SET status = 'quarantined',
+            lease_expires_at = datetime('now', ?),
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
           AND worker_id = ?
           AND lease_token = ?
-          AND status = 'quarantine_intent'
-          AND lease_expires_at >= CURRENT_TIMESTAMP;
+          AND status = 'quarantine_intent';
         """,
-        (cleanup_id, worker_id, lease_token)
+        (modifier, cleanup_id, worker_id, lease_token)
     )
     conn.commit()
     return cursor.rowcount == 1
@@ -479,7 +513,11 @@ def complete_quarantine_cleanup(
     worker_id: str,
     lease_token: str
 ) -> bool:
-    """Durable Step 3: Commits deletion completion to database."""
+    """Durable Step 3 (Option A): Commits deletion completion to database.
+    
+    Fences strictly on worker_id, lease_token, status='quarantined', and unexpired lease.
+    Clears lease and worker state.
+    """
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -612,17 +650,28 @@ def quarantine_and_delete_workspace(
         lock.release()
 
 
+ALLOWED_RECOVERABLE_STATUSES = ("in_progress", "quarantine_intent", "quarantined")
+
+
 def claim_stale_cleanup_for_recovery(
     conn: sqlite3.Connection,
     clean_id: str,
+    expected_status: str,
     recovery_worker_id: str = "recovery_worker",
     lease_seconds: int = 120
 ) -> Tuple[bool, Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Atomically claims an expired cleanup record for recovery in a short transaction.
     
-    Generates 256 bits of cryptographic entropy (secrets.token_hex(32) -> 64 hex characters).
-    Returns: (claimed, recovery_token, status, workspace_dir, quarantine_dir)
+    Invariants:
+    - expected_status must be in ALLOWED_RECOVERABLE_STATUSES ('in_progress', 'quarantine_intent', 'quarantined').
+    - Evaluates WHERE id = ? AND status = ? AND status IN (...) AND (lease_expires_at IS NULL OR lease_expires_at < CURRENT_TIMESTAMP).
+    - If status changed concurrently (e.g. to completed or failed), or lease was renewed, rolls back and returns False.
+    - Generates 256 bits of cryptographic entropy (secrets.token_hex(32) -> 64 hex characters).
+    - Returns: (claimed, recovery_token, status, workspace_dir, quarantine_dir)
     """
+    if expected_status not in ALLOWED_RECOVERABLE_STATUSES:
+        return False, None, None, None, None
+
     recovery_token = secrets.token_hex(32)
     modifier = f"+{lease_seconds} seconds" if lease_seconds >= 0 else f"{lease_seconds} seconds"
     cursor = conn.cursor()
@@ -632,9 +681,11 @@ def claim_stale_cleanup_for_recovery(
         SELECT status, workspace_dir, quarantine_dir
         FROM pending_cleanups
         WHERE id = ? 
+          AND status = ?
+          AND status IN ('in_progress', 'quarantine_intent', 'quarantined')
           AND (lease_expires_at IS NULL OR lease_expires_at < CURRENT_TIMESTAMP);
         """,
-        (clean_id,)
+        (clean_id, expected_status)
     )
     row = cursor.fetchone()
     if not row:
@@ -650,9 +701,10 @@ def claim_stale_cleanup_for_recovery(
             lease_expires_at = datetime('now', ?),
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ? 
+          AND status = ?
           AND (lease_expires_at IS NULL OR lease_expires_at < CURRENT_TIMESTAMP);
         """,
-        (recovery_worker_id, recovery_token, modifier, clean_id)
+        (recovery_worker_id, recovery_token, modifier, clean_id, expected_status)
     )
     if cursor.rowcount == 1:
         conn.commit()
@@ -697,7 +749,7 @@ def reclaim_stale_in_progress_cleanups(
 
         try:
             claimed, rec_token, cur_status, cur_ws, cur_q = claim_stale_cleanup_for_recovery(
-                conn, clean_id, recovery_worker_id=recovery_worker_id
+                conn, clean_id, expected_status=orig_status, recovery_worker_id=recovery_worker_id
             )
             if not claimed or not rec_token:
                 continue
@@ -2062,23 +2114,23 @@ def test_concurrent_stale_worker_resumes_after_recovery_worker_obtains_ownership
         conn1.execute("UPDATE pending_cleanups SET lease_expires_at = datetime('now', '-5 seconds') WHERE id = 'clean_run_1';")
         conn1.commit()
 
-        barrier = threading.Barrier(2)
+        recovery_done = threading.Event()
         results = {}
 
         def recovery_thread():
             conn_rec = sqlite3.connect(db_path, timeout=10)
             conn_rec.execute("PRAGMA journal_mode=WAL;")
-            barrier.wait()
             # Claim recovery and complete
             reclaimed = reclaim_stale_in_progress_cleanups(conn_rec, allowed_base_dir=tmpdir, recovery_worker_id="rec_daemon")
             results["reclaimed"] = reclaimed
             conn_rec.close()
+            recovery_done.set()
 
         def stale_worker_thread():
             conn_w = sqlite3.connect(db_path, timeout=10)
             conn_w.execute("PRAGMA journal_mode=WAL;")
-            barrier.wait()
-            # Stale worker attempts to confirm quarantine using expired token1
+            assert recovery_done.wait(timeout=5) is True
+            # Stale worker attempts to confirm quarantine using superseded token1
             confirmed = confirm_quarantine(conn_w, "clean_run_1", "worker_1", token1)
             results["stale_confirmed"] = confirmed
             conn_w.close()
@@ -2158,7 +2210,9 @@ def test_two_recovery_workers_simultaneously_attempt_reclaim():
             c = sqlite3.connect(db_path, timeout=10)
             c.execute("PRAGMA journal_mode=WAL;")
             barrier.wait()
-            claimed, token, _, _, _ = claim_stale_cleanup_for_recovery(c, "clean_run_1", recovery_worker_id=worker_id)
+            claimed, token, _, _, _ = claim_stale_cleanup_for_recovery(
+                c, "clean_run_1", expected_status="in_progress", recovery_worker_id=worker_id
+            )
             claims[worker_id] = claimed
             c.close()
 
@@ -2426,7 +2480,9 @@ def test_token_entropy_256_bits_and_representation():
     # Claim recovery record
     conn.execute("UPDATE pending_cleanups SET lease_expires_at = datetime('now', '-5 seconds') WHERE id = 'clean_run_1';")
     conn.commit()
-    ok_rec, rec_token, _, _, _ = claim_stale_cleanup_for_recovery(conn, "clean_run_1", recovery_worker_id="rec_1")
+    ok_rec, rec_token, _, _, _ = claim_stale_cleanup_for_recovery(
+        conn, "clean_run_1", expected_status="in_progress", recovery_worker_id="rec_1"
+    )
     assert ok_rec is True
     assert len(rec_token) == 64
     assert all(c in "0123456789abcdef" for c in rec_token)
@@ -2483,11 +2539,16 @@ def test_pre_action_fencing_supersession_before_rename():
         os.makedirs(ws_path)
 
         enqueue_interrupted_run_cleanup(conn, "run_1", ws_path)
-        _, token1 = claim_cleanup_record(conn, "clean_run_1", "worker_1", lease_seconds=-5)
-        record_quarantine_intent(conn, "clean_run_1", "worker_1", token1, ws_path)
+        _, token1 = claim_cleanup_record(conn, "clean_run_1", "worker_1", lease_seconds=120)
+        ok_intent, _ = record_quarantine_intent(conn, "clean_run_1", "worker_1", token1, ws_path)
+        assert ok_intent is True
+        conn.execute("UPDATE pending_cleanups SET lease_expires_at = datetime('now', '-5 seconds') WHERE id = 'clean_run_1';")
+        conn.commit()
 
         # Recovery worker claims the record with token2
-        ok_rec, token2, _, _, _ = claim_stale_cleanup_for_recovery(conn, "clean_run_1", recovery_worker_id="rec_worker")
+        ok_rec, token2, _, _, _ = claim_stale_cleanup_for_recovery(
+            conn, "clean_run_1", expected_status="quarantine_intent", recovery_worker_id="rec_worker"
+        )
         assert ok_rec is True
 
         # Original worker attempts pre-rename verification with token1
@@ -2776,20 +2837,21 @@ def test_worker_paused_after_lease_check_recovery_cannot_race_due_to_lock():
         resume_event.set()
         t.join(timeout=5)
 
-        # Worker aborted because confirm_quarantine failed due to lease expiration
-        assert worker_result.get("success") is False
-
-        # Status in DB is 'quarantine_intent' and quarantine directory exists on disk
-        row2 = conn_r.execute("SELECT status, quarantine_dir FROM pending_cleanups WHERE id = 'clean_run_1';").fetchone()
-        assert row2[0] == "quarantine_intent"
-        q_dir = row2[1]
-        assert os.path.exists(q_dir)
+        # Under Option A (Lock-Authoritative Ownership), the worker retained exclusive
+        # filesystem ownership via WorkspaceFileLock. It completed the atomic rename,
+        # confirmed quarantine (refreshing the lease), deleted the directory with heartbeat,
+        # committed completion in SQLite, and released the lock.
+        assert worker_result.get("success") is True
         assert not os.path.exists(ws_path)
 
-        # Now worker has released WorkspaceFileLock, so recovery sweeps and completes cleanup
+        # DB status is 'completed'
+        row2 = conn_r.execute("SELECT status, quarantine_dir FROM pending_cleanups WHERE id = 'clean_run_1';").fetchone()
+        assert row2[0] == "completed"
+        assert row2[1] is None
+
+        # Recovery sweeps again; finds 0 records since cleanup is already completed
         reclaimed2 = reclaim_stale_in_progress_cleanups(conn_r, allowed_base_dir=tmpdir, recovery_worker_id="rec_daemon")
-        assert reclaimed2 == 1
-        assert not os.path.exists(q_dir)
+        assert reclaimed2 == 0
 
         row3 = conn_r.execute("SELECT status FROM pending_cleanups WHERE id = 'clean_run_1';").fetchone()
         assert row3[0] == "completed"
@@ -2951,4 +3013,195 @@ def test_secure_rmtree_lease_renewal_heartbeat_aborts_on_failure():
         assert os.path.exists(target)
         remaining = os.listdir(target)
         assert len(remaining) > 0
+
+
+def test_recovery_claim_rejects_stale_observed_status_separate_connections():
+    """Verifies that if a recovery worker observes a stale status, but another connection
+    modifies the status before the atomic claim transaction executes, the claim fails closed."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test_wal_stale.db")
+        conn_init = sqlite3.connect(db_path)
+        conn_init.execute("PRAGMA journal_mode=WAL;")
+        init_cleanup_db(conn_init)
+        conn_init.execute("INSERT INTO repositories VALUES ('repo_1', 'my-repo');")
+        conn_init.execute("INSERT INTO analysis_runs VALUES ('run_1', 'repo_1', 'running', '/tmp/ws_1');")
+        conn_init.commit()
+
+        ws_path = os.path.join(tmpdir, "ws_stale")
+        os.makedirs(ws_path)
+        enqueue_interrupted_run_cleanup(conn_init, "run_1", ws_path)
+        _, token1 = claim_cleanup_record(conn_init, "clean_run_1", "worker_1", lease_seconds=-5)
+        record_quarantine_intent(conn_init, "clean_run_1", "worker_1", token1, ws_path)
+        conn_init.close()
+
+        # Connection 1: Recovery worker that observed status 'quarantine_intent'
+        conn1 = sqlite3.connect(db_path, timeout=5)
+        conn1.execute("PRAGMA journal_mode=WAL;")
+
+        # Connection 2: Simulates active worker confirming quarantine before conn1 claims
+        conn2 = sqlite3.connect(db_path, timeout=5)
+        conn2.execute("PRAGMA journal_mode=WAL;")
+        conn2.execute(
+            """
+            UPDATE pending_cleanups
+            SET status = 'quarantined',
+                lease_expires_at = datetime('now', '+120 seconds'),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = 'clean_run_1';
+            """
+        )
+        conn2.commit()
+        conn2.close()
+
+        # Conn1 tries to claim based on its stale observation of 'quarantine_intent'
+        claimed, token, cur_status, _, _ = claim_stale_cleanup_for_recovery(
+            conn1, "clean_run_1", expected_status="quarantine_intent", recovery_worker_id="rec_worker_1"
+        )
+
+        assert claimed is False
+        assert token is None
+
+        # Verify DB record is preserved as 'quarantined'
+        row = conn1.execute("SELECT status, worker_id FROM pending_cleanups WHERE id = 'clean_run_1';").fetchone()
+        assert row[0] == "quarantined"
+        assert row[1] == "worker_1"
+
+        conn1.close()
+
+
+def test_recovery_claim_rejects_unallowed_status():
+    """Verifies that claim_stale_cleanup_for_recovery rejects unrecoverable statuses immediately."""
+    conn = sqlite3.connect(":memory:")
+    init_cleanup_db(conn)
+    conn.execute("INSERT INTO repositories VALUES ('repo_1', 'my-repo');")
+    conn.execute("INSERT INTO analysis_runs VALUES ('run_1', 'repo_1', 'running', '/tmp/ws_1');")
+    conn.commit()
+    enqueue_interrupted_run_cleanup(conn, "run_1", "/tmp/ws_1")
+
+    for invalid_status in ["completed", "failed", "pending", "unknown", ""]:
+        claimed, token, _, _, _ = claim_stale_cleanup_for_recovery(
+            conn, "clean_run_1", expected_status=invalid_status
+        )
+        assert claimed is False
+        assert token is None
+
+    conn.close()
+
+
+def test_worker_crashes_while_holding_lock_recovery_safely_reclaims():
+    """Verifies Option A crash semantics: if a worker process crashes, the OS kernel
+    automatically releases its WorkspaceFileLock, enabling recovery to safely acquire
+    the lock, claim the record, and complete the cleanup."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test_crash.db")
+        conn = sqlite3.connect(db_path)
+        init_cleanup_db(conn)
+        conn.execute("INSERT INTO repositories VALUES ('repo_1', 'my-repo');")
+        conn.execute("INSERT INTO analysis_runs VALUES ('run_1', 'repo_1', 'running', '/tmp/ws_1');")
+        conn.commit()
+
+        ws_path = os.path.join(tmpdir, "ws_crash")
+        os.makedirs(ws_path)
+        with open(os.path.join(ws_path, "artifact.txt"), "w") as f:
+            f.write("crash test data")
+
+        enqueue_interrupted_run_cleanup(conn, "run_1", ws_path)
+        _, worker_token = claim_cleanup_record(conn, "clean_run_1", "worker_crash", lease_seconds=120)
+
+        # Worker acquires lock and records quarantine intent
+        lock_dir = tmpdir
+        worker_lock = WorkspaceFileLock(lock_dir, "clean_run_1")
+        assert worker_lock.acquire() is True
+        ok, q_path = record_quarantine_intent(conn, "clean_run_1", "worker_crash", worker_token, ws_path)
+        assert ok is True
+
+        # Simulate process crash: worker lock is released (kernel releases fcntl.flock on exit)
+        worker_lock.release()
+
+        # Simulate lease expiry while worker was dead
+        conn.execute("UPDATE pending_cleanups SET lease_expires_at = datetime('now', '-5 seconds') WHERE id = 'clean_run_1';")
+        conn.commit()
+
+        # Recovery daemon sweeps: successfully acquires lock, claims record, and recovers
+        reclaimed = reclaim_stale_in_progress_cleanups(conn, allowed_base_dir=tmpdir, recovery_worker_id="rec_daemon")
+        assert reclaimed == 1
+
+        # Record is completed or pending retry depending on filesystem state
+        # Here ws_path still exists and q_path does not, so intent rolled back to pending for safe retry
+        row = conn.execute("SELECT status FROM pending_cleanups WHERE id = 'clean_run_1';").fetchone()
+        assert row[0] == "pending"
+
+        conn.close()
+
+
+def test_secure_rmtree_uniform_heartbeat_covers_files_and_directories():
+    """Verifies that secure_rmtree counts regular files, subdirectories, and symlink
+    directories uniformly in its heartbeat interval."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        real_tmp = os.path.realpath(tmpdir)
+        target = os.path.join(real_tmp, "nested_tree")
+        os.makedirs(target)
+
+        # Create 10 files in root
+        for i in range(10):
+            with open(os.path.join(target, f"root_file_{i}.txt"), "w") as f:
+                f.write(f"root {i}")
+
+        # Create 2 subdirectories, each with 5 files
+        for d in range(2):
+            sub = os.path.join(target, f"subdir_{d}")
+            os.makedirs(sub)
+            for f_idx in range(5):
+                with open(os.path.join(sub, f"sub_file_{f_idx}.txt"), "w") as f:
+                    f.write(f"sub {d} {f_idx}")
+
+        # Create a directory symlink
+        symlink_target = os.path.join(real_tmp, "external_dir")
+        os.makedirs(symlink_target)
+        os.symlink(symlink_target, os.path.join(target, "symlinked_dir"))
+
+        heartbeat_calls = []
+        def counting_heartbeat():
+            heartbeat_calls.append(len(heartbeat_calls))
+            return True
+
+        secure_rmtree(target, real_tmp, heartbeat_fn=counting_heartbeat)
+
+        # Initial heartbeat (before traversal) + at least 1 interval check (at 20 items)
+        assert len(heartbeat_calls) >= 2
+        assert not os.path.exists(target)
+
+
+def test_fsync_directory_darwin_fullfsync_and_failure_injection(monkeypatch):
+    """Verifies that fsync_directory utilizes F_FULLFSYNC when available and fails closed on error."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Standard execution succeeds
+        fsync_directory(tmpdir)
+
+        # Test failure injection on os.fsync raises FsyncException
+        def mock_fsync(fd):
+            raise OSError("Injected disk failure on fsync")
+
+        monkeypatch.setattr(os, "fsync", mock_fsync)
+        with pytest.raises(FsyncException) as excinfo:
+            fsync_directory(tmpdir)
+
+        assert "Directory fsync failed" in str(excinfo.value)
+        monkeypatch.undo()
+
+        # If on macOS/Darwin, test F_FULLFSYNC failure injection as well
+        if hasattr(fcntl, "F_FULLFSYNC"):
+            real_fcntl = fcntl.fcntl
+
+            def mock_fcntl(fd, op, *args, **kwargs):
+                if op == fcntl.F_FULLFSYNC:
+                    raise OSError("Injected hardware cache flush error")
+                return real_fcntl(fd, op, *args, **kwargs)
+
+            monkeypatch.setattr(fcntl, "fcntl", mock_fcntl)
+            with pytest.raises(FsyncException) as excinfo2:
+                fsync_directory(tmpdir)
+
+            assert "macOS F_FULLFSYNC failed" in str(excinfo2.value)
+            monkeypatch.undo()
 

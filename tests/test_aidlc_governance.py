@@ -240,3 +240,80 @@ def test_unknown_or_invalid_config_parameter_rejected(tmp_path):
     assert "requires a boolean value" in (res2.stdout + res2.stderr)
 
 
+def _append_forged_event(tmp_path: Path, event_type: str, data: dict):
+    import hashlib
+    events_file = tmp_path / ".aidlc" / "events.jsonl"
+    lines = events_file.read_text(encoding="utf-8").splitlines()
+    prev_hash = json.loads(lines[-1])["hash"] if lines else "0" * 64
+    body = {
+        "seq": len(lines) + 1,
+        "ts": "2026-11-10T15:00:00Z",
+        "actor": "agent",
+        "type": event_type,
+        "data": data,
+        "prev": prev_hash
+    }
+    canon = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    body["hash"] = hashlib.sha256(canon.encode()).hexdigest()
+    lines.append(json.dumps(body, sort_keys=True, separators=(",", ":")))
+    events_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    state_file = tmp_path / ".aidlc" / "state.json"
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    state["head"] = body["hash"]
+    state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    return body
+
+
+def test_historical_missing_old_field_rejected(tmp_path):
+    """Verifies that a historical config.update event lacking 'old' is rejected."""
+    run_aidlc(["init", "--project", "TestProj", "--tier", "3"], tmp_path)
+    _append_forged_event(tmp_path, "config.update", {
+        "param": "strict_approvals",
+        "new": True,
+        "reason": "Missing old field"
+    })
+    res = run_aidlc(["verify"], tmp_path, expect_code=1)
+    assert "missing or null 'old' value" in (res.stdout + res.stderr)
+
+
+def test_historical_null_old_field_rejected(tmp_path):
+    """Verifies that a historical config.update event with null 'old' is rejected."""
+    run_aidlc(["init", "--project", "TestProj", "--tier", "3"], tmp_path)
+    _append_forged_event(tmp_path, "config.update", {
+        "param": "strict_approvals",
+        "old": None,
+        "new": True,
+        "reason": "Null old field"
+    })
+    res = run_aidlc(["verify"], tmp_path, expect_code=1)
+    assert "missing or null 'old' value" in (res.stdout + res.stderr)
+
+
+def test_historical_unknown_parameter_rejected(tmp_path):
+    """Verifies that a historical config.update event with an unknown parameter is rejected."""
+    run_aidlc(["init", "--project", "TestProj", "--tier", "3"], tmp_path)
+    _append_forged_event(tmp_path, "config.update", {
+        "param": "unrecognized_flag",
+        "old": False,
+        "new": True,
+        "reason": "Unknown parameter"
+    })
+    res = run_aidlc(["verify"], tmp_path, expect_code=1)
+    assert "unknown parameter 'unrecognized_flag'" in (res.stdout + res.stderr)
+
+
+def test_historical_invalid_new_type_rejected(tmp_path):
+    """Verifies that a historical config.update event with a non-boolean new value is rejected."""
+    run_aidlc(["init", "--project", "TestProj", "--tier", "3"], tmp_path)
+    _append_forged_event(tmp_path, "config.update", {
+        "param": "strict_approvals",
+        "old": False,
+        "new": "enabled",
+        "reason": "String instead of boolean"
+    })
+    res = run_aidlc(["verify"], tmp_path, expect_code=1)
+    assert "must be a boolean" in (res.stdout + res.stderr)
+
+
+

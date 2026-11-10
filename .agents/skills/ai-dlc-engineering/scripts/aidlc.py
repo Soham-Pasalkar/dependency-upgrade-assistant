@@ -710,6 +710,7 @@ def derived_approvals(events: list):
 def derived_config(events: list) -> dict:
     cfg = {"strict_approvals": False, "hook_enforcement": True}
     for e in events:
+        seq = e.get("seq", "?")
         t, d = e.get("type"), e.get("data", {})
         if t == "project.init":
             cfg["strict_approvals"] = bool(d.get("strict", False))
@@ -717,15 +718,32 @@ def derived_config(events: list) -> dict:
                 cfg["hook_enforcement"] = not bool(d.get("no_hook", False))
         elif t == "config.update":
             param = d.get("param")
-            old_val = d.get("old")
-            val = d.get("new")
-            if param is not None:
-                if old_val is not None and old_val != cfg.get(param):
-                    raise AidlcError(
-                        f"event {e.get('seq')}: config.update 'old' value mismatch for '{param}': "
-                        f"event recorded {old_val!r} but preceding state was {cfg.get(param)!r}"
-                    )
-                cfg[param] = val
+            if param not in ALLOWED_CONFIG_KEYS:
+                raise AidlcError(
+                    f"event {seq}: config.update unknown parameter '{param}'; allowed: {sorted(ALLOWED_CONFIG_KEYS)}"
+                )
+
+            if "old" not in d or d["old"] is None:
+                raise AidlcError(f"event {seq}: config.update missing or null 'old' value for '{param}'")
+            if not isinstance(d["old"], bool):
+                raise AidlcError(
+                    f"event {seq}: config.update 'old' value for '{param}' must be a boolean, got {type(d['old']).__name__}"
+                )
+
+            if d["old"] != cfg.get(param):
+                raise AidlcError(
+                    f"event {seq}: config.update 'old' value mismatch for '{param}': "
+                    f"event recorded {d['old']!r} but preceding state was {cfg.get(param)!r}"
+                )
+
+            if "new" not in d or d["new"] is None:
+                raise AidlcError(f"event {seq}: config.update missing or null 'new' value for '{param}'")
+            if not isinstance(d["new"], bool):
+                raise AidlcError(
+                    f"event {seq}: config.update 'new' value for '{param}' must be a boolean, got {type(d['new']).__name__}"
+                )
+
+            cfg[param] = d["new"]
     return cfg
 
 
