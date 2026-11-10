@@ -13,8 +13,11 @@ import os
 import secrets
 import shutil
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
+import unittest.mock
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 import pytest
@@ -384,15 +387,53 @@ def claim_cleanup_record(
     cleanup_id: str,
     worker_id: str,
     lease_seconds: int = 120,
-    forced_token: Optional[str] = None
+    forced_token: Optional[str] = None,
+    existing_lock: Optional[WorkspaceFileLock] = None
 ) -> Tuple[bool, Optional[str]]:
     """Atomically claims an eligible pending or expired in_progress cleanup record with a unique fencing lease token.
     
-    Generates 256 bits of cryptographic entropy (secrets.token_hex(32) -> 64 hex characters).
+    Lock-First Protocol:
+    - Before claiming or mutating DB state, verifies that WorkspaceFileLock is not held by another active worker.
+    - If another worker holds WorkspaceFileLock, the claim yields immediately without mutating SQLite.
+    - Generates 256 bits of cryptographic entropy (secrets.token_hex(32) -> 64 hex characters).
     """
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT workspace_dir, quarantine_dir FROM pending_cleanups WHERE id = ?;",
+        (cleanup_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return False, None
+    ws_dir, q_dir = row
+
+    lock_dir = None
+    if ws_dir and os.path.dirname(ws_dir):
+        lock_dir = os.path.dirname(ws_dir)
+    elif q_dir and os.path.dirname(q_dir):
+        lock_dir = os.path.dirname(q_dir)
+    else:
+        lock_dir = tempfile.gettempdir()
+
+    # LOCK-FIRST PROTOCOL CHECK:
+    # If caller pre-acquired the lock, verify it is active and held.
+    # If caller did not pre-acquire the lock, verify that WorkspaceFileLock is not currently
+    # held by another active worker on this workspace.
+    if existing_lock is not None:
+        if existing_lock.fd is None:
+            return False, None
+    else:
+        test_lock = WorkspaceFileLock(lock_dir, cleanup_id)
+        if not test_lock.acquire():
+            # Another worker currently holds the physical filesystem lock!
+            # Under Lock-Authoritative Ownership, the active lock holder owns the cleanup;
+            # this normal claim MUST NOT supersede it.
+            return False, None
+        test_lock.release()
+
     token = forced_token or secrets.token_hex(32)
     modifier = f"+{lease_seconds} seconds" if lease_seconds >= 0 else f"{lease_seconds} seconds"
-    cursor = conn.cursor()
+    cursor.execute("BEGIN IMMEDIATE;")
     cursor.execute(
         """
         UPDATE pending_cleanups
@@ -409,9 +450,10 @@ def claim_cleanup_record(
         """,
         (worker_id, token, modifier, cleanup_id)
     )
-    conn.commit()
     if cursor.rowcount == 1:
+        conn.commit()
         return True, token
+    conn.rollback()
     return False, None
 
 
@@ -574,10 +616,11 @@ def quarantine_and_delete_workspace(
     lease_token: str,
     ws_dir: str,
     authorized_root: Optional[str] = None,
-    pre_rename_hook: Optional[Callable[[], None]] = None
+    pre_rename_hook: Optional[Callable[[], None]] = None,
+    existing_lock: Optional[WorkspaceFileLock] = None
 ) -> bool:
     """Durable crash-safe quarantine protocol with OS locking & parent fsync:
-    1. Acquire OS-level exclusive WorkspaceFileLock.
+    1. Acquire OS-level exclusive WorkspaceFileLock (or reuse existing_lock).
     2. Validate path containment within authorized_root.
     3. Persist quarantine intent to SQLite (status = 'quarantine_intent', quarantine_dir recorded).
     4. PRE-RENAME FENCING CHECK: Verify lease ownership immediately before rename.
@@ -591,9 +634,11 @@ def quarantine_and_delete_workspace(
     12. Release lock (persistent lock file; not unlinked).
     """
     lock_dir = os.path.dirname(ws_dir) if ws_dir else tempfile.gettempdir()
-    lock = WorkspaceFileLock(lock_dir, cleanup_id)
-    if not lock.acquire():
-        return False  # Another worker holds OS lock
+    lock = existing_lock or WorkspaceFileLock(lock_dir, cleanup_id)
+    owns_lock = existing_lock is None
+    if owns_lock:
+        if not lock.acquire():
+            return False  # Another worker holds OS lock
 
     try:
         if authorized_root and ws_dir:
@@ -647,7 +692,8 @@ def quarantine_and_delete_workspace(
         # Step 5: Complete
         return complete_quarantine_cleanup(conn, cleanup_id, worker_id, lease_token)
     finally:
-        lock.release()
+        if owns_lock:
+            lock.release()
 
 
 ALLOWED_RECOVERABLE_STATUSES = ("in_progress", "quarantine_intent", "quarantined")
@@ -949,68 +995,77 @@ def process_pending_cleanups(conn: sqlite3.Connection, docker_client: MockDocker
     
     completed_count = 0
     for clean_id, orig_run_id, container_id, ws_dir, retries in records:
-        claimed, token = claim_cleanup_record(conn, clean_id, worker_id=worker_id)
-        if not claimed:
+        lock_dir = os.path.dirname(ws_dir) if ws_dir and os.path.dirname(ws_dir) else tempfile.gettempdir()
+        lock = WorkspaceFileLock(lock_dir, clean_id)
+        # LOCK-FIRST PROTOCOL: Acquire OS lock before claiming in DB
+        if not lock.acquire():
             continue
 
         try:
-            container = None
-            if docker_client.is_available:
-                if container_id:
-                    container = docker_client.get_container(container_id)
+            claimed, token = claim_cleanup_record(conn, clean_id, worker_id=worker_id, existing_lock=lock)
+            if not claimed or not token:
+                continue
+
+            try:
+                container = None
+                if docker_client.is_available:
+                    if container_id:
+                        container = docker_client.get_container(container_id)
+                    else:
+                        matches = docker_client.list_containers(all=True, filters={"label": f"dev.dua.run_id={orig_run_id}"})
+                        if matches:
+                            container = matches[0]
                 else:
-                    matches = docker_client.list_containers(all=True, filters={"label": f"dev.dua.run_id={orig_run_id}"})
-                    if matches:
-                        container = matches[0]
-            else:
-                raise ConnectionError("Docker daemon is offline or socket unreachable")
+                    raise ConnectionError("Docker daemon is offline or socket unreachable")
 
-            if container:
-                if container.labels.get("dev.dua.managed") != "true":
-                    raise PermissionError(f"Container {container.id} missing managed label")
-                container.stop(timeout=5)
-                container.remove(force=True)
+                if container:
+                    if container.labels.get("dev.dua.managed") != "true":
+                        raise PermissionError(f"Container {container.id} missing managed label")
+                    container.stop(timeout=5)
+                    container.remove(force=True)
 
-            # Atomic race-safe quarantine and deletion
-            success = quarantine_and_delete_workspace(conn, clean_id, worker_id, token, ws_dir)
-            if not success:
-                raise PermissionError("Worker lost lease ownership during quarantine transition; aborting")
+                # Atomic race-safe quarantine and deletion
+                success = quarantine_and_delete_workspace(conn, clean_id, worker_id, token, ws_dir, existing_lock=lock)
+                if not success:
+                    raise PermissionError("Worker lost lease ownership during quarantine transition; aborting")
 
-            completed_count += 1
+                completed_count += 1
 
-        except ConnectionError as ce:
-            cursor.execute(
-                """
-                UPDATE pending_cleanups
-                SET status = 'pending', worker_id = NULL, lease_token = NULL, lease_expires_at = NULL,
-                    next_attempt_at = datetime('now', '+30 seconds'),
-                    error_type = 'TRANSIENT_DOCKER_UNAVAILABLE', last_error = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?;
-                """,
-                (str(ce), clean_id)
-            )
-            conn.commit()
-        except Exception as exc:
-            new_retries = retries + 1
-            if new_retries >= 5:
-                new_status = 'failed'
-                next_attempt = None
-            else:
-                new_status = 'pending'
-                delay_sec = min(300, 10 * (2 ** new_retries))
-                next_attempt = f"+{delay_sec} seconds"
+            except ConnectionError as ce:
+                cursor.execute(
+                    """
+                    UPDATE pending_cleanups
+                    SET status = 'pending', worker_id = NULL, lease_token = NULL, lease_expires_at = NULL,
+                        next_attempt_at = datetime('now', '+30 seconds'),
+                        error_type = 'TRANSIENT_DOCKER_UNAVAILABLE', last_error = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?;
+                    """,
+                    (str(ce), clean_id)
+                )
+                conn.commit()
+            except Exception as exc:
+                new_retries = retries + 1
+                if new_retries >= 5:
+                    new_status = 'failed'
+                    next_attempt = None
+                else:
+                    new_status = 'pending'
+                    delay_sec = min(300, 10 * (2 ** new_retries))
+                    next_attempt = f"+{delay_sec} seconds"
 
-            cursor.execute(
-                """
-                UPDATE pending_cleanups
-                SET status = ?, retry_count = ?, worker_id = NULL, lease_token = NULL, lease_expires_at = NULL,
-                    next_attempt_at = CASE WHEN ? IS NOT NULL THEN datetime('now', ?) ELSE NULL END,
-                    error_type = 'PERMANENT_ERROR', last_error = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?;
-                """,
-                (new_status, new_retries, next_attempt, next_attempt, str(exc), clean_id)
-            )
-            conn.commit()
+                cursor.execute(
+                    """
+                    UPDATE pending_cleanups
+                    SET status = ?, retry_count = ?, worker_id = NULL, lease_token = NULL, lease_expires_at = NULL,
+                        next_attempt_at = CASE WHEN ? IS NOT NULL THEN datetime('now', ?) ELSE NULL END,
+                        error_type = 'PERMANENT_ERROR', last_error = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?;
+                    """,
+                    (new_status, new_retries, next_attempt, next_attempt, str(exc), clean_id)
+                )
+                conn.commit()
+        finally:
+            lock.release()
             
     return completed_count
 
@@ -3089,9 +3144,10 @@ def test_recovery_claim_rejects_unallowed_status():
 
 
 def test_worker_crashes_while_holding_lock_recovery_safely_reclaims():
-    """Verifies Option A crash semantics: if a worker process crashes, the OS kernel
-    automatically releases its WorkspaceFileLock, enabling recovery to safely acquire
-    the lock, claim the record, and complete the cleanup."""
+    """Unit test simulation of descriptor closure / manual lock release after worker termination,
+    verifying recovery acquires the lock, claims the record, and reconciles state.
+    (For real OS kernel-level process crash verification with SIGKILL, see
+    test_subprocess_crash_releases_kernel_lock_and_allows_recovery)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test_crash.db")
         conn = sqlite3.connect(db_path)
@@ -3204,4 +3260,213 @@ def test_fsync_directory_darwin_fullfsync_and_failure_injection(monkeypatch):
 
             assert "macOS F_FULLFSYNC failed" in str(excinfo2.value)
             monkeypatch.undo()
+
+
+def test_normal_claim_cannot_supersede_active_lock_holder():
+    """Verifies that normal claim_cleanup_record() participates in the Lock-First Protocol
+    and cannot supersede an expired in_progress record if another worker holds WorkspaceFileLock."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test_normal_claim_lock.db")
+        conn_init = sqlite3.connect(db_path)
+        conn_init.execute("PRAGMA journal_mode = WAL;")
+        init_cleanup_db(conn_init)
+        conn_init.execute("INSERT INTO repositories VALUES ('repo_1', 'my-repo');")
+        conn_init.execute("INSERT INTO analysis_runs VALUES ('run_1', 'repo_1', 'running', '/tmp/ws_1');")
+        conn_init.commit()
+
+        ws_path = os.path.join(tmpdir, "ws_locked_active")
+        os.makedirs(ws_path)
+        enqueue_interrupted_run_cleanup(conn_init, "run_1", ws_path)
+        _, token_a = claim_cleanup_record(conn_init, "clean_run_1", "worker_A", lease_seconds=120)
+        conn_init.close()
+
+        worker_a_paused = threading.Event()
+        worker_a_resume = threading.Event()
+        worker_a_result = {}
+
+        def pre_rename():
+            worker_a_paused.set()
+            assert worker_a_resume.wait(timeout=5) is True
+
+        def worker_a_task():
+            conn_a = sqlite3.connect(db_path, timeout=10)
+            conn_a.execute("PRAGMA journal_mode = WAL;")
+            try:
+                res = quarantine_and_delete_workspace(
+                    conn_a, "clean_run_1", "worker_A", token_a, ws_path,
+                    authorized_root=tmpdir, pre_rename_hook=pre_rename
+                )
+                worker_a_result["success"] = res
+            finally:
+                conn_a.close()
+
+        t_a = threading.Thread(target=worker_a_task)
+        t_a.start()
+
+        # Step 2 & 3: Wait until Worker A acquires WorkspaceFileLock and pauses before rename
+        assert worker_a_paused.wait(timeout=5) is True
+
+        # Step 4: Expire Worker A's database lease while it holds WorkspaceFileLock
+        conn_parent = sqlite3.connect(db_path, timeout=10)
+        conn_parent.execute("PRAGMA journal_mode = WAL;")
+        conn_parent.execute(
+            "UPDATE pending_cleanups SET lease_expires_at = datetime('now', '-5 seconds') WHERE id = 'clean_run_1';"
+        )
+        conn_parent.commit()
+
+        # Step 5: Worker B on a separate connection attempts normal claim_cleanup_record()
+        conn_b = sqlite3.connect(db_path, timeout=10)
+        conn_b.execute("PRAGMA journal_mode = WAL;")
+        claimed_b, token_b = claim_cleanup_record(conn_b, "clean_run_1", worker_id="worker_B")
+
+        # Step 6: Verify Worker B cannot supersede Worker A while A holds WorkspaceFileLock
+        assert claimed_b is False
+        assert token_b is None
+
+        # Verify DB record was NOT mutated: worker_id remains worker_A, token remains token_a
+        row = conn_parent.execute(
+            "SELECT worker_id, lease_token, status FROM pending_cleanups WHERE id = 'clean_run_1';"
+        ).fetchone()
+        assert row[0] == "worker_A"
+        assert row[1] == token_a
+        assert row[2] == "quarantine_intent"
+
+        # Step 7: Resume Worker A
+        worker_a_resume.set()
+        t_a.join(timeout=5)
+
+        # Step 8: Verify that ownership, filesystem state, and database state remain consistent
+        assert worker_a_result.get("success") is True
+        assert not os.path.exists(ws_path)
+
+        row_final = conn_parent.execute(
+            "SELECT status, worker_id, lease_token FROM pending_cleanups WHERE id = 'clean_run_1';"
+        ).fetchone()
+        assert row_final[0] == "completed"
+        assert row_final[1] is None
+        assert row_final[2] is None
+
+        conn_b.close()
+        conn_parent.close()
+
+
+def test_subprocess_crash_releases_kernel_lock_and_allows_recovery():
+    """Verifies with a real OS child subprocess that terminating a process holding WorkspaceFileLock
+    causes the OS kernel to release the fcntl.flock advisory lock, enabling recovery to acquire
+    the lock and reconcile the filesystem and database."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test_subproc_crash.db")
+        conn = sqlite3.connect(db_path)
+        init_cleanup_db(conn)
+        conn.execute("INSERT INTO repositories VALUES ('repo_1', 'my-repo');")
+        conn.execute("INSERT INTO analysis_runs VALUES ('run_1', 'repo_1', 'running', '/tmp/ws_1');")
+        conn.commit()
+
+        ws_path = os.path.join(tmpdir, "ws_subproc")
+        os.makedirs(ws_path)
+        with open(os.path.join(ws_path, "important_data.txt"), "w") as f:
+            f.write("payload")
+
+        enqueue_interrupted_run_cleanup(conn, "run_1", ws_path)
+        _, worker_token = claim_cleanup_record(conn, "clean_run_1", "worker_child", lease_seconds=120)
+        # Record quarantine intent in DB
+        record_quarantine_intent(conn, "clean_run_1", "worker_child", worker_token, ws_path)
+        conn.close()
+
+        # Step 1: Child subprocess acquires WorkspaceFileLock
+        child_code = f"""
+import sys, os, fcntl, time
+lock_dir = {repr(tmpdir)}
+lock_path = os.path.join(lock_dir, ".cleanup_clean_run_1.lock")
+fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+sys.stdout.write("LOCKED\\n")
+sys.stdout.flush()
+# Sleep indefinitely waiting for SIGKILL
+time.sleep(60)
+"""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", child_code],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        try:
+            # Wait for child to signal that it holds the kernel lock
+            line = proc.stdout.readline()
+            assert line.strip() == "LOCKED"
+
+            # Step 2: Parent confirms that another process cannot acquire the lock
+            parent_lock = WorkspaceFileLock(tmpdir, "clean_run_1")
+            assert parent_lock.acquire() is False
+
+            # Also verify recovery cannot acquire the lock and yields
+            conn_rec = sqlite3.connect(db_path)
+            conn_rec.execute(
+                "UPDATE pending_cleanups SET lease_expires_at = datetime('now', '-5 seconds') WHERE id = 'clean_run_1';"
+            )
+            conn_rec.commit()
+
+            reclaimed_while_locked = reclaim_stale_in_progress_cleanups(conn_rec, allowed_base_dir=tmpdir)
+            assert reclaimed_while_locked == 0
+            conn_rec.close()
+
+            # Step 3: Terminate the child process with SIGKILL (hard crash)
+            proc.kill()
+            proc.wait(timeout=5)
+
+            # Step 4: Confirm that the OS kernel automatically released the fcntl.flock lock
+            assert parent_lock.acquire() is True
+            parent_lock.release()
+
+            # Step 5: Confirm recovery can acquire lock and safely reconcile database and filesystem
+            conn_rec2 = sqlite3.connect(db_path)
+            reclaimed_after_crash = reclaim_stale_in_progress_cleanups(conn_rec2, allowed_base_dir=tmpdir)
+            assert reclaimed_after_crash == 1
+
+            # Workspace preserved for clean retry (since rename never occurred before crash)
+            row = conn_rec2.execute("SELECT status FROM pending_cleanups WHERE id = 'clean_run_1';").fetchone()
+            assert row[0] == "pending"
+            assert os.path.exists(ws_path)
+            conn_rec2.close()
+
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+
+def test_fsync_directory_darwin_fullfsync_explicit_invocation():
+    """Explicitly verifies that fcntl.F_FULLFSYNC is invoked on directory descriptors
+    when available (e.g. macOS/Darwin), and that the OS call succeeds on real filesystem descriptors."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        real_tmp = os.path.realpath(tmpdir)
+
+        # Test 1: Check platform support directly on directory descriptor
+        if hasattr(fcntl, "F_FULLFSYNC"):
+            dir_fd = os.open(real_tmp, os.O_RDONLY)
+            try:
+                res = fcntl.fcntl(dir_fd, fcntl.F_FULLFSYNC)
+                assert res == 0  # Kernel confirms F_FULLFSYNC succeeded on directory descriptor
+            finally:
+                os.close(dir_fd)
+
+            # Test 2: Spy on fcntl.fcntl to assert that fsync_directory actually invokes F_FULLFSYNC
+            fullfsync_calls = []
+            real_fcntl = fcntl.fcntl
+
+            def spy_fcntl(fd, op, *args, **kwargs):
+                if op == fcntl.F_FULLFSYNC:
+                    fullfsync_calls.append(op)
+                return real_fcntl(fd, op, *args, **kwargs)
+
+            with unittest.mock.patch("fcntl.fcntl", side_effect=spy_fcntl):
+                fsync_directory(real_tmp)
+
+            assert len(fullfsync_calls) >= 1
+            assert fullfsync_calls[0] == fcntl.F_FULLFSYNC
+        else:
+            # Non-Darwin POSIX: verify os.fsync is called
+            fsync_directory(real_tmp)
 

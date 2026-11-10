@@ -511,11 +511,16 @@ Long-running analysis and validation tasks must execute reliably regardless of f
          AND (lease_expires_at IS NULL OR lease_expires_at < CURRENT_TIMESTAMP);
        ```
        The database write lock is immediately released once the claim commits; slow recursive filesystem deletions are never performed while holding a database write transaction.
-     * **Dual-Layer Fencing & Lock-First Protocol:**
-       - Recovery workers adhere to a strict **Lock-First Protocol**: before attempting to claim or alter database records for destructive operations, recovery attempts to acquire `WorkspaceFileLock` on the filesystem.
-       - If an active worker is currently executing filesystem operations under the OS lock, `lock.acquire()` returns `False`. Recovery yields immediately without touching SQLite, avoiding race windows or database claim invalidation while the worker is active.
-       - Only once `WorkspaceFileLock` is secured does recovery claim the expired record in a short atomic transaction (`claim_stale_cleanup_for_recovery`).
-       - If a worker's lease expires during recursive deletion, the worker's Step 5 completion update matches 0 rows and is rejected. The recovery worker subsequently acquires the lock, verifies the directory is deleted (or finishes deletion), and commits completion.
+     * **Dual-Layer Fencing & Universal Lock-First Protocol Across Every Claim Path:**
+       - **Separation of Lock and Lease Responsibilities:** 
+         * *OS Advisory Kernel File Lock (`WorkspaceFileLock` via `fcntl.flock`):* Provides **physical execution authority** on the local host. An active worker holds the open file descriptor continuously across its entire critical section. While held, no other process (normal worker or recovery daemon) can acquire ownership or mutate the workspace. When a worker process crashes or terminates (`SIGKILL`), the OS kernel automatically and synchronously releases the lock, permitting recovery to take over.
+         * *Database Lease (`lease_expires_at` in SQLite):* Provides **inactivity bounding and liveness fencing**. It guards against hung or abandoned tasks and bounds unmetered destructive actions via periodic heartbeats.
+       - **Universal Lock-First Protocol:** Both recovery workers (`reclaim_stale_in_progress_cleanups`) and normal workers (`claim_cleanup_record`, `process_pending_cleanups`) strictly adhere to the Lock-First Protocol:
+         1. *Acquire OS Lock First:* Before attempting to claim or alter database records for destructive operations, the worker attempts to acquire `WorkspaceFileLock` on the filesystem.
+         2. *Yield on Contention:* If an active worker is currently executing filesystem operations under the OS lock, `lock.acquire()` returns `False`. The claimant (normal or recovery) yields immediately without mutating SQLite, avoiding race windows or database token invalidation while the worker is active.
+         3. *Normal Claims Cannot Supersede Active Lock Holders:* A normal worker calling `claim_cleanup_record` tests/acquires `WorkspaceFileLock` before updating SQLite. If an existing worker holds the lock (even if its database lease has expired due to delays), the normal claim returns `(False, None)` and does not mutate the database.
+         4. *Atomic Database Claim:* Only once `WorkspaceFileLock` is secured does the worker claim the record in a short atomic transaction (`BEGIN IMMEDIATE`), immediately committing before touching files. Slow recursive filesystem deletions are never performed while holding a SQLite write transaction.
+         5. *Heartbeat Failure Handling:* If lease heartbeat renewal fails during recursive deletion (`secure_rmtree`), deletion halts immediately, raising `DeletionException` (failing closed). The worker aborts without completing and releases the lock, allowing recovery to reconcile the state.
      * Stale workers cannot overwrite newer cleanup state or interfere with recovery operations.
    - **Crash Recovery & Startup Reclamation of Stale Claims:**
      On application startup (or during periodic sweeps), the lifespan handler reclaims any stale `in_progress` records left behind by a crash or SIGKILL:
