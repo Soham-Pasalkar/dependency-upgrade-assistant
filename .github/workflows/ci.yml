@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "feature/dependency-upgrade-assistant-2.0" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "feature/dependency-upgrade-assistant-2.0" ]
 
 jobs:
   test:
@@ -34,3 +34,30 @@ jobs:
       - name: Run pytest test suite
         run: |
           pytest -v
+
+  docker-sandbox-validation:
+    name: Sandboxed Docker Container Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Pull pinned Docker sandbox images
+        run: |
+          docker pull python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
+          docker pull node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
+
+      - name: Run Sandboxed Validation Integration Tests
+        run: |
+          pytest -v tests/test_sandbox_security.py tests/test_sandbox_runner.py tests/test_validation_api.py

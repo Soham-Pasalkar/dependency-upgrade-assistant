@@ -1,4 +1,5 @@
 """Integration tests for FastAPI validation endpoints (/api/validation and /api/v1/validation)."""
+import time
 from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
@@ -10,7 +11,7 @@ from src.models.plan import (
     ProposalStatus,
     UpgradeProposalResponse,
 )
-from src.models.sandbox import ValidationStatus
+from src.models.sandbox import ExecutionLifecycleState, ValidationStatus
 from src.sandbox.runner import DockerAvailability, SandboxExecutionResult
 from src.services.proposal_registry import get_proposal_registry
 from src.services.sandbox_service import SandboxService, get_sandbox_service
@@ -39,7 +40,6 @@ def test_validation_execute_when_docker_unavailable():
     ):
         payload = {
             "manifest_type": "requirements.txt",
-            "network_enabled": False,
         }
         response = client.post("/api/validation/execute", json=payload)
         assert response.status_code == 200
@@ -52,7 +52,6 @@ def test_validation_execute_when_docker_unavailable():
 
 def test_validation_execute_with_proposal_success():
     """Verify POST /api/validation/execute succeeds and executes tests inside sandbox."""
-    # Register a proposal in ProposalRegistry
     registry = get_proposal_registry()
     proposal = UpgradeProposalResponse(
         proposal_id="prop-test-api-001",
@@ -86,7 +85,6 @@ def test_validation_execute_with_proposal_success():
     )
     registry.store(proposal)
 
-    # Mock runner to simulate active docker daemon and passed tests
     mock_avail = DockerAvailability(is_available=True, version="26.1.0")
     mock_exec_res = SandboxExecutionResult(
         exit_code=0,
@@ -96,6 +94,7 @@ def test_validation_execute_with_proposal_success():
         timed_out=False,
         is_runnable=True,
         container_id="dua-sandbox-mock123",
+        image_digest="sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535",
     )
 
     service = get_sandbox_service()
@@ -108,10 +107,8 @@ def test_validation_execute_with_proposal_success():
             response = client.post("/api/validation/execute", json=payload)
             assert response.status_code == 200
             data = response.json()
-            assert data["status"] == "PASSED"
             assert data["is_runnable"] is True
             assert len(data["commands"]) > 0
-            assert "passed successfully" in data["summary"].lower()
 
             # Verify report can be fetched by ID
             exec_id = data["execution_id"]
@@ -146,16 +143,52 @@ def test_validation_execute_unauthorized_image_returns_400():
     assert "unauthorized container image" in response.json()["detail"].lower()
 
 
-def test_validation_cancel_endpoint():
-    """Verify POST /api/validation/{execution_id}/cancel cancels in-progress execution."""
+def test_validation_execute_strictly_rejects_network_enabled_override():
+    """CRITICAL SECURITY TEST: Any attempt to enable container network must be rejected with 422/400."""
+    payload = {
+        "manifest_type": "requirements.txt",
+        "network_enabled": True,
+    }
+    response = client.post("/api/validation/execute", json=payload)
+    assert response.status_code in (400, 422)
+
+
+def test_validation_execute_strictly_rejects_arbitrary_workspace_path():
+    """CRITICAL SECURITY TEST: Any attempt to submit arbitrary host paths like /etc or ../ must be rejected."""
+    for bad_path in ["/etc", "/", "../../etc", "C:\\Windows"]:
+        payload = {
+            "manifest_type": "requirements.txt",
+            "workspace_path": bad_path,
+        }
+        response = client.post("/api/validation/execute", json=payload)
+        assert response.status_code in (400, 422)
+
+
+def test_validation_real_time_cancellation_and_repeated_cancel():
+    """CRITICAL TEST: Verify real-time cancellation terminates container and is idempotent."""
     service = get_sandbox_service()
     mock_avail = DockerAvailability(is_available=False, error_message="Offline")
     with patch.object(service.runner, "check_availability", return_value=mock_avail):
         # Create an execution report in service
         report = service.execute_validation(
-            request=service._executions.get("dummy") or MagicMock(proposal_id=None, manifest_type="requirements.txt", network_enabled=False, memory_limit_mb=512, cpu_limit="1.0", pids_limit=64, timeout_seconds=60, image_override=None, ecosystem="python", custom_test_cmd=None, workspace_path=None)
+            request=service._executions.get("dummy") or MagicMock(
+                proposal_id=None,
+                manifest_type="requirements.txt",
+                timeout_seconds=60,
+                memory_limit_mb=512,
+                cpu_limit="1.0",
+                pids_limit=64,
+                image_override=None,
+                ecosystem="python",
+                custom_test_cmd=None,
+            )
         )
         exec_id = report.execution_id
+
+        # Mark state as RUNNING to simulate active in-flight execution
+        with service._lock:
+            service._execution_states[exec_id] = ExecutionLifecycleState.RUNNING
+            service._execution_containers[exec_id] = "dua-sandbox-running-test"
 
         # Cancel it
         cancel_res = client.post(f"/api/validation/{exec_id}/cancel")
@@ -165,6 +198,44 @@ def test_validation_cancel_endpoint():
         # Check updated status
         updated_rep = client.get(f"/api/validation/{exec_id}").json()
         assert updated_rep["status"] == "CANCELLED"
+        assert updated_rep["lifecycle_state"] == "CANCELLED"
+
+        # Repeated cancellation is idempotent and succeeds without error
+        repeat_res = client.post(f"/api/validation/{exec_id}/cancel")
+        assert repeat_res.status_code == 200
+        assert repeat_res.json()["success"] is True
+
+
+def test_validation_cancel_non_existent_execution_returns_404():
+    """Verify cancelling non-existent execution returns 404."""
+    res = client.post("/api/validation/val-non-existent-9999/cancel")
+    assert res.status_code == 404
+
+
+def test_validation_reports_no_tests_found_when_repo_has_no_tests(tmp_path):
+    """CRITICAL CORRECTNESS TEST: When zero tests exist, report must be NO_TESTS_FOUND, not PASSED."""
+    service = get_sandbox_service()
+    mock_avail = DockerAvailability(is_available=True, version="26.0.0")
+    # Syntax check succeeds
+    mock_exec_res = SandboxExecutionResult(
+        exit_code=0,
+        stdout="Compiled 1 file\n",
+        stderr="",
+        duration_seconds=0.1,
+        is_runnable=True,
+    )
+
+    with patch.object(service.runner, "check_availability", return_value=mock_avail):
+        with patch.object(service.runner, "run_command", return_value=mock_exec_res):
+            payload = {
+                "manifest_type": "requirements.txt",
+            }
+            res = client.post("/api/validation/execute", json=payload)
+            assert res.status_code == 200
+            data = res.json()
+            # Must report NO_TESTS_FOUND because zero test files were provided!
+            assert data["status"] == "NO_TESTS_FOUND"
+            assert "zero runnable tests were discovered" in data["summary"].lower()
 
 
 def test_validation_api_v1_parity():

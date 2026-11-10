@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-10T18:59:48Z",
+  "updated": "2026-11-10T19:26:28Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -823,7 +823,14 @@
       "text": "M4 post-acceptance security hardening: atomic proposal consumption and concurrency-safe lifecycle states (AVAILABLE, APPLYING, CONSUMED).",
       "status": "open",
       "at": "2026-11-10T17:56:21Z"
+    },
+    {
+      "id": "N3",
+      "kind": "decision",
+      "text": "M5 post-acceptance security remediation completed: workspace boundary validation, server-enforced network isolation, pinned image digests, bounded streaming log capture, explicit test discovery, and live CI container runner.",
+      "status": "open",
+      "at": "2026-11-10T19:26:28Z"
     }
   ],
-  "head": "f511735413241ce89860924f220412e6f7894d568ccd98a60618f1bef0acaa65"
+  "head": "0414659ddeab99ca107c2e4b12bea4a27d8ebc86f43e524ebfeedfe7cb2249f6"
 }

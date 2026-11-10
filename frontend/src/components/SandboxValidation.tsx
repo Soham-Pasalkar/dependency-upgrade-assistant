@@ -47,7 +47,6 @@ export const SandboxValidation: React.FC<SandboxValidationProps> = ({
       const report = await executeValidation({
         proposal_id: proposal?.proposal_id || undefined,
         manifest_type: manifestType,
-        network_enabled: false,
         timeout_seconds: 60,
         memory_limit_mb: 512,
         cpu_limit: '1.0',
@@ -183,6 +182,7 @@ export const SandboxValidation: React.FC<SandboxValidationProps> = ({
               >
                 {validationReport.status === 'PASSED' && '✓ PASSED'}
                 {validationReport.status === 'FAILED' && '✗ FAILED'}
+                {validationReport.status === 'NO_TESTS_FOUND' && 'ℹ NO TESTS FOUND'}
                 {validationReport.status === 'NOT_RUNNABLE' && 'ℹ NOT RUNNABLE'}
                 {validationReport.status === 'TIMED_OUT' && '⏱ TIMED OUT'}
                 {validationReport.status === 'CANCELLED' && '⏹ CANCELLED'}
@@ -194,6 +194,11 @@ export const SandboxValidation: React.FC<SandboxValidationProps> = ({
               {validationReport.image_used && (
                 <span className="validation-image">
                   Image: <code>{validationReport.image_used}</code>
+                  {validationReport.image_digest && (
+                    <span className="image-digest-tag" title={validationReport.image_digest}>
+                      {' '}({validationReport.image_digest.slice(0, 19)}…)
+                    </span>
+                  )}
                 </span>
               )}
             </div>
@@ -201,6 +206,20 @@ export const SandboxValidation: React.FC<SandboxValidationProps> = ({
             <p className="validation-summary" data-testid="validation-summary-text">
               {validationReport.summary}
             </p>
+
+            <div className="validation-submetrics">
+              {validationReport.test_discovery_status && (
+                <span className="submetric-item">
+                  <strong>Discovery:</strong> {validationReport.test_discovery_status}
+                </span>
+              )}
+              {validationReport.snapshot_files_count !== undefined && (
+                <span className="submetric-item">
+                  <strong>Snapshot:</strong> {validationReport.snapshot_files_count} files included,{' '}
+                  {validationReport.snapshot_excluded_count || 0} scrubbed
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Commands Breakdown Table */}

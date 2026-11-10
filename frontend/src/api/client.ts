@@ -480,6 +480,7 @@ export async function generateUpgradePlan(
 export type SandboxValidationStatus =
   | 'PASSED'
   | 'FAILED'
+  | 'NO_TESTS_FOUND'
   | 'TIMED_OUT'
   | 'CANCELLED'
   | 'INFRASTRUCTURE_ERROR'
@@ -499,14 +500,12 @@ export interface ValidationCommandResult {
 
 export interface SandboxExecutionRequest {
   proposal_id?: string | null;
-  workspace_path?: string | null;
   manifest_type?: string | null;
   custom_test_cmd?: string[] | null;
   timeout_seconds?: number;
   memory_limit_mb?: number;
   cpu_limit?: string;
   pids_limit?: number;
-  network_enabled?: boolean;
   image_override?: string | null;
   ecosystem?: string | null;
 }
@@ -520,9 +519,15 @@ export interface ValidationReportResponse {
   commands: ValidationCommandResult[];
   total_duration_seconds: number;
   image_used: string;
+  image_digest?: string | null;
   network_enabled: boolean;
   resource_limits: Record<string, unknown>;
   logs: string;
+  is_truncated?: boolean;
+  test_discovery_status?: string | null;
+  staging_status?: string | null;
+  snapshot_files_count?: number;
+  snapshot_excluded_count?: number;
   created_at: number;
   completed_at?: number | null;
   diagnostics: string[];

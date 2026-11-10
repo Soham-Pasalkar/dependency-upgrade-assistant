@@ -1333,6 +1333,25 @@ code, .font-mono {
   border: 1px solid rgba(239, 68, 68, 0.4);
 }
 
+.status-no_tests_found {
+  color: #fbbf24;
+  background-color: rgba(245, 158, 11, 0.18);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+.image-digest-tag {
+  color: var(--accent-cyan);
+  font-size: 0.75rem;
+}
+
+.validation-submetrics {
+  display: flex;
+  gap: 1.25rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 0.5rem;
+}
+
 .validation-duration, .validation-image {
   font-size: 0.8rem;
   color: var(--text-muted);

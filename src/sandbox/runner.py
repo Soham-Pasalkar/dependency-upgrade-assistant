@@ -11,7 +11,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
 from src.sandbox.container_config import (
     ContainerConfigBuilder,
@@ -19,12 +19,13 @@ from src.sandbox.container_config import (
     DEFAULT_TIMEOUT_SECONDS,
     SandboxSecurityConfig,
 )
-from src.sandbox.image_catalog import DEFAULT_PYTHON_IMAGE
+from src.sandbox.image_catalog import DEFAULT_PYTHON_IMAGE, get_image_digest
+from src.sandbox.streaming_capture import BoundedStreamCapture, DEFAULT_MAX_OUTPUT_BYTES
 
 logger = logging.getLogger(__name__)
 
 # Maximum output size (512 KB) to prevent backend memory exhaustion
-MAX_OUTPUT_BYTES = 512 * 1024
+MAX_OUTPUT_BYTES = DEFAULT_MAX_OUTPUT_BYTES
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,8 @@ class SandboxExecutionResult:
     is_runnable: bool = True
     error_message: Optional[str] = None
     container_id: Optional[str] = None
+    image_digest: Optional[str] = None
+    is_truncated: bool = False
 
     @property
     def is_success(self) -> bool:
@@ -71,8 +74,10 @@ class SandboxRunnerInterface(ABC):
         command_args: List[str],
         working_dir: Path | str,
         reference_dir: Optional[Path | str] = None,
+        staging_dir: Optional[Path | str] = None,
         timeout: Optional[int] = None,
         config: Optional[SandboxSecurityConfig] = None,
+        on_process_started: Optional[Callable[[str, subprocess.Popen], None]] = None,
     ) -> SandboxExecutionResult:
         """Execute a whitelisted command inside the isolated sandbox."""
         pass
@@ -95,6 +100,7 @@ class DockerSandboxRunner(SandboxRunnerInterface):
         self.docker_bin = docker_binary or shutil.which("docker") or "docker"
         self._cached_availability: Optional[DockerAvailability] = None
         self._active_containers: Set[str] = set()
+        self._active_procs: Dict[str, subprocess.Popen] = {}
         self._lock = threading.Lock()
 
     def check_availability(self, timeout: float = 5.0) -> DockerAvailability:
@@ -145,11 +151,13 @@ class DockerSandboxRunner(SandboxRunnerInterface):
         command_args: List[str],
         working_dir: Path | str,
         reference_dir: Optional[Path | str] = None,
+        staging_dir: Optional[Path | str] = None,
         timeout: Optional[int] = None,
         config: Optional[SandboxSecurityConfig] = None,
+        on_process_started: Optional[Callable[[str, subprocess.Popen], None]] = None,
     ) -> SandboxExecutionResult:
         """Execute a whitelisted command inside the isolated Docker sandbox.
-        
+
         Fail-Closed Guarantee:
         If Docker is unavailable, untrusted repository code is NEVER executed on the host.
         Instead, returns an explicit NOT_RUNNABLE execution result.
@@ -173,6 +181,7 @@ class DockerSandboxRunner(SandboxRunnerInterface):
 
         effective_config = config or self.config
         effective_timeout = timeout if timeout is not None else effective_config.timeout_seconds
+        image_digest = get_image_digest(effective_config.image)
 
         container_name = f"dua-sandbox-{uuid.uuid4().hex[:12]}"
 
@@ -181,60 +190,83 @@ class DockerSandboxRunner(SandboxRunnerInterface):
             config=effective_config,
             working_dir=working_dir,
             reference_dir=reference_dir,
+            staging_dir=staging_dir,
             command_args=command_args,
             container_name=container_name,
         )
 
         full_cmd = [self.docker_bin] + run_args
         start_time = time.monotonic()
+        capture = BoundedStreamCapture(max_bytes=MAX_OUTPUT_BYTES)
 
         with self._lock:
             self._active_containers.add(container_name)
 
+        proc: Optional[subprocess.Popen] = None
         try:
-            proc = subprocess.run(
+            # Spawn container process with piped streams for bounded streaming capture
+            proc = subprocess.Popen(
                 full_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=effective_timeout,
-                check=False,
+                bufsize=1,
             )
+
+            with self._lock:
+                self._active_procs[container_name] = proc
+
+            if on_process_started:
+                try:
+                    on_process_started(container_name, proc)
+                except Exception as cb_err:
+                    logger.warning(f"Error in on_process_started callback: {cb_err}")
+
+            # Start streaming readers
+            t_out, t_err = capture.capture_streams(proc.stdout, proc.stderr)
+
+            # Await process completion with timeout
+            try:
+                proc.wait(timeout=effective_timeout)
+            except subprocess.TimeoutExpired:
+                # Timeout occurred: terminate container immediately
+                self.terminate(container_name)
+                duration = round(time.monotonic() - start_time, 2)
+                t_out.join(timeout=0.5)
+                t_err.join(timeout=0.5)
+                stdout_str, stderr_str, is_trunc = capture.get_output()
+                return SandboxExecutionResult(
+                    exit_code=124,
+                    stdout=stdout_str,
+                    stderr=stderr_str,
+                    duration_seconds=duration,
+                    timed_out=True,
+                    is_runnable=True,
+                    container_id=container_name,
+                    image_digest=image_digest,
+                    is_truncated=is_trunc,
+                    error_message=f"Command execution timed out after {effective_timeout}s in sandbox.",
+                )
+
+            # Wait for reader threads to flush
+            t_out.join(timeout=1.0)
+            t_err.join(timeout=1.0)
+
             duration = round(time.monotonic() - start_time, 2)
-            stdout_bounded = proc.stdout[:MAX_OUTPUT_BYTES]
-            stderr_bounded = proc.stderr[:MAX_OUTPUT_BYTES]
-            if len(proc.stdout) > MAX_OUTPUT_BYTES:
-                stdout_bounded += f"\n... [Output truncated after reaching {MAX_OUTPUT_BYTES} bytes limit] ...\n"
+            stdout_str, stderr_str, is_trunc = capture.get_output()
 
             return SandboxExecutionResult(
-                exit_code=proc.returncode,
-                stdout=stdout_bounded,
-                stderr=stderr_bounded,
+                exit_code=proc.returncode if proc.returncode is not None else -1,
+                stdout=stdout_str,
+                stderr=stderr_str,
                 duration_seconds=duration,
                 timed_out=False,
                 is_runnable=True,
                 container_id=container_name,
+                image_digest=image_digest,
+                is_truncated=is_trunc,
             )
-        except subprocess.TimeoutExpired as exc:
-            duration = round(time.monotonic() - start_time, 2)
-            # Fail-closed cleanup: kill the running container immediately
-            self.terminate(container_name)
-            out = exc.stdout if isinstance(exc.stdout, str) else (
-                exc.stdout.decode("utf-8", errors="replace") if exc.stdout else ""
-            )
-            err = exc.stderr if isinstance(exc.stderr, str) else (
-                exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
-            )
-            return SandboxExecutionResult(
-                exit_code=124,
-                stdout=out[:MAX_OUTPUT_BYTES],
-                stderr=err[:MAX_OUTPUT_BYTES],
-                duration_seconds=duration,
-                timed_out=True,
-                is_runnable=True,
-                container_id=container_name,
-                error_message=f"Command execution timed out after {effective_timeout}s in sandbox.",
-            )
+
         except Exception as exc:
             duration = round(time.monotonic() - start_time, 2)
             self.terminate(container_name)
@@ -245,18 +277,36 @@ class DockerSandboxRunner(SandboxRunnerInterface):
                 duration_seconds=duration,
                 is_runnable=False,
                 container_id=container_name,
+                image_digest=image_digest,
                 error_message=f"Container execution error: {exc}",
             )
         finally:
             with self._lock:
                 self._active_containers.discard(container_name)
+                self._active_procs.pop(container_name, None)
+            if proc and proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
             # Defense-in-depth cleanup: ensure container is removed even if --rm failed
             self._ensure_container_removed(container_name)
 
     def terminate(self, container_name_or_id: str) -> bool:
-        """Forcefully terminate and remove an active container."""
+        """Forcefully terminate and remove an active container and its host process."""
         if not container_name_or_id:
             return False
+
+        with self._lock:
+            proc = self._active_procs.get(container_name_or_id)
+
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.kill()
+            except Exception:
+                pass
+
         try:
             subprocess.run(
                 [self.docker_bin, "rm", "-f", container_name_or_id],

@@ -59,6 +59,7 @@ coverage.xml
 # Editor directories
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 

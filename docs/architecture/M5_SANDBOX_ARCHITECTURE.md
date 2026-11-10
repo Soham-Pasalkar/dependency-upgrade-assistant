@@ -19,38 +19,43 @@ To reconcile the need for dependency acquisition with strict network isolation d
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│                        Stage 1: Staging (Controlled)                   │
-│  - Environment: Controlled network access (PyPI / npm registries only) │
-│  - Action: Fetch pre-built wheels / tarballs into cache directory      │
-│  - Restriction: No execution of target repository setup.py or tests   │
+│               Stage A: Controlled Staging (Optional)                   │
+│  - Environment: Strictly validated package registries (PyPI, npmjs)    │
+│  - Validation: is_safe_registry_url() blocks RFC 1918, link-local, SSRF │
+│  - Action: Fetch pre-built wheels / tarballs into isolated cache       │
+│  - Restriction: Zero execution of repository setup.py, install hooks   │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │ Cache Mount (ro)
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│                   Stage 2: Sandboxed Execution (Isolated)              │
+│             Stage B: Sandboxed Test Execution (Strict Offline)         │
 │  - Environment: Strict offline isolation (--network none)              │
-│  - Action: Install from local cache and execute test suite             │
+│  - Immutability: Pinned SHA-256 image references (python/node)         │
+│  - Action: Install from local cache and execute discovered test suite  │
 │  - Restrictions:                                                       │
-│      * --network none                                                  │
+│      * --network none (Server-enforced; cannot be overridden by client)│
 │      * --read-only root filesystem                                     │
 │      * --tmpfs /tmp:rw,noexec,nosuid,size=64m                          │
 │      * --tmpfs /workspace/scratch:rw,size=128m                         │
-│      * --memory=512m --cpus=1.0 --pids-limit=64                       │
-│      * --security-opt=no-new-privileges --cap-drop=ALL                 │
+│      * Resource ceilings: RAM <= 1024m, CPU <= 2.0, PIDs <= 128        │
+│      * --security-opt=no-new-privileges:true --cap-drop=ALL            │
 │      * --user 1000:1000                                                │
+│      * Bounded streaming stdout/stderr reader threads (512 KB budget)  │
+│      * Explicit test discovery: zero tests yields NO_TESTS_FOUND       │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Stage 1: Dependency Acquisition (Staging)
+### Stage A: Dependency Acquisition (Staging)
 - Only wheels/tarballs matching the target manifest are acquired.
-- In offline or pre-baked scenarios, standard base environments provide common testing harnesses (`pytest`, `unittest`, `ruff` for Python; `node:test`, `vitest`, `jest` for Node.js).
+- Validated through `DependencyStagingManager` and `is_safe_registry_url()`, rejecting non-HTTPS, localhost, private IP ranges (10.x, 172.16.x, 192.168.x), and cloud metadata IP (`169.254.169.254`).
 - Arbitrary pre-install hooks (`setup.py` arbitrary code execution) are prevented by enforcing wheel binary requirements (`--only-binary=:all:`) where feasible.
 
-### Stage 2: Sandboxed Test Execution
-- Container is spawned with `--network none`.
-- Repository snapshot is mounted read-only or into an ephemeral scratch space.
-- The host filesystem is never mounted read-write.
-- The container executes strictly under an unprivileged user (`1000:1000`).
+### Stage B: Sandboxed Test Execution
+- Container is spawned with `--network none` (immutable server-side policy; client requests cannot enable networking).
+- Repository snapshot is mounted read-only into an ephemeral directory with memory-backed `/workspace/scratch` and `/tmp` tmpfs mounts.
+- Container image is resolved to its pinned immutable SHA-256 digest (`ImageCatalog.get_pinned_image_reference()`).
+- Bounded streaming readers capture process output in real time without blocking pipes or exceeding memory budgets.
+- Test discovery inspects repository fixtures; if no test files exist, status returns `NO_TESTS_FOUND`, preventing false `PASSED` results.
 
 ---
 
@@ -78,30 +83,43 @@ To reconcile the need for dependency acquisition with strict network isolation d
 ┌───────────────────────────────┐         ┌───────────────────────────────┐
 │       Snapshot Manager        │         │      Image Catalog            │
 │ (src/sandbox/snapshot_mgr.py) │         │ (src/sandbox/image_catalog.py)│
-│ - Ephemeral temporary dir     │         │ - Allowlisted images only:    │
-│ - Secret & token scrubbing    │         │   * python:3.11-slim          │
-│ - Symlink escape rejection    │         │   * python:3.12-slim          │
-│ - Apply proposal mutations    │         │   * node:20-slim              │
-└──────────────┬────────────────┘         │   * node:22-slim              │
-               │                          │ - Arbitrary images rejected   │
-               │                          └───────────────┬───────────────┘
-               ▼                                          │
-┌─────────────────────────────────────────────────────────▼───────────────┐
+│ - Ephemeral temporary dir     │         │ - Pinned SHA-256 digests:     │
+│ - Secret & token scrubbing    │         │   * python:3.11-slim@sha256.. │
+│ - Symlink escape rejection    │         │   * python:3.12-slim@sha256.. │
+│ - Special file (FIFO) error   │         │   * node:20-slim@sha256..     │
+│ - SnapshotManifest auditing   │         │   * node:22-slim@sha256..     │
+│ - Proposal mutation overlay   │         │ - Arbitrary images rejected   │
+└──────────────┬────────────────┘         └───────────────┬───────────────┘
+               │                                          │
+               ▼                                          ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     Workspace Boundary Validation                       │
+│  (src/sandbox/workspace_boundary.py)                                    │
+│  - Validates relative paths against trusted root (settings.workspace)   │
+│  - Strictly blocks client-specified host roots, /, /etc, Windows paths  │
+│  - Resolves symlinks and detects sibling prefix confusion (/root_evil)  │
+└────────────────────────────────────┬────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────┐
 │                       Container Configuration                           │
 │  (src/sandbox/container_config.py)                                      │
 │  - Enforces mandatory security flags:                                   │
 │      --rm, --user, --network=none, --memory, --cpus, --pids-limit,      │
 │      --security-opt=no-new-privileges, --cap-drop=ALL, --read-only      │
-│  - Prohibits docker.sock, --privileged, host networking                 │
+│  - Enforces server-side resource ceilings (RAM: 1024m, CPUs: 2.0)      │
+│  - Prohibits docker.sock, --privileged, host namespaces                 │
 └────────────────────────────────────┬────────────────────────────────────┘
                                      │
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    Sandbox Runner Interface & Engine                    │
-│  (src/sandbox/runner.py & src/validation/sandbox_manager.py)            │
+│  (src/sandbox/runner.py & src/sandbox/streaming_capture.py)             │
 │  - Probes Docker engine availability (docker info)                      │
 │  - Returns truthful NOT_RUNNABLE when Docker is unavailable             │
-│  - Spawns and supervises container execution with bounded log capture   │
+│  - Spawns subprocess.Popen with real-time process handle registration   │
+│  - Streaming background threads enforce 512KB quota and strip ANSI      │
+│  - Real-time atomic cancellation: docker rm -f + process kill           │
 │  - Enforces hard timeouts and fail-closed cleanup (SIGTERM -> SIGKILL)  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -139,18 +157,26 @@ The container configuration builder strictly forbids and throws `ValueError` upo
 ## 5. Workspace Snapshot Isolation Protocol
 
 Target repositories and proposals must never be executed directly within their host workspace:
-1. **Ephemeral Directory:** An ephemeral working directory is created under `tempfile.TemporaryDirectory()`.
-2. **Secret & Sensitive File Scrubbing:** During snapshot replication, sensitive paths are excluded:
+1. **Workspace Boundary Validation:**
+   - Any workspace path is verified using `validate_trusted_workspace_path(path, settings.resolved_workspace_root)`.
+   - Client requests are prohibited from supplying arbitrary host paths (such as `/`, `/etc`, Windows drive letters `C:`, or path traversals).
+   - Sibling prefix confusion (`/workspace_evil` vs `/workspace`) is prevented by enforcing path containment with trailing separator checks.
+2. **Ephemeral Directory:** An ephemeral working directory is created under `tempfile.TemporaryDirectory()`.
+3. **Secret & Sensitive File Scrubbing:** During snapshot replication, sensitive paths are excluded:
    - Git metadata: `.git/`
    - Secrets & Environment files: `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa`, `id_ed25519`
-   - Cloud credentials: `.aws/`, `.gcp/`, `.azure/`, `.npmrc`, `.pypirc`
+   - Cloud credentials: `.aws/`, `.gcp/`, `.azure/`, `.npmrc`, `.pypirc`, `.docker/`, `.kube/`
    - Temporary and virtual environments: `.venv/`, `venv/`, `node_modules/`, `__pycache__/`
-3. **Symlink Validation:** Symlinks in the source workspace are evaluated via `os.path.realpath`. Any symlink whose resolved target escapes the workspace boundary is skipped or rejected with `SecurityException`.
-4. **Proposal Mutation Overlay:** If an approved `proposal_id` is specified, the server retrieves the proposal from `ProposalRegistry` and writes the proposed manifest content into the snapshot.
+   - Safe dotfiles (`.pytest.ini`, `.ruff.toml`) are retained to preserve test discovery configuration.
+4. **Symlink and Special File Validation:**
+   - Symlinks in the source workspace are evaluated via `os.path.realpath`. Any symlink whose resolved target escapes the workspace boundary is skipped or rejected with `SecurityException`.
+   - Special files (FIFOs, named pipes, Unix domain sockets) detected via `stat.S_ISFIFO` or `stat.S_ISSOCK` cause immediate failure (`SnapshotCreationError`), protecting against hanging copy operations.
+5. **SnapshotManifest Auditing:** The snapshot creation returns a cryptographic `SnapshotManifest` recording the snapshot path, file count, and list of excluded sensitive entries.
+6. **Proposal Mutation Overlay:** If an approved `proposal_id` is specified, the server retrieves the proposal from `ProposalRegistry` and writes the proposed manifest content into the snapshot.
 
 ---
 
-## 6. Execution Lifecycle & Status Model
+## 6. Execution Lifecycle, Cancellation & Status Model
 
 ```
        ┌───────────┐
@@ -176,18 +202,20 @@ Target repositories and proposals must never be executed directly within their h
 ```
 
 ### Status Definitions:
-- `PASSED`: All validation commands completed with exit code 0.
+- `PASSED`: All validation commands completed with exit code 0 and actual tests were executed.
 - `FAILED`: One or more validation commands returned a non-zero exit code.
 - `TIMED_OUT`: Container execution exceeded the configured timeout (e.g. 60s) and was killed.
-- `CANCELLED`: Execution was explicitly cancelled by the user via `/api/validation/{id}/cancel`.
+- `CANCELLED`: Execution was explicitly cancelled by the user via `/api/validation/{id}/cancel`. Container is immediately removed (`docker rm -f`) and subprocess terminated. Subsequent completion cannot overwrite cancelled state.
+- `NO_TESTS_FOUND`: Test discovery found zero test files or only npm default placeholders (`echo ... && exit 1`). Truthfully reports absence of tests, strictly avoiding false-positive `PASSED` results.
 - `INFRASTRUCTURE_ERROR`: A container engine error occurred (e.g. Docker daemon crashed or out of memory).
 - `NOT_RUNNABLE`: Docker engine is not installed or unreachable. Untrusted code is **not** run on host.
 
 ---
 
-## 7. Bounded Log Streaming & Memory Safety
+## 7. Bounded Streaming Log Capture & Thread Safety
 
 To protect backend server memory against high-output loops (e.g. infinite print statements):
-- Container `stdout` and `stderr` streams are captured through bounded buffers with a maximum threshold (default: 512 KB).
-- When the log size limit is reached, subsequent output is truncated with an informative notice: `"... [Output truncated after reaching 524,288 bytes limit] ..."`.
-- Logs are sanitized to prevent ANSI terminal escapes from injecting control characters into the web UI.
+- Container `stdout` and `stderr` streams are captured through non-blocking streaming background reader threads (`BoundedStreamCapture`).
+- Enforces a strict memory budget (default: 512 KB).
+- When the log size limit is reached, subsequent output continues to be drained from the OS pipe to prevent pipe deadlock, while the buffer records an informative truncation notice: `"... [Output truncated after reaching 524,288 bytes limit] ..."`.
+- ANSI terminal escape sequences (colors, cursor movements) are stripped to prevent log injection in the web UI.
