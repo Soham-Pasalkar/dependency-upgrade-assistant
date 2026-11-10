@@ -290,3 +290,8 @@ class ProposalRegistry:
 
 # Global singleton registry instance
 proposal_registry = ProposalRegistry()
+
+
+def get_proposal_registry() -> ProposalRegistry:
+    """Retrieve the global proposal registry instance."""
+    return proposal_registry

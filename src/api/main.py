@@ -14,6 +14,7 @@ from src.api.routes.health import router as health_router
 from src.api.routes.manifest import router as manifest_router
 from src.api.routes.plan import router as plan_router
 from src.api.routes.recommendations import router as recommendations_router
+from src.api.routes.validation import router as validation_router
 
 logger = logging.getLogger("dua.api")
 
@@ -73,11 +74,13 @@ def create_app() -> FastAPI:
     app.include_router(manifest_router, prefix="/api")
     app.include_router(recommendations_router, prefix="/api")
     app.include_router(plan_router, prefix="/api")
+    app.include_router(validation_router, prefix="/api")
     # Also register under /api/v1 for REST API compliance with architecture spec
     app.include_router(health_router, prefix="/api/v1")
     app.include_router(manifest_router, prefix="/api/v1")
     app.include_router(recommendations_router, prefix="/api/v1")
     app.include_router(plan_router, prefix="/api/v1")
+    app.include_router(validation_router, prefix="/api/v1")
     # Convenience root health check
     app.include_router(health_router)
 

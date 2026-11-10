@@ -353,3 +353,355 @@ export async function generateRecommendations(
     throw new ApiError(`Failed to generate recommendations: ${message}`);
   }
 }
+
+// ----------------------------------------------------------------------
+// M4: Upgrade Planning & Patch Generation Types and Functions
+// ----------------------------------------------------------------------
+
+export type UpgradeAction =
+  | 'UPGRADE'
+  | 'RETAIN'
+  | 'REJECT_CONFLICT'
+  | 'REJECT_UNSUPPORTED'
+  | 'REJECT_STALE';
+
+export type ProposalStatus =
+  | 'READY_FOR_REVIEW'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'INVALID_PATCH'
+  | 'CONFLICT_DETECTED'
+  | 'NO_OP';
+
+export interface PlannedUpgradeItem {
+  package_name: string;
+  ecosystem: Ecosystem;
+  current_version?: string | null;
+  target_version?: string | null;
+  declared_specifier: string;
+  proposed_specifier: string;
+  action: UpgradeAction;
+  rationale: string;
+  recommendation_ref?: string | null;
+  line_number?: number | null;
+  dependency_type: DependencyType;
+  is_conflict: boolean;
+  conflict_details?: string | null;
+}
+
+export interface PatchIntegrityResult {
+  is_valid: boolean;
+  can_apply: boolean;
+  can_reverse: boolean;
+  syntax_valid: boolean;
+  target_versions_match: boolean;
+  unrelated_dependencies_unchanged: boolean;
+  original_unchanged: boolean;
+  checks_passed: string[];
+  checks_failed: string[];
+  errors: string[];
+  warnings: string[];
+}
+
+export interface UpgradeProposalResponse {
+  proposal_id: string;
+  manifest_type: string;
+  ecosystem: Ecosystem;
+  file_path: string;
+  plan_items: PlannedUpgradeItem[];
+  total_planned: number;
+  total_unchanged: number;
+  total_conflicts: number;
+  original_content: string;
+  proposed_content: string;
+  unified_diff: string;
+  integrity: PatchIntegrityResult;
+  status: ProposalStatus;
+  requires_human_approval: boolean;
+  diagnostics: string[];
+  summary: string;
+}
+
+export interface UpgradePlanRequest {
+  manifest_type: string;
+  original_content: string;
+  recommendations: PackageUpgradeRecommendation[];
+  selected_packages?: string[] | null;
+  file_path?: string | null;
+}
+
+/**
+ * Generate an upgrade plan and unified diff from validated recommendations.
+ */
+export async function generateUpgradePlan(
+  request: UpgradePlanRequest
+): Promise<UpgradeProposalResponse> {
+  const url = `${config.apiBaseUrl}/api/plan/generate`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errorData;
+      try {
+        errorData = JSON.parse(errorText);
+      } catch {
+        errorData = errorText;
+      }
+      const message =
+        typeof errorData === 'object' && errorData?.detail
+          ? String(errorData.detail)
+          : `Upgrade plan generation failed (${response.status})`;
+      throw new ApiError(message, response.status, errorData);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    throw new ApiError(`Failed to generate upgrade plan: ${message}`);
+  }
+}
+
+// ----------------------------------------------------------------------
+// M5: Sandboxed Validation Types and Functions
+// ----------------------------------------------------------------------
+
+export type SandboxValidationStatus =
+  | 'PASSED'
+  | 'FAILED'
+  | 'TIMED_OUT'
+  | 'CANCELLED'
+  | 'INFRASTRUCTURE_ERROR'
+  | 'NOT_RUNNABLE';
+
+export interface ValidationCommandResult {
+  command_name: string;
+  command_args: string[];
+  status: SandboxValidationStatus;
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+  duration_seconds: number;
+  description: string;
+  error_message?: string | null;
+}
+
+export interface SandboxExecutionRequest {
+  proposal_id?: string | null;
+  workspace_path?: string | null;
+  manifest_type?: string | null;
+  custom_test_cmd?: string[] | null;
+  timeout_seconds?: number;
+  memory_limit_mb?: number;
+  cpu_limit?: string;
+  pids_limit?: number;
+  network_enabled?: boolean;
+  image_override?: string | null;
+  ecosystem?: string | null;
+}
+
+export interface ValidationReportResponse {
+  execution_id: string;
+  proposal_id?: string | null;
+  status: SandboxValidationStatus;
+  is_runnable: boolean;
+  summary: string;
+  commands: ValidationCommandResult[];
+  total_duration_seconds: number;
+  image_used: string;
+  network_enabled: boolean;
+  resource_limits: Record<string, unknown>;
+  logs: string;
+  created_at: number;
+  completed_at?: number | null;
+  diagnostics: string[];
+}
+
+export interface SandboxExecutionLogResponse {
+  execution_id: string;
+  status: SandboxValidationStatus;
+  logs: string;
+  truncated: boolean;
+}
+
+export interface SandboxStatusResponse {
+  is_available: boolean;
+  version?: string | null;
+  error_message?: string | null;
+}
+
+/**
+ * Check Docker sandbox availability and daemon version.
+ */
+export async function getSandboxStatus(): Promise<SandboxStatusResponse> {
+  const url = `${config.apiBaseUrl}/api/validation/status`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      throw new ApiError(`Sandbox status check failed (${response.status})`, response.status);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return {
+      is_available: false,
+      version: null,
+      error_message: `Sandbox probe failed: ${message}`,
+    };
+  }
+}
+
+/**
+ * Execute sandboxed validation for a proposal or snapshot.
+ */
+export async function executeValidation(
+  request: SandboxExecutionRequest
+): Promise<ValidationReportResponse> {
+  const url = `${config.apiBaseUrl}/api/validation/execute`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errorData;
+      try {
+        errorData = JSON.parse(errorText);
+      } catch {
+        errorData = errorText;
+      }
+      const message =
+        typeof errorData === 'object' && errorData?.detail
+          ? String(errorData.detail)
+          : `Validation execution failed (${response.status})`;
+      throw new ApiError(message, response.status, errorData);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    throw new ApiError(`Failed to execute validation: ${message}`);
+  }
+}
+
+/**
+ * Retrieve report for a validation execution by ID.
+ */
+export async function getValidationReport(
+  executionId: string
+): Promise<ValidationReportResponse> {
+  const url = `${config.apiBaseUrl}/api/validation/${encodeURIComponent(executionId)}`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      throw new ApiError(`Failed to retrieve validation report (${response.status})`, response.status);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    throw new ApiError(`Failed to get validation report: ${message}`);
+  }
+}
+
+/**
+ * Retrieve execution logs.
+ */
+export async function getValidationLogs(
+  executionId: string
+): Promise<SandboxExecutionLogResponse> {
+  const url = `${config.apiBaseUrl}/api/validation/${encodeURIComponent(executionId)}/logs`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      throw new ApiError(`Failed to retrieve validation logs (${response.status})`, response.status);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    throw new ApiError(`Failed to get validation logs: ${message}`);
+  }
+}
+
+/**
+ * Cancel an in-flight validation execution.
+ */
+export async function cancelValidationExecution(
+  executionId: string
+): Promise<{ success: boolean; execution_id: string; message: string }> {
+  const url = `${config.apiBaseUrl}/api/validation/${encodeURIComponent(executionId)}/cancel`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      throw new ApiError(`Failed to cancel validation (${response.status})`, response.status);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    throw new ApiError(`Failed to cancel validation: ${message}`);
+  }
+}

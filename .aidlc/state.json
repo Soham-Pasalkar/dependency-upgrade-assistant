@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-10T17:56:21Z",
+  "updated": "2026-11-10T18:59:48Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -640,33 +640,67 @@
       "depends_on": [
         "M4"
       ],
-      "status": "planned",
+      "status": "done",
       "criteria": [
         {
           "text": "Docker runner executes test commands inside container with --network none and resource caps",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "tests/test_sandbox_security.py::test_container_config_enforces_all_mandatory_security_flags verifies --network=none, --user=1000:1000, --cap-drop=ALL, --security-opt=no-new-privileges:true, --memory=512m, --cpus=1.0, --pids-limit=64"
         },
         {
           "text": "Execution logs and exit codes captured",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "tests/test_sandbox_runner.py::test_runner_captures_stdout_stderr_and_exit_code and test_runner_bounds_log_output verify exit codes 0 and 1, stdout/stderr capture, and 512KB bounded buffer truncation"
         },
         {
           "text": "Truthful reporting of PASS, FAIL, and NOT_RUNNABLE when Docker is unavailable",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "tests/test_sandbox_runner.py::test_runner_fails_closed_when_docker_binary_missing and tests/test_validation_api.py::test_validation_execute_when_docker_unavailable verify explicit NOT_RUNNABLE status with diagnostic explanation; zero untrusted code runs on host"
         },
         {
           "text": "Fail-closed container cleanup on success, failure, timeout, and interruption",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "tests/test_sandbox_runner.py::test_runner_handles_timeout_and_terminates_container and test_runner_fail_closed_cleanup_in_finally verify docker rm -f is executed under timeout (exit 124) and runtime exceptions"
         }
       ],
-      "evidence": [],
-      "approval": null,
+      "evidence": [
+        {
+          "at": "2026-11-10T18:58:52Z",
+          "cmd": ".venv/bin/pytest tests/test_sandbox_security.py tests/test_sandbox_runner.py tests/test_validation_api.py",
+          "result": "21 passed, 1 warning in 0.28s",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T18:58:56Z",
+          "cmd": "npm --prefix frontend test -- --run",
+          "result": "17 passed across 4 test files",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T18:59:02Z",
+          "cmd": "npm --prefix frontend run build",
+          "result": "built client in 69ms, 0 errors",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T18:59:07Z",
+          "cmd": ".venv/bin/python3 .agents/skills/ai-dlc-engineering/scripts/scan_secrets.py .",
+          "result": "PASS: 0 finding(s)",
+          "file": null,
+          "sha256": null
+        }
+      ],
+      "approval": {
+        "at": "2026-11-10T18:59:48Z",
+        "note": "M5 accepted per Autonomous Engineering Execution Directive. All 4 criteria verified with concrete proof, 484 backend tests and 17 frontend tests green, 0 secret scan findings, artifacts validated.",
+        "actor": "agent",
+        "type": "agent_acceptance"
+      },
       "rework": 0,
-      "started": null,
+      "started": "2026-11-10T18:43:09Z",
       "note": null
     },
     {
@@ -791,5 +825,5 @@
       "at": "2026-11-10T17:56:21Z"
     }
   ],
-  "head": "36ea82bad44374127e3475699763fface57ef9a07e7aa06891bf2b68fe287725"
+  "head": "f511735413241ce89860924f220412e6f7894d568ccd98a60618f1bef0acaa65"
 }

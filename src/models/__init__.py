@@ -30,6 +30,14 @@ from src.models.plan import (
     WorkspaceApplyRequest,
     WorkspaceApplyResponse,
 )
+from src.models.sandbox import (
+    ExecutionLifecycleState,
+    SandboxExecutionLogResponse,
+    SandboxExecutionRequest,
+    SandboxValidationStatus,
+    ValidationCommandResult,
+    ValidationReportResponse,
+)
 
 __all__ = [
     "AnalyzedDependency",
@@ -57,4 +65,10 @@ __all__ = [
     "UpgradeProposalResponse",
     "WorkspaceApplyRequest",
     "WorkspaceApplyResponse",
+    "ExecutionLifecycleState",
+    "SandboxExecutionLogResponse",
+    "SandboxExecutionRequest",
+    "SandboxValidationStatus",
+    "ValidationCommandResult",
+    "ValidationReportResponse",
 ]

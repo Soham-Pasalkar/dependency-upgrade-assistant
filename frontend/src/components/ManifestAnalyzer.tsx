@@ -11,6 +11,7 @@ import {
   getAiStatus,
   uploadManifest,
 } from '../api/client';
+import { SandboxValidation } from './SandboxValidation';
 
 const PYTHON_SAMPLE = `# Production dependencies
 requests==2.28.0
@@ -766,6 +767,12 @@ export const ManifestAnalyzer: React.FC = () => {
               </ul>
             </div>
           )}
+
+          {/* Sandboxed Validation Subsystem */}
+          <SandboxValidation
+            manifestType={manifestType}
+            originalContent={rawContent}
+          />
         </div>
       )}
     </div>
