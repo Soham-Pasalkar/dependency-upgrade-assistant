@@ -3,13 +3,13 @@
   "project": "Dependency Upgrade Assistant 2.0",
   "tier": 3,
   "mode": "brownfield",
-  "phase": "inception",
+  "phase": "construction",
   "config": {
     "strict_approvals": true,
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-10T13:53:17Z",
+  "updated": "2026-11-10T14:32:19Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -25,9 +25,9 @@
     },
     "G3": {
       "name": "Milestone plan",
-      "status": "presented",
-      "note": "Updated G3 milestone plan incorporating audit corrections on delivery schedule, Docker staging, and environment limitations",
-      "at": "2026-11-10T13:53:17Z"
+      "status": "approved",
+      "note": "Human approval granted in M1 kickoff prompt: The revised G3 milestone plan has been presented and human approval has been granted. You may now begin Construction M1.",
+      "at": "2026-11-10T14:19:31Z"
     },
     "G5": {
       "name": "Release",
@@ -41,33 +41,69 @@
       "id": "M1",
       "title": "Application foundation",
       "depends_on": [],
-      "status": "planned",
+      "status": "awaiting_approval",
       "criteria": [
         {
           "text": "FastAPI backend initialized with configuration, CORS, and health endpoint",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "FastAPI app in src/api/main.py with Settings in src/api/config.py, CORS configured, and /api/health returning 200 verified by tests/test_api_health.py and live curl probe"
         },
         {
           "text": "React frontend scaffolded with Vite",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "React + TypeScript app in frontend/ scaffolded with Vite, centralized API client in frontend/src/api/client.ts, BackendStatus UI, verified by tsc -b && vite build and 5 vitest unit tests"
         },
         {
           "text": "SQLite persistence foundation initialized",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "SQLite persistence module in src/api/database.py initialized with WAL mode, foreign keys, repositories, analysis_runs, and pending_cleanups tables, verified by test_database_init_and_connectivity"
         },
         {
           "text": "Backend test suite passes",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "Pytest suite passes 100% green with 254 passing tests (246 baseline + 8 new backend tests in tests/test_api_health.py)"
         }
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "at": "2026-11-10T14:30:38Z",
+          "cmd": ".venv/bin/pytest tests/test_api_health.py -v",
+          "result": "8 passed in 0.20s: config defaults, db init, connectivity probe, /api/health 200/503, docs, CORS",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T14:30:52Z",
+          "cmd": ".venv/bin/pytest -q",
+          "result": "254 passed in 4.52s: 246 baseline tests + 8 new tests 100% green",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T14:30:57Z",
+          "cmd": "cd frontend && npm test",
+          "result": "2 test files passed, 5 tests passed (App.test.tsx, BackendStatus.test.tsx)",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T14:31:01Z",
+          "cmd": "cd frontend && npm run build",
+          "result": "tsc -b && vite build succeeded with 0 errors, output generated in dist/",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T14:31:06Z",
+          "cmd": "curl -i http://127.0.0.1:8000/api/health && curl -i http://localhost:5173/api/health",
+          "result": "HTTP/1.1 200 OK live probe verified direct backend and Vite proxy communication",
+          "file": null,
+          "sha256": null
+        }
+      ],
       "approval": null,
       "rework": 0,
-      "started": null,
+      "started": "2026-11-10T14:19:43Z",
       "note": null
     },
     {
@@ -335,5 +371,5 @@
       "at": "2026-11-09T13:32:28Z"
     }
   ],
-  "head": "63897b0f4539bfb96e6214d74ab10a46c0a2ddac7e676764abad297cdc5ae3dd"
+  "head": "ff8fb1fd8db00b419c8f332ddddb6726bb733aec16ce12b3287a05d9befbf312"
 }
