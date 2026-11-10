@@ -4,6 +4,8 @@ Guarantees:
 - Server assigns cryptographically random proposal IDs.
 - Complete proposal content (original, proposed, diff, plan items) is retained in server memory.
 - Apply requests reference the proposal ID; clients cannot forge or tamper with proposal contents.
+- Strict atomic lifecycle state transitions (AVAILABLE -> APPLYING -> CONSUMED / ABANDONED).
+- Concurrency-safe: two simultaneous requests using the same proposal_id can never both apply.
 - Automatic TTL expiration and consumption tracking (preventing replay / double-apply).
 """
 from __future__ import annotations
@@ -13,6 +15,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from enum import Enum
 from typing import Dict, Optional
 
 from src.models.plan import UpgradeProposalResponse
@@ -23,18 +26,49 @@ DEFAULT_PROPOSAL_TTL_SECONDS = 3600.0  # 1 hour
 DEFAULT_MAX_PROPOSALS = 1000
 
 
+class ProposalLifecycleState(str, Enum):
+    """Lifecycle states for a server-registered proposal."""
+    AVAILABLE = "AVAILABLE"      # Freshly registered, ready to be claimed
+    APPLYING = "APPLYING"        # Claimed by an in-flight mutation; locked against concurrency
+    CONSUMED = "CONSUMED"        # Successfully applied to filesystem; cannot be re-applied
+    ABANDONED = "ABANDONED"      # Failed during/after write; failed closed to prevent unsafe replay
+
+
+@dataclass
+class ProposalClaimResult:
+    """Result of an atomic proposal claim attempt."""
+    success: bool
+    status: str  # "OK", "PROPOSAL_NOT_FOUND", "PROPOSAL_EXPIRED", "PROPOSAL_ALREADY_IN_PROGRESS", "PROPOSAL_ALREADY_CONSUMED"
+    message: str
+    stored: Optional[StoredProposal] = None
+
+
 @dataclass
 class StoredProposal:
     """Represents a server-stored upgrade proposal with lifecycle metadata."""
     proposal_id: str
     proposal: UpgradeProposalResponse
     created_at: float
-    consumed: bool = False
+    state: ProposalLifecycleState = ProposalLifecycleState.AVAILABLE
     consumed_at: Optional[float] = None
+    claim_thread_id: Optional[int] = None
+    failure_reason: Optional[str] = None
+
+    @property
+    def consumed(self) -> bool:
+        """Backward-compatible property: true if proposal has completed or failed closed."""
+        return self.state in (ProposalLifecycleState.CONSUMED, ProposalLifecycleState.ABANDONED)
+
+    @consumed.setter
+    def consumed(self, value: bool) -> None:
+        if value:
+            self.state = ProposalLifecycleState.CONSUMED
+        else:
+            self.state = ProposalLifecycleState.AVAILABLE
 
 
 class ProposalRegistry:
-    """Thread-safe, bounded server-side proposal store with TTL expiration."""
+    """Thread-safe, bounded server-side proposal store with atomic lifecycle transitions."""
 
     def __init__(
         self,
@@ -62,7 +96,7 @@ class ProposalRegistry:
                 proposal_id=proposal_id,
                 proposal=proposal.model_copy(deep=True),
                 created_at=time.time(),
-                consumed=False,
+                state=ProposalLifecycleState.AVAILABLE,
             )
             self._store[proposal_id] = stored
             logger.info(f"Registered proposal '{proposal_id}' (active entries: {len(self._store)})")
@@ -77,13 +111,120 @@ class ProposalRegistry:
                 return None
             return stored
 
+    def claim_for_application(self, proposal_id: str) -> ProposalClaimResult:
+        """Atomically claim a proposal for application.
+        
+        Transitions state from AVAILABLE to APPLYING under registry lock.
+        Rejects concurrent claims with PROPOSAL_ALREADY_IN_PROGRESS or PROPOSAL_ALREADY_CONSUMED.
+        """
+        with self._lock:
+            self._evict_expired()
+            stored = self._store.get(proposal_id)
+            if stored is None:
+                return ProposalClaimResult(
+                    success=False,
+                    status="PROPOSAL_NOT_FOUND",
+                    message=f"Proposal '{proposal_id}' was not found or has expired. Please re-generate the proposal.",
+                    stored=None,
+                )
+
+            now = time.time()
+            if (now - stored.created_at) > self.ttl_seconds:
+                del self._store[proposal_id]
+                return ProposalClaimResult(
+                    success=False,
+                    status="PROPOSAL_NOT_FOUND",
+                    message=f"Proposal '{proposal_id}' has expired. Please re-generate the proposal.",
+                    stored=None,
+                )
+
+            if stored.state == ProposalLifecycleState.CONSUMED or stored.state == ProposalLifecycleState.ABANDONED:
+                return ProposalClaimResult(
+                    success=False,
+                    status="PROPOSAL_ALREADY_CONSUMED",
+                    message=f"Proposal '{proposal_id}' has already been applied and consumed.",
+                    stored=stored,
+                )
+
+            if stored.state == ProposalLifecycleState.APPLYING:
+                return ProposalClaimResult(
+                    success=False,
+                    status="PROPOSAL_ALREADY_IN_PROGRESS",
+                    message=f"Proposal '{proposal_id}' is currently being applied by another operation.",
+                    stored=stored,
+                )
+
+            if stored.state != ProposalLifecycleState.AVAILABLE:
+                return ProposalClaimResult(
+                    success=False,
+                    status="PROPOSAL_ALREADY_CONSUMED",
+                    message=f"Proposal '{proposal_id}' is in non-claimable state '{stored.state}'.",
+                    stored=stored,
+                )
+
+            # Atomically transition AVAILABLE -> APPLYING
+            stored.state = ProposalLifecycleState.APPLYING
+            stored.claim_thread_id = threading.get_ident()
+            logger.info(f"Proposal '{proposal_id}' claimed for application by thread {stored.claim_thread_id}")
+            return ProposalClaimResult(
+                success=True,
+                status="OK",
+                message=f"Proposal '{proposal_id}' successfully claimed.",
+                stored=stored,
+            )
+
+    def complete_application(self, proposal_id: str) -> bool:
+        """Transition proposal from APPLYING to CONSUMED after verified filesystem write."""
+        with self._lock:
+            stored = self._store.get(proposal_id)
+            if stored is None:
+                logger.warning(f"Attempted to complete unknown proposal '{proposal_id}'.")
+                return False
+            if stored.state != ProposalLifecycleState.APPLYING:
+                logger.warning(
+                    f"Cannot complete proposal '{proposal_id}': state is '{stored.state}', expected APPLYING."
+                )
+                return False
+            stored.state = ProposalLifecycleState.CONSUMED
+            stored.consumed_at = time.time()
+            logger.info(f"Proposal '{proposal_id}' marked as CONSUMED.")
+            return True
+
+    def release_application_claim(self, proposal_id: str) -> bool:
+        """Release an application claim back to AVAILABLE when validation fails before any write."""
+        with self._lock:
+            stored = self._store.get(proposal_id)
+            if stored is None:
+                return False
+            if stored.state != ProposalLifecycleState.APPLYING:
+                logger.warning(
+                    f"Cannot release claim for proposal '{proposal_id}': state is '{stored.state}', expected APPLYING."
+                )
+                return False
+            stored.state = ProposalLifecycleState.AVAILABLE
+            stored.claim_thread_id = None
+            logger.info(f"Proposal '{proposal_id}' claim released; returned to AVAILABLE.")
+            return True
+
+    def fail_application(self, proposal_id: str, reason: str = "") -> bool:
+        """Transition proposal to ABANDONED when write fails or crashes (fail closed, no replay)."""
+        with self._lock:
+            stored = self._store.get(proposal_id)
+            if stored is None:
+                return False
+            stored.state = ProposalLifecycleState.ABANDONED
+            stored.failure_reason = reason
+            stored.consumed_at = time.time()
+            logger.warning(f"Proposal '{proposal_id}' failed closed (ABANDONED): {reason}")
+            return True
+
     def mark_consumed(self, proposal_id: str) -> bool:
-        """Mark a proposal as consumed upon successful workspace mutation."""
+        """Mark proposal as consumed directly (for backward compatibility)."""
         with self._lock:
             stored = self._store.get(proposal_id)
             if stored is None or stored.consumed:
                 return False
-            stored.consumed = True
+            stored.state = ProposalLifecycleState.CONSUMED
             stored.consumed_at = time.time()
             return True
 

@@ -504,26 +504,42 @@ class UpgradePlannerService:
         return proposal
 
     def apply_workspace_mutation(self, request: WorkspaceApplyRequest) -> WorkspaceApplyResponse:
-        """Apply an approved upgrade proposal to the workspace after enforcing human approval.
-        
-        Security guarantees:
-        1. Human confirmation signal (approved=true) is strictly enforced.
-        2. Proposal is retrieved from server-controlled storage using request.proposal_id.
-        3. Independent server-side re-validation of diff, syntax, reversibility, and traceability.
-        4. Workspace boundary enforcement: destination must reside inside authorized workspace root.
-        5. Absolute paths, traversal (..), null bytes, and symlinks are strictly rejected.
-        6. Manifest existence and freshness check: rejects stale proposals if disk content changed.
-        7. Atomic temporary-file replacement preserves permissions and prevents partial writes.
-        8. Returns status='APPLIED' ONLY after verified on-disk modification.
+        """Apply an approved upgrade proposal to a workspace file atomically and safely.
+
+        Concurrency & Lifecycle Guarantees:
+        1. Human approval gate: verified before claiming (approved=true).
+        2. Atomic proposal claim: transitions AVAILABLE -> APPLYING under registry lock.
+           Competing concurrent requests receive PROPOSAL_ALREADY_IN_PROGRESS or PROPOSAL_ALREADY_CONSUMED.
+        3. Pre-write validation:
+           - Server-side patch re-validation
+           - Workspace boundary resolution and containment
+           - Destination file existence and regular file check
+           - Manifest freshness check (disk content matches proposal.original_content)
+           - Optional expected_sha256 verification
+           If any pre-write check fails, release_application_claim() returns proposal to AVAILABLE.
+        4. Atomic filesystem replacement:
+           Writes to temporary file in target directory, flushes, fsyncs, preserves permissions,
+           and atomically renames (os.replace).
+           If write fails, fail_application() marks proposal ABANDONED (fail closed, no replay).
+        5. Post-write verification & completion:
+           Reads back written content to ensure byte-level match, then complete_application()
+           transitions APPLYING -> CONSUMED. Returns APPLIED with SHA-256.
+
+        Trust Boundary Note:
+        The current workspace mutation security model assumes a single-tenant or container-isolated
+        execution environment where concurrent local filesystem actors do not have write access
+        to the workspace directory structure. Mitigations against sub-millisecond local symlink-swap
+        race conditions (TOCTOU) between resolution and file replacement rely on workspace boundary
+        containment and filesystem permissions rather than kernel-level openat(O_NOFOLLOW) descriptor trees.
         """
-        # 1. Human confirmation gate check
+        # 1. Human Approval Gate
         if not request.approved:
             logger.warning("Workspace mutation rejected: human approval gate not satisfied.")
             raise HumanApprovalRequiredError(
                 "Human approval gate enforced: Workspace mutation requires explicit confirmation (approved=true)."
             )
 
-        # 2. Retrieve authoritative proposal from server-controlled registry
+        # 2. Extract authoritative proposal ID
         prop_id = request.proposal_id or (request.proposal.proposal_id if request.proposal else None)
         if not prop_id:
             logger.warning("Workspace mutation rejected: missing proposal_id.")
@@ -536,32 +552,35 @@ class UpgradePlannerService:
                 proposal_status=ProposalStatus.REJECTED,
             )
 
-        stored = self.proposal_registry.get(prop_id)
-        if stored is None:
-            logger.warning(f"Workspace mutation rejected: proposal '{prop_id}' not found or expired.")
+        # 3. Atomically claim proposal for application (transitions AVAILABLE -> APPLYING)
+        claim = self.proposal_registry.claim_for_application(prop_id)
+        if not claim.success or claim.stored is None:
+            logger.warning(f"Workspace mutation rejected: cannot claim proposal '{prop_id}': {claim.status}")
             return WorkspaceApplyResponse(
                 success=False,
-                status="PROPOSAL_NOT_FOUND",
-                message=f"Proposal '{prop_id}' was not found or has expired. Please re-generate the proposal.",
+                status=claim.status,
+                message=claim.message,
                 applied_changes_count=0,
                 file_path=request.target_path or "",
                 proposal_status=ProposalStatus.REJECTED,
             )
 
-        if stored.consumed:
-            logger.warning(f"Workspace mutation rejected: proposal '{prop_id}' already consumed.")
-            return WorkspaceApplyResponse(
-                success=False,
-                status="PROPOSAL_ALREADY_CONSUMED",
-                message=f"Proposal '{prop_id}' has already been applied and consumed.",
-                applied_changes_count=0,
-                file_path=request.target_path or "",
-                proposal_status=ProposalStatus.REJECTED,
-            )
-
+        stored = claim.stored
         proposal = stored.proposal
 
-        # 3. Independent server-side patch re-validation (do NOT trust client flags)
+        # Helper to safely release claim when pre-write checks fail
+        def _abort_pre_write(status: str, message: str, file_path: str = "", prop_status: ProposalStatus = ProposalStatus.REJECTED) -> WorkspaceApplyResponse:
+            self.proposal_registry.release_application_claim(prop_id)
+            return WorkspaceApplyResponse(
+                success=False,
+                status=status,
+                message=message,
+                applied_changes_count=0,
+                file_path=file_path,
+                proposal_status=prop_status,
+            )
+
+        # 4. Independent server-side patch re-validation (do NOT trust client flags)
         recomputed_integrity = PatchValidator.validate_patch(
             manifest_type=proposal.manifest_type,
             original_content=proposal.original_content,
@@ -571,52 +590,38 @@ class UpgradePlannerService:
             file_path=proposal.file_path,
         )
         if not recomputed_integrity.is_valid:
-            logger.error(f"Workspace mutation aborted: server-side patch re-validation failed for '{request.proposal_id}'.")
-            return WorkspaceApplyResponse(
-                success=False,
+            logger.error(f"Workspace mutation aborted: server-side patch re-validation failed for '{prop_id}'.")
+            return _abort_pre_write(
                 status="VALIDATION_FAILED",
                 message=f"Cannot mutate workspace: server-side patch re-validation failed ({'; '.join(recomputed_integrity.errors)}).",
-                applied_changes_count=0,
                 file_path=proposal.file_path,
-                proposal_status=ProposalStatus.INVALID_PATCH,
+                prop_status=ProposalStatus.INVALID_PATCH,
             )
 
-        # 4. Resolve effective workspace boundary
+        # 5. Resolve effective workspace boundary
         effective_root = self.workspace_root
         if request.workspace_id:
             ws_id = request.workspace_id.strip()
             if ".." in ws_id or "\0" in ws_id or ws_id.startswith(("/", "\\")) or re.match(r"^[a-zA-Z]:", ws_id):
-                return WorkspaceApplyResponse(
-                    success=False,
+                return _abort_pre_write(
                     status="INVALID_PATH",
                     message=f"Illegal workspace ID format: '{ws_id}'",
-                    applied_changes_count=0,
-                    file_path="",
-                    proposal_status=ProposalStatus.REJECTED,
                 )
             effective_root = (self.workspace_root / ws_id).resolve()
             if not (self.workspace_root in effective_root.parents or self.workspace_root == effective_root):
-                return WorkspaceApplyResponse(
-                    success=False,
+                return _abort_pre_write(
                     status="INVALID_PATH",
                     message=f"Workspace ID '{ws_id}' escapes server workspace root.",
-                    applied_changes_count=0,
-                    file_path="",
-                    proposal_status=ProposalStatus.REJECTED,
                 )
 
         target_rel = request.target_path if request.target_path is not None else proposal.file_path
         if not target_rel or not target_rel.strip():
-            return WorkspaceApplyResponse(
-                success=False,
+            return _abort_pre_write(
                 status="NOT_APPLIED",
                 message="No target workspace path specified for mutation.",
-                applied_changes_count=0,
-                file_path="",
-                proposal_status=ProposalStatus.REJECTED,
             )
 
-        # 5. Path safety & workspace containment validation
+        # 6. Path safety & workspace containment validation
         try:
             resolved_file = validate_workspace_destination(
                 target_rel_path=target_rel,
@@ -625,63 +630,48 @@ class UpgradePlannerService:
             )
         except ValueError as err:
             logger.warning(f"Path safety violation during workspace mutation: {err}")
-            return WorkspaceApplyResponse(
-                success=False,
+            return _abort_pre_write(
                 status="INVALID_PATH",
                 message=f"Path safety violation: {str(err)}",
-                applied_changes_count=0,
                 file_path=target_rel,
-                proposal_status=ProposalStatus.REJECTED,
             )
 
-        # 6. Verify destination file exists and is a regular file
+        # 7. Verify destination file exists and is a regular file
         if not resolved_file.exists():
-            return WorkspaceApplyResponse(
-                success=False,
+            return _abort_pre_write(
                 status="TARGET_NOT_FOUND",
                 message=f"Target manifest file does not exist: '{resolved_file.name}'",
-                applied_changes_count=0,
                 file_path=str(resolved_file),
-                proposal_status=ProposalStatus.REJECTED,
             )
 
         if not resolved_file.is_file() or resolved_file.is_symlink():
-            return WorkspaceApplyResponse(
-                success=False,
+            return _abort_pre_write(
                 status="INVALID_PATH",
                 message=f"Target destination '{resolved_file.name}' is not a regular file or is a symlink.",
-                applied_changes_count=0,
                 file_path=str(resolved_file),
-                proposal_status=ProposalStatus.REJECTED,
             )
 
-        # 7. Concurrency / Freshness verification: disk content must match proposal base
+        # 8. Concurrency / Freshness verification: disk content must match proposal base
         current_disk_content = resolved_file.read_text(encoding="utf-8")
         if current_disk_content != proposal.original_content:
             logger.warning(f"Stale proposal detected for '{resolved_file}': on-disk content has changed.")
-            return WorkspaceApplyResponse(
-                success=False,
+            return _abort_pre_write(
                 status="STALE_BASE_CONTENT",
                 message="Destination file has been modified since the upgrade proposal was generated. Aborting mutation to prevent overwriting concurrent changes.",
-                applied_changes_count=0,
                 file_path=str(resolved_file),
-                proposal_status=ProposalStatus.REJECTED,
             )
 
         # Check expected SHA-256 if supplied by caller
         if request.expected_sha256:
             disk_sha = hashlib.sha256(current_disk_content.encode("utf-8")).hexdigest()
             if disk_sha.lower() != request.expected_sha256.lower():
-                return WorkspaceApplyResponse(
-                    success=False,
+                return _abort_pre_write(
                     status="STALE_BASE_CONTENT",
                     message="Destination file checksum does not match expected SHA-256.",
-                    applied_changes_count=0,
                     file_path=str(resolved_file),
-                    proposal_status=ProposalStatus.REJECTED,
                 )
 
-        # 8. Safe atomic file replacement
+        # 9. Safe atomic file replacement (Point of no return: fail closed on error)
         temp_file = resolved_file.with_name(f".tmp_{resolved_file.name}_{uuid.uuid4().hex[:8]}")
         try:
             with open(temp_file, "w", encoding="utf-8") as f:
@@ -700,6 +690,8 @@ class UpgradePlannerService:
             logger.info(f"Workspace file '{resolved_file}' mutated successfully via atomic replacement.")
         except Exception as err:
             logger.exception(f"Error during atomic workspace write: {err}")
+            # Fail closed: mark proposal ABANDONED so it cannot be re-applied or retried
+            self.proposal_registry.fail_application(prop_id, reason=str(err))
             return WorkspaceApplyResponse(
                 success=False,
                 status="MUTATION_ERROR",
@@ -715,8 +707,22 @@ class UpgradePlannerService:
                 except Exception:
                     pass
 
-        # 9. Mark proposal as consumed and return APPLIED
-        self.proposal_registry.mark_consumed(prop_id)
+        # 10. Post-write verification: ensure byte-for-byte on-disk match
+        post_write_content = resolved_file.read_text(encoding="utf-8")
+        if post_write_content != proposal.proposed_content:
+            logger.critical(f"Post-write verification failed for '{resolved_file}': content mismatch!")
+            self.proposal_registry.fail_application(prop_id, reason="Post-write content mismatch")
+            return WorkspaceApplyResponse(
+                success=False,
+                status="MUTATION_ERROR",
+                message="Post-write verification failed: on-disk content does not match proposed content.",
+                applied_changes_count=0,
+                file_path=str(resolved_file),
+                proposal_status=ProposalStatus.REJECTED,
+            )
+
+        # 11. Complete proposal application (transitions APPLYING -> CONSUMED)
+        self.proposal_registry.complete_application(prop_id)
         content_bytes = proposal.proposed_content.encode("utf-8")
         sha256_hash = hashlib.sha256(content_bytes).hexdigest()
 

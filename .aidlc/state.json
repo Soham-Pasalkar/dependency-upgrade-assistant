@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-10T17:49:43Z",
+  "updated": "2026-11-10T17:56:21Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -782,7 +782,14 @@
       "text": "Enabling strict approvals mode for Tier 3 project governance as requested by human user",
       "status": "open",
       "at": "2026-11-09T13:32:28Z"
+    },
+    {
+      "id": "N2",
+      "kind": "decision",
+      "text": "M4 post-acceptance security hardening: atomic proposal consumption and concurrency-safe lifecycle states (AVAILABLE, APPLYING, CONSUMED).",
+      "status": "open",
+      "at": "2026-11-10T17:56:21Z"
     }
   ],
-  "head": "aa3ffba234e2e0aaeff51f51afba4afe51d77fa2197e7bc2b8971ccef19fecf4"
+  "head": "36ea82bad44374127e3475699763fface57ef9a07e7aa06891bf2b68fe287725"
 }

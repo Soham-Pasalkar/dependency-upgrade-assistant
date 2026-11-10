@@ -87,6 +87,13 @@ def validate_workspace_destination(
     - Target must reside strictly within workspace_root.
     - Target filename must match allowed manifest filenames.
     - Symlinks escaping workspace_root or pointing to external targets are strictly rejected.
+
+    Trust Boundary Note:
+    The current workspace mutation security model assumes a single-tenant or container-isolated
+    execution environment where concurrent local filesystem actors do not have write access
+    to the workspace directory structure. Mitigations against sub-millisecond local symlink-swap
+    race conditions (TOCTOU) between resolution and file replacement rely on workspace boundary
+    containment and filesystem permissions rather than kernel-level openat(O_NOFOLLOW) descriptor trees.
     
     Returns:
         Resolved absolute Path object guaranteed to reside within workspace_root.
