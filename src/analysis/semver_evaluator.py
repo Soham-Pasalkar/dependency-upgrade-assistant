@@ -2,6 +2,8 @@
 
 Provides deterministic evaluation of Node.js/npm version constraints without
 spawning external Node.js subprocesses.
+Fails closed on unsupported protocols (workspace:, file:, github:, npm:, etc.)
+and malformed ranges.
 """
 from __future__ import annotations
 
@@ -18,6 +20,21 @@ SEMVER_REGEX = re.compile(
     r"(?:-(?P<prerelease>[0-9A-Za-z.-]+))?"
     r"(?:\+(?P<build>[0-9A-Za-z.-]+))?$"
 )
+
+# Known unsupported npm specifier prefixes / schemes
+UNSUPPORTED_PREFIXES = {
+    "workspace:": "workspace protocol dependency",
+    "file:": "local filesystem dependency",
+    "link:": "local symlink dependency",
+    "git:": "git repository dependency",
+    "git+": "git repository dependency",
+    "http:": "direct URL dependency",
+    "https:": "direct URL dependency",
+    "github:": "GitHub shorthand dependency",
+    "gitlab:": "GitLab shorthand dependency",
+    "bitbucket:": "Bitbucket shorthand dependency",
+    "npm:": "npm package alias dependency",
+}
 
 
 @total_ordering
@@ -135,38 +152,91 @@ class Comparator:
         return f"Comparator({self.op}{self.ver})"
 
 
-def _parse_simple_range(subrange: str) -> List[Comparator]:
-    """Parse a simple space-delimited comparator set, or desugar caret/tilde."""
+def is_supported_semver_range(specifier: str) -> Tuple[bool, Optional[str]]:
+    """Determine whether a specifier is a supported SemVer range.
+    
+    Returns:
+        (is_supported, reason_if_unsupported)
+    """
+    if not isinstance(specifier, str):
+        return False, "non-string specifier"
+
+    cleaned = specifier.strip()
+    if not cleaned or cleaned in ("*", "x", "X", "latest"):
+        return True, None
+
+    # Check known unsupported prefixes / protocols
+    lower = cleaned.lower()
+    for prefix, desc in UNSUPPORTED_PREFIXES.items():
+        if lower.startswith(prefix):
+            return False, desc
+
+    # Check git URL patterns, tarballs, or paths
+    if ".git" in lower or ".tar.gz" in lower or ".tgz" in lower or "/" in cleaned or "\\" in cleaned:
+        return False, "URL, tarball, or local path specification"
+
+    # Split by OR condition (||)
+    clauses = [c.strip() for c in cleaned.split("||")]
+    if not clauses or any(not c for c in clauses):
+        return False, "malformed range with empty disjunction clause"
+
+    for clause in clauses:
+        parsed = _parse_simple_range(clause)
+        if parsed is None:
+            return False, f"unsupported or unparseable range clause '{clause}'"
+
+    return True, None
+
+
+def _parse_simple_range(subrange: str) -> Optional[List[Comparator]]:
+    """Parse a simple space-delimited comparator set, or desugar caret/tilde.
+    
+    Returns:
+        List of Comparators, empty list for valid wildcards, or None if invalid.
+    """
     subrange = subrange.strip()
-    if not subrange or subrange in ("*", "x", "X"):
+    if not subrange or subrange in ("*", "x", "X", "latest"):
         return []
 
     # Handle hyphen range: 1.2.3 - 2.3.4
     if " - " in subrange:
         parts = subrange.split(" - ", 1)
-        v1 = SemVer.parse(parts[0])
-        v2 = SemVer.parse(parts[1])
-        comps: List[Comparator] = []
-        if v1:
-            comps.append(Comparator(">=", v1))
-        if v2:
-            comps.append(Comparator("<=", v2))
-        return comps
+        v1 = SemVer.parse(parts[0].strip())
+        v2 = SemVer.parse(parts[1].strip())
+        if not v1 or not v2:
+            return None
+        return [Comparator(">=", v1), Comparator("<=", v2)]
 
     tokens = subrange.split()
+    if not tokens:
+        return []
+
     comparators: List[Comparator] = []
 
     for token in tokens:
         token = token.strip()
-        if not token or token in ("*", "x", "X"):
+        if not token or token in ("*", "x", "X", "latest"):
             continue
 
         # Caret range: ^1.2.3
         if token.startswith("^"):
             raw_ver = token[1:].strip()
-            v = SemVer.parse(raw_ver)
+            # Handle ^1.x or ^1.2.*
+            if ".x" in raw_ver.lower() or ".*" in raw_ver:
+                base = re.sub(r"(\.[xX*])+", "", raw_ver)
+                parts = [int(p) for p in base.split(".") if p.isdigit()]
+                if len(parts) == 1:
+                    v = SemVer(parts[0], 0, 0)
+                elif len(parts) == 2:
+                    v = SemVer(parts[0], parts[1], 0)
+                else:
+                    return None
+            else:
+                v = SemVer.parse(raw_ver)
+
             if not v:
-                continue
+                return None
+
             comparators.append(Comparator(">=", v))
             if v.major > 0:
                 comparators.append(Comparator("<", SemVer(v.major + 1, 0, 0)))
@@ -179,11 +249,11 @@ def _parse_simple_range(subrange: str) -> List[Comparator]:
         # Tilde range: ~1.2.3, ~1.2, ~1
         if token.startswith("~"):
             raw_ver = token[1:].strip()
-            # Check precision
             parts = raw_ver.split(".")
             v = SemVer.parse(raw_ver)
             if not v:
-                continue
+                return None
+
             comparators.append(Comparator(">=", v))
             if len(parts) <= 1:
                 comparators.append(Comparator("<", SemVer(v.major + 1, 0, 0)))
@@ -191,7 +261,7 @@ def _parse_simple_range(subrange: str) -> List[Comparator]:
                 comparators.append(Comparator("<", SemVer(v.major, v.minor + 1, 0)))
             continue
 
-        # Relational operator
+        # Relational operator or exact version
         m = re.match(r"^(>=|<=|>|<|=)?\s*(v?[0-9A-Za-z.-]+)$", token)
         if m:
             op = m.group(1) or "="
@@ -206,41 +276,65 @@ def _parse_simple_range(subrange: str) -> List[Comparator]:
                 elif len(parts) == 2:
                     comparators.append(Comparator(">=", SemVer(parts[0], parts[1], 0)))
                     comparators.append(Comparator("<", SemVer(parts[0], parts[1] + 1, 0)))
+                else:
+                    return None
                 continue
 
             v = SemVer.parse(raw_ver)
-            if v:
-                comparators.append(Comparator(op, v))
+            if not v:
+                return None
+            comparators.append(Comparator(op, v))
             continue
+
+        # If token could not be matched by any comparator pattern, fail closed!
+        return None
 
     return comparators
 
 
 def semver_satisfies(version: str | SemVer, specifier: str) -> bool:
-    """Check whether a given SemVer version satisfies an npm range specifier."""
+    """Check whether a given SemVer version satisfies an npm range specifier.
+    
+    Fails closed: returns False if specifier is unsupported or invalid.
+    """
     v = version if isinstance(version, SemVer) else SemVer.parse(version)
     if not v:
         return False
 
+    is_supported, _ = is_supported_semver_range(specifier)
+    if not is_supported:
+        return False
+
     spec = specifier.strip()
     if not spec or spec in ("*", "x", "X", "latest"):
-        # Matches all non-prerelease versions (or prereleases if v has prerelease matching)
+        # Valid wildcard matches all non-prerelease versions
         return not v.is_prerelease()
 
     # Split by OR condition (||)
     or_clauses = [clause.strip() for clause in spec.split("||") if clause.strip()]
     if not or_clauses:
-        return True
+        return False
 
     for clause in or_clauses:
         comps = _parse_simple_range(clause)
-        if not comps:
-            return True
+        if comps is None:
+            # Unparseable clause fails closed
+            continue
+
+        if len(comps) == 0:
+            # Wildcard clause matches any non-prerelease
+            if not v.is_prerelease():
+                return True
+            continue
+
         # Target version must satisfy all comparators in this AND clause
         if all(comp.satisfies(v) for comp in comps):
-            # By SemVer rules, prerelease is not satisfied unless the comparator explicitly references prerelease
+            # By SemVer rules, prerelease is not satisfied unless a comparator explicitly specifies a prerelease
             if v.is_prerelease():
-                has_prerelease_in_clause = any(comp.ver.is_prerelease() for comp in comps)
+                has_prerelease_in_clause = any(
+                    comp.ver.is_prerelease() and (comp.ver.major, comp.ver.minor, comp.ver.patch) == (v.major, v.minor, v.patch)
+                    for comp in comps
+                )
                 if has_prerelease_in_clause:
                     return True
             else:
@@ -259,7 +353,14 @@ def extract_pinned_version(specifier: str) -> Optional[str]:
 
 
 def find_latest_compatible(available_versions: List[str], specifier: str) -> Optional[str]:
-    """Find the highest SemVer among available_versions that satisfies specifier."""
+    """Find the highest SemVer among available_versions that satisfies specifier.
+    
+    Fails closed: returns None if specifier is unsupported.
+    """
+    is_supported, _ = is_supported_semver_range(specifier)
+    if not is_supported:
+        return None
+
     candidates: List[SemVer] = []
     for ver_str in available_versions:
         v = SemVer.parse(ver_str)

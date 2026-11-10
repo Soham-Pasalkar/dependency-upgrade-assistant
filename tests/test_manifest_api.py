@@ -1,4 +1,4 @@
-"""Integration tests for FastAPI manifest ingestion endpoints."""
+"""Integration tests for FastAPI manifest ingestion endpoints and size controls."""
 from __future__ import annotations
 
 import io
@@ -109,6 +109,30 @@ def test_analyze_malformed_json_fails_gracefully(client):
     data = resp.json()
     assert "Invalid JSON syntax" in data["detail"]
     assert "diagnostics" in data
+
+
+def test_analyze_raw_content_exact_boundary_1mb_accepted(client):
+    # Construct exact 1 MB content: prefix + comment padding to reach exactly 1,048,576 bytes
+    prefix = "requests==2.28.0\n# "
+    padding_needed = (1024 * 1024) - len(prefix.encode("utf-8"))
+    content = prefix + ("x" * padding_needed)
+    assert len(content.encode("utf-8")) == 1024 * 1024
+
+    payload = {"manifest_type": "requirements.txt", "content": content}
+    resp = client.post("/api/manifest/analyze", json=payload)
+    assert resp.status_code == 200
+    assert resp.json()["total_dependencies"] == 1
+
+
+def test_analyze_raw_content_oversized_rejected_with_413(client):
+    # Exceed 1 MB by 1 byte
+    oversized = "requests==2.28.0\n# " + ("x" * (1024 * 1024))
+    assert len(oversized.encode("utf-8")) > 1024 * 1024
+
+    payload = {"manifest_type": "requirements.txt", "content": oversized}
+    resp = client.post("/api/manifest/analyze", json=payload)
+    assert resp.status_code == 413
+    assert "exceeds maximum allowed size" in resp.json()["detail"]
 
 
 def test_upload_requirements_file_multipart(client):

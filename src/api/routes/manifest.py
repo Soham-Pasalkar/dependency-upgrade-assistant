@@ -1,6 +1,7 @@
 """FastAPI endpoints for manifest ingestion and dependency analysis."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/manifest", tags=["manifest"])
 manifest_service = ManifestService()
 
-MAX_UPLOAD_SIZE_BYTES = 1024 * 1024  # 1 MB upload cap
+MAX_MANIFEST_SIZE_BYTES = 1024 * 1024  # 1 MB manifest cap (applies to raw JSON & multipart)
 
 
 def _detect_manifest_type_from_filename(filename: str) -> Optional[str]:
@@ -40,6 +41,13 @@ def _detect_manifest_type_from_filename(filename: str) -> Optional[str]:
 async def analyze_raw_manifest(
     request: ManifestAnalysisRequest,
 ) -> ManifestAnalysisResponse:
+    content_bytes = request.content.encode("utf-8")
+    if len(content_bytes) > MAX_MANIFEST_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Manifest content exceeds maximum allowed size of {MAX_MANIFEST_SIZE_BYTES // 1024} KB.",
+        )
+
     if not request.content.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -47,7 +55,8 @@ async def analyze_raw_manifest(
         )
 
     try:
-        response = manifest_service.analyze_manifest(
+        response = await asyncio.to_thread(
+            manifest_service.analyze_manifest,
             manifest_type=request.manifest_type,
             content=request.content,
         )
@@ -88,11 +97,11 @@ async def upload_manifest_file(
         )
 
     # Read content with size guard
-    content_bytes = await file.read(MAX_UPLOAD_SIZE_BYTES + 1024)
-    if len(content_bytes) > MAX_UPLOAD_SIZE_BYTES:
+    content_bytes = await file.read(MAX_MANIFEST_SIZE_BYTES + 1024)
+    if len(content_bytes) > MAX_MANIFEST_SIZE_BYTES:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File exceeds maximum allowed size of {MAX_UPLOAD_SIZE_BYTES // 1024} KB.",
+            detail=f"File exceeds maximum allowed size of {MAX_MANIFEST_SIZE_BYTES // 1024} KB.",
         )
 
     try:
@@ -110,7 +119,8 @@ async def upload_manifest_file(
         )
 
     try:
-        response = manifest_service.analyze_manifest(
+        response = await asyncio.to_thread(
+            manifest_service.analyze_manifest,
             manifest_type=detected_type,
             content=content_text,
         )

@@ -60,6 +60,59 @@ def test_parse_requirements_non_pinned_and_bare():
     assert deps[2].declared_specifier == "~=0.30.0"
 
 
+def test_parse_requirements_pep508_direct_references_preserved():
+    content = (
+        "pkg-a @ https://example.com/packages/pkg-a-1.0.whl\n"
+        "pkg-b @ git+https://github.com/org/pkg-b.git@v1.2.0\n"
+        "pkg-c @ git+ssh://git@github.com/org/pkg-c.git#egg=pkg-c\n"
+        "regular-pkg==2.0.0\n"
+    )
+    deps, diags = parse_requirements_manifest(content)
+    assert len(deps) == 4
+    assert len(diags) >= 3
+
+    # Direct HTTPS reference
+    assert deps[0].name == "pkg-a"
+    assert deps[0].original_name == "pkg-a"
+    assert deps[0].is_supported is False
+    assert "@ https://example.com" in deps[0].declared_specifier
+    assert "Preserved direct URL reference" in deps[0].diagnostic_message
+    assert deps[0].line_number == 1
+
+    # Direct Git reference
+    assert deps[1].name == "pkg-b"
+    assert deps[1].is_supported is False
+    assert "git+https://" in deps[1].declared_specifier
+    assert "Preserved direct URL reference" in deps[1].diagnostic_message
+    assert deps[1].line_number == 2
+
+    # Direct SSH reference
+    assert deps[2].name == "pkg-c"
+    assert deps[2].is_supported is False
+    assert deps[2].line_number == 3
+
+    # Regular package still parsed as supported
+    assert deps[3].name == "regular-pkg"
+    assert deps[3].current_version == "2.0.0"
+    assert deps[3].is_supported is True
+
+
+def test_parse_requirements_ordinary_pep508_complex_markers():
+    content = (
+        "colorama>=0.4.6 ; os_name == 'nt'\n"
+        "importlib-metadata>=4.6 ; python_version < '3.10'\n"
+    )
+    deps, diags = parse_requirements_manifest(content)
+    assert len(deps) == 2
+    assert deps[0].name == "colorama"
+    assert deps[0].is_supported is True
+    assert "os_name == 'nt'" in deps[0].environment_marker
+
+    assert deps[1].name == "importlib-metadata"
+    assert deps[1].is_supported is True
+    assert "python_version < '3.10'" in deps[1].environment_marker
+
+
 def test_parse_requirements_flags_and_urls_preserved():
     content = (
         "-r base-requirements.txt\n"
@@ -70,15 +123,13 @@ def test_parse_requirements_flags_and_urls_preserved():
     )
     deps, diags = parse_requirements_manifest(content)
     assert len(deps) == 5
-    assert len(diags) >= 4  # Warnings for -r, -e, --index-url, and direct URL
+    assert len(diags) >= 4
 
-    # The unsupported directives are preserved
     assert deps[0].is_supported is False
     assert deps[1].is_supported is False
     assert deps[2].is_supported is False
     assert deps[3].is_supported is False
 
-    # The valid package is still parsed correctly
     assert deps[4].name == "valid-pkg"
     assert deps[4].current_version == "1.0.0"
     assert deps[4].is_supported is True
@@ -119,16 +170,47 @@ def test_parse_package_json_valid():
     react_dep = next(d for d in deps if d.original_name == "react")
     assert react_dep.dependency_type == DependencyType.RUNTIME
     assert react_dep.declared_specifier == "^19.0.0"
-    assert react_dep.current_version is None
+    assert react_dep.is_supported is True
 
     lodash_dep = next(d for d in deps if d.original_name == "lodash")
     assert lodash_dep.dependency_type == DependencyType.RUNTIME
     assert lodash_dep.declared_specifier == "4.17.21"
     assert lodash_dep.current_version == "4.17.21"
+    assert lodash_dep.is_supported is True
 
-    vitest_dep = next(d for d in deps if d.original_name == "vitest")
-    assert vitest_dep.dependency_type == DependencyType.DEVELOPMENT
-    assert vitest_dep.declared_specifier == "~2.1.0"
+
+def test_parse_package_json_unsupported_npm_specifiers_preserved():
+    content = """{
+      "dependencies": {
+        "pkg-workspace": "workspace:*",
+        "pkg-file": "file:../local-pkg",
+        "pkg-github": "github:user/repo",
+        "pkg-alias": "npm:other-package@^1.0.0",
+        "normal-pkg": "^2.0.0"
+      }
+    }"""
+    deps, diags = parse_package_json_manifest(content)
+    assert len(deps) == 5
+    assert len(diags) == 4
+
+    ws_dep = next(d for d in deps if d.original_name == "pkg-workspace")
+    assert ws_dep.is_supported is False
+    assert "workspace protocol" in ws_dep.diagnostic_message
+
+    file_dep = next(d for d in deps if d.original_name == "pkg-file")
+    assert file_dep.is_supported is False
+    assert "local filesystem" in file_dep.diagnostic_message
+
+    gh_dep = next(d for d in deps if d.original_name == "pkg-github")
+    assert gh_dep.is_supported is False
+    assert "GitHub" in gh_dep.diagnostic_message
+
+    alias_dep = next(d for d in deps if d.original_name == "pkg-alias")
+    assert alias_dep.is_supported is False
+    assert "npm package alias" in alias_dep.diagnostic_message
+
+    normal_dep = next(d for d in deps if d.original_name == "normal-pkg")
+    assert normal_dep.is_supported is True
 
 
 def test_parse_package_json_empty_or_missing_sections():

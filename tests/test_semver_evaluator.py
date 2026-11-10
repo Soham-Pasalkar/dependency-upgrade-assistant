@@ -1,4 +1,4 @@
-"""Unit tests for the pure-Python SemVer evaluator."""
+"""Unit tests for the pure-Python SemVer evaluator and fail-closed range validation."""
 from __future__ import annotations
 
 import pytest
@@ -8,6 +8,7 @@ from src.analysis.semver_evaluator import (
     extract_pinned_version,
     find_latest_compatible,
     find_latest_version,
+    is_supported_semver_range,
     semver_satisfies,
 )
 
@@ -104,3 +105,57 @@ def test_find_latest_compatible_and_latest():
 
     assert find_latest_version(versions) == "2.1.0"
     assert find_latest_version(versions, allow_prerelease=True) == "3.0.0-beta.1"
+
+
+# ---------------------------------------------------------------------------
+# Fail-Closed Tests for Unsupported and Malformed npm Specifications
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "unsupported_spec,expected_keyword",
+    [
+        ("workspace:*", "workspace"),
+        ("workspace:^1.2.0", "workspace"),
+        ("file:../local-package", "local filesystem"),
+        ("file:./tarballs/pkg.tgz", "local filesystem"),
+        ("link:../other-dir", "symlink"),
+        ("github:user/repository", "GitHub"),
+        ("gitlab:team/repo", "GitLab"),
+        ("bitbucket:org/repo", "Bitbucket"),
+        ("git+https://github.com/foo/bar.git", "git"),
+        ("https://registry.example.com/custom.tgz", "URL"),
+        ("npm:other-package@^1.0.0", "npm package alias"),
+        ("not-a-version", "unsupported or unparseable"),
+        (">>>1.0.0", "unsupported or unparseable"),
+    ],
+)
+def test_unsupported_npm_specifiers_fail_closed(unsupported_spec, expected_keyword):
+    # 1. is_supported_semver_range must return False with informative reason
+    is_supported, reason = is_supported_semver_range(unsupported_spec)
+    assert not is_supported
+    assert expected_keyword.lower() in (reason or "").lower()
+
+    # 2. semver_satisfies must return False (never True!)
+    assert not semver_satisfies("1.0.0", unsupported_spec)
+    assert not semver_satisfies("2.0.0", unsupported_spec)
+
+    # 3. find_latest_compatible must return None
+    assert find_latest_compatible(["1.0.0", "2.0.0"], unsupported_spec) is None
+
+
+def test_prerelease_isolation_rules():
+    # Normal range ^1.0.0 must NOT match 1.1.0-alpha.1
+    assert not semver_satisfies("1.1.0-alpha.1", "^1.0.0")
+    # Explicit prerelease comparator with matching major.minor.patch matches
+    assert semver_satisfies("1.1.0-alpha.1", ">=1.1.0-alpha.0 <1.1.0")
+    assert not semver_satisfies("1.2.0-beta.1", ">=1.1.0-alpha.0 <1.1.0")
+
+
+def test_valid_wildcard_specifiers_supported():
+    for wild in ["*", "x", "X", "latest", ""]:
+        is_supported, reason = is_supported_semver_range(wild)
+        assert is_supported
+        assert reason is None
+        assert semver_satisfies("1.5.0", wild)
+        # Prereleases excluded from wildcards
+        assert not semver_satisfies("1.5.0-beta.1", wild)

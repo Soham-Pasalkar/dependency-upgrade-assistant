@@ -87,3 +87,4 @@ class ManifestAnalysisResponse(BaseModel):
     preserved_count: int = Field(default=0)
     dependencies: List[AnalyzedDependency] = Field(default_factory=list)
     diagnostics: List[str] = Field(default_factory=list, description="Global or per-line diagnostic notices")
+

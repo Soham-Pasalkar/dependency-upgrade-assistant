@@ -15,7 +15,10 @@ from typing import List, Optional, Tuple
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import SpecifierSet
 
-from src.analysis.semver_evaluator import extract_pinned_version
+from src.analysis.semver_evaluator import (
+    extract_pinned_version,
+    is_supported_semver_range,
+)
 from src.core.parser import (
     BARE_PACKAGE_PATTERN,
     EXACT_PIN_PATTERN,
@@ -193,6 +196,29 @@ def parse_requirements_manifest(content: str) -> Tuple[List[ParsedDependency], L
             clean_part = re.split(r"[ \t]+#", stripped, maxsplit=1)[0].strip()
             req = Requirement(clean_part)
             norm_name = normalize_package_name(req.name)
+
+            # Check if this is a PEP 508 direct reference (e.g. pkg @ https://... or pkg @ git+https://...)
+            if req.url:
+                diag = f"Line {line_idx}: Preserved direct URL reference '{req.url}' for '{req.name}' (not evaluated for registry upgrades)."
+                diagnostics.append(diag)
+                dependencies.append(
+                    ParsedDependency(
+                        name=norm_name,
+                        original_name=req.name,
+                        ecosystem=Ecosystem.PYTHON,
+                        dependency_type=DependencyType.RUNTIME,
+                        declared_specifier=f"@ {req.url}",
+                        current_version=None,
+                        line_number=line_idx,
+                        raw_line=line_text,
+                        is_supported=False,
+                        diagnostic_message=diag,
+                        extras=f"[{','.join(req.extras)}]" if req.extras else None,
+                        environment_marker=str(req.marker) if req.marker else None,
+                    )
+                )
+                continue
+
             spec_str = str(req.specifier) if req.specifier else "*"
             curr_ver = None
             # Check if specifier is an exact pin ==x.y.z
@@ -270,6 +296,24 @@ def parse_package_json_manifest(content: str) -> Tuple[List[ParsedDependency], L
                 diagnostics.append(diag)
                 continue
             cleaned_spec = spec.strip()
+            is_valid, reason = is_supported_semver_range(cleaned_spec)
+            if not is_valid:
+                diag = f"Dependency '{pkg_name}' has unsupported specifier '{cleaned_spec}' ({reason}). Preserved without modification."
+                diagnostics.append(diag)
+                dependencies.append(
+                    ParsedDependency(
+                        name=pkg_name.lower(),
+                        original_name=pkg_name,
+                        ecosystem=Ecosystem.NPM,
+                        dependency_type=DependencyType.RUNTIME,
+                        declared_specifier=cleaned_spec,
+                        current_version=None,
+                        is_supported=False,
+                        diagnostic_message=diag,
+                    )
+                )
+                continue
+
             pinned_ver = extract_pinned_version(cleaned_spec)
             dependencies.append(
                 ParsedDependency(
@@ -294,6 +338,24 @@ def parse_package_json_manifest(content: str) -> Tuple[List[ParsedDependency], L
                 diagnostics.append(diag)
                 continue
             cleaned_spec = spec.strip()
+            is_valid, reason = is_supported_semver_range(cleaned_spec)
+            if not is_valid:
+                diag = f"DevDependency '{pkg_name}' has unsupported specifier '{cleaned_spec}' ({reason}). Preserved without modification."
+                diagnostics.append(diag)
+                dependencies.append(
+                    ParsedDependency(
+                        name=pkg_name.lower(),
+                        original_name=pkg_name,
+                        ecosystem=Ecosystem.NPM,
+                        dependency_type=DependencyType.DEVELOPMENT,
+                        declared_specifier=cleaned_spec,
+                        current_version=None,
+                        is_supported=False,
+                        diagnostic_message=diag,
+                    )
+                )
+                continue
+
             pinned_ver = extract_pinned_version(cleaned_spec)
             dependencies.append(
                 ParsedDependency(
@@ -330,3 +392,4 @@ def parse_manifest(manifest_type: str, content: str) -> Tuple[List[ParsedDepende
     raise ManifestParseError(
         f"Unsupported manifest type '{manifest_type}'. Supported types are 'requirements.txt' and 'package.json'."
     )
+

@@ -1,8 +1,9 @@
-"""Manifest analysis service orchestrating parsing, registry queries, and upgrade classification."""
+"""Manifest analysis service orchestrating parsing, registry queries, and upgrade classification with bounded concurrency."""
 from __future__ import annotations
 
+import concurrent.futures
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version, parse as parse_version
@@ -13,6 +14,7 @@ from src.analysis.semver_evaluator import (
     extract_pinned_version,
     find_latest_compatible,
     find_latest_version,
+    is_supported_semver_range,
     semver_satisfies,
 )
 from src.models.manifest import (
@@ -32,33 +34,46 @@ from src.services.registry_client import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_MAX_WORKERS = 8
+
 
 class ManifestService:
-    """Coordinates manifest analysis for Python and Node.js ecosystems."""
+    """Coordinates manifest analysis for Python and Node.js ecosystems with bounded concurrency."""
 
     def __init__(
         self,
         pypi_client: Optional[PyPIRegistryClient] = None,
         npm_client: Optional[NpmRegistryClient] = None,
+        max_workers: int = DEFAULT_MAX_WORKERS,
     ) -> None:
         self.pypi_client = pypi_client or PyPIRegistryClient()
         self.npm_client = npm_client or NpmRegistryClient()
+        self.max_workers = max(1, max_workers)
 
     def analyze_manifest(
         self,
         manifest_type: str,
         content: str,
     ) -> ManifestAnalysisResponse:
-        """Parse raw manifest content, query registries, and classify dependencies."""
+        """Parse raw manifest content, query registries concurrently within bounds, and classify dependencies."""
         parsed_deps, diagnostics, ecosystem = parse_manifest(manifest_type, content)
 
-        analyzed_deps: List[AnalyzedDependency] = []
+        if not parsed_deps:
+            return ManifestAnalysisResponse(
+                manifest_type=manifest_type,
+                ecosystem=ecosystem,
+                total_dependencies=0,
+                up_to_date_count=0,
+                upgrade_available_count=0,
+                preserved_count=0,
+                dependencies=[],
+                diagnostics=diagnostics,
+            )
 
-        for dep in parsed_deps:
-            if not dep.is_supported:
-                # Unsupported directive, direct URL, or syntax error
-                analyzed_deps.append(
-                    AnalyzedDependency(
+        def _evaluate_single(idx: int, dep: ParsedDependency) -> Tuple[int, AnalyzedDependency]:
+            try:
+                if not dep.is_supported:
+                    return idx, AnalyzedDependency(
                         name=dep.name,
                         original_name=dep.original_name,
                         ecosystem=dep.ecosystem,
@@ -74,28 +89,52 @@ class ManifestService:
                         raw_line=dep.raw_line,
                         diagnostic_message=dep.diagnostic_message,
                     )
+
+                meta = self._query_registry(dep)
+                analyzed = self._classify_dependency(dep, meta)
+                return idx, analyzed
+            except Exception as err:
+                logger.error(f"Error evaluating dependency '{dep.name}': {err}", exc_info=True)
+                return idx, AnalyzedDependency(
+                    name=dep.name,
+                    original_name=dep.original_name,
+                    ecosystem=dep.ecosystem,
+                    dependency_type=dep.dependency_type,
+                    declared_specifier=dep.declared_specifier,
+                    current_version=dep.current_version,
+                    latest_version=None,
+                    latest_compatible_version=None,
+                    status=DependencyStatus.PRESERVED,
+                    status_reason=f"Evaluation error: {err}",
+                    registry_status=RegistryLookupStatus.NETWORK_ERROR,
+                    line_number=dep.line_number,
+                    raw_line=dep.raw_line,
+                    diagnostic_message=str(err),
                 )
-                continue
 
-            # Query relevant package registry
-            meta = self._query_registry(dep)
+        workers = min(self.max_workers, len(parsed_deps))
+        analyzed_deps: List[Optional[AnalyzedDependency]] = [None] * len(parsed_deps)
 
-            # Classify upgrade status
-            analyzed = self._classify_dependency(dep, meta)
-            analyzed_deps.append(analyzed)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(_evaluate_single, i, dep) for i, dep in enumerate(parsed_deps)]
+            for future in concurrent.futures.as_completed(futures):
+                idx, analyzed = future.result()
+                analyzed_deps[idx] = analyzed
 
-        up_to_date = sum(1 for d in analyzed_deps if d.status == DependencyStatus.UP_TO_DATE)
-        upgrade_avail = sum(1 for d in analyzed_deps if d.status == DependencyStatus.UPGRADE_AVAILABLE)
-        preserved = sum(1 for d in analyzed_deps if d.status == DependencyStatus.PRESERVED)
+        final_deps: List[AnalyzedDependency] = [d for d in analyzed_deps if d is not None]
+
+        up_to_date = sum(1 for d in final_deps if d.status == DependencyStatus.UP_TO_DATE)
+        upgrade_avail = sum(1 for d in final_deps if d.status == DependencyStatus.UPGRADE_AVAILABLE)
+        preserved = sum(1 for d in final_deps if d.status == DependencyStatus.PRESERVED)
 
         return ManifestAnalysisResponse(
             manifest_type=manifest_type,
             ecosystem=ecosystem,
-            total_dependencies=len(analyzed_deps),
+            total_dependencies=len(final_deps),
             up_to_date_count=up_to_date,
             upgrade_available_count=upgrade_avail,
             preserved_count=preserved,
-            dependencies=analyzed_deps,
+            dependencies=final_deps,
             diagnostics=diagnostics,
         )
 
