@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from src.api.config import settings
 from src.api.database import init_db
 from src.api.routes.health import router as health_router
+from src.api.routes.manifest import router as manifest_router
 
 logger = logging.getLogger("dua.api")
 
@@ -67,8 +68,10 @@ def create_app() -> FastAPI:
     # Register Routers
     # Register under /api for frontend integration
     app.include_router(health_router, prefix="/api")
+    app.include_router(manifest_router, prefix="/api")
     # Also register under /api/v1 for REST API compliance with architecture spec
     app.include_router(health_router, prefix="/api/v1")
+    app.include_router(manifest_router, prefix="/api/v1")
     # Convenience root health check
     app.include_router(health_router)
 

@@ -1,5 +1,6 @@
 import React from 'react';
 import { BackendStatus } from './components/BackendStatus';
+import { ManifestAnalyzer } from './components/ManifestAnalyzer';
 import './App.css';
 
 export const App: React.FC = () => {
@@ -16,10 +17,20 @@ export const App: React.FC = () => {
       </header>
 
       <main className="app-main">
+        {/* M2 Manifest Ingestion and Dependency Analysis Section */}
+        <section className="dashboard-section">
+          <div className="section-header">
+            <span className="section-label">Milestone M2 Manifest Analysis</span>
+            <span className="status-pill">Active Vertical Slice</span>
+          </div>
+          <ManifestAnalyzer />
+        </section>
+
+        {/* M1 System Foundation & Health Section */}
         <section className="dashboard-section">
           <div className="section-header">
             <span className="section-label">Milestone M1 Foundation</span>
-            <span className="status-pill">Active Vertical Slice</span>
+            <span className="status-pill">System Health</span>
           </div>
           <BackendStatus />
         </section>
@@ -27,6 +38,9 @@ export const App: React.FC = () => {
         <section className="info-card">
           <h3 className="info-title">System Architecture Status</h3>
           <ul className="info-list">
+            <li>
+              <strong>Manifest Evaluation:</strong> Pure-Python AST &amp; SemVer evaluators with PyPI and npm registry integration
+            </li>
             <li>
               <strong>Backend:</strong> FastAPI on Python 3.14 (Async ASGI, OpenAPI documentation at <code>/docs</code>)
             </li>
@@ -37,14 +51,14 @@ export const App: React.FC = () => {
               <strong>Persistence:</strong> Embedded SQLite with WAL mode and foreign key enforcement
             </li>
             <li>
-              <strong>Communication:</strong> Typed REST client polling <code>/api/health</code> with full error recovery
+              <strong>Security:</strong> Zero host code execution, in-memory credential protection, and strict URL boundaries
             </li>
           </ul>
         </section>
       </main>
 
       <footer className="app-footer">
-        <p>Dependency Upgrade Assistant 2.0 &bull; Phase 2 Construction &bull; Milestone M1 Foundation</p>
+        <p>Dependency Upgrade Assistant 2.0 &bull; Phase 2 Construction &bull; Milestone M2 Ingestion &amp; Analysis</p>
       </footer>
     </div>
   );

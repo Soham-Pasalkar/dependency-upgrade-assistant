@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-10T14:57:24Z",
+  "updated": "2026-11-10T15:18:37Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -41,7 +41,7 @@
       "id": "M1",
       "title": "Application foundation",
       "depends_on": [],
-      "status": "awaiting_approval",
+      "status": "done",
       "criteria": [
         {
           "text": "FastAPI backend initialized with configuration, CORS, and health endpoint",
@@ -143,7 +143,11 @@
           "sha256": null
         }
       ],
-      "approval": null,
+      "approval": {
+        "at": "2026-11-10T15:02:33Z",
+        "note": "Human approved: The human user has explicitly approved M1 after reviewing the final evidence reconciliation.",
+        "actor": "human-tty"
+      },
       "rework": 2,
       "started": "2026-11-10T14:19:43Z",
       "note": "Evidence reconciliation: record post-correction verification evidence and update criterion 3 proof"
@@ -154,38 +158,95 @@
       "depends_on": [
         "M1"
       ],
-      "status": "planned",
+      "status": "awaiting_approval",
       "criteria": [
         {
           "text": "Multipart and raw manifest upload endpoints accept requirements.txt and package.json",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "Verified by tests/test_manifest_api.py (test_analyze_raw_requirements_txt, test_analyze_raw_package_json, test_upload_requirements_file_multipart, test_upload_package_json_file_multipart) confirming multipart and raw JSON ingestion endpoints for both requirements.txt and package.json."
         },
         {
           "text": "Dependencies safely parsed without code execution",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "Verified by tests/test_manifest_parser.py (9 tests) verifying pure regex/AST parsing of exact pins, non-pinned constraints, environment markers, inline comments, flags (-r, -e, --index-url), URLs, and package.json dependencies/devDependencies without executing host code or subprocesses."
         },
         {
           "text": "PyPI and npm registry clients query available versions with caching",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "Verified by tests/test_registry_clients.py (10 tests) confirming PyPI JSON API and npm registry clients, in-memory TTL caching preventing redundant network queries, yanked/deprecation detection, scoped package escaping, and offline local catalog fallback."
         },
         {
           "text": "Outdated packages classified into Up-to-Date, Upgrade Available, or Preserved",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "Verified by tests/test_manifest_service.py and tests/test_semver_evaluator.py confirming deterministic classification into UP_TO_DATE, UPGRADE_AVAILABLE, and PRESERVED across Python and Node.js ecosystems."
         },
         {
           "text": "Malformed manifests fail gracefully with diagnostic error responses",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "Verified by tests/test_manifest_api.py (5 tests) confirming HTTP 422 diagnostic responses on malformed JSON and empty content, HTTP 400 on unsupported extensions, and HTTP 413 on files exceeding the 1MB cap."
         }
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "at": "2026-11-10T15:16:28Z",
+          "cmd": ".venv/bin/pytest tests/test_manifest_api.py -k 'test_analyze_raw_requirements_txt or test_analyze_raw_package_json or test_upload_requirements_file_multipart or test_upload_package_json_file_multipart'",
+          "result": "4 passed in 0.16s verifying multipart upload and raw text endpoints for requirements.txt and package.json",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T15:16:50Z",
+          "cmd": ".venv/bin/pytest tests/test_manifest_parser.py",
+          "result": "9 passed in 0.05s verifying safe parsing of requirements.txt and package.json without code execution",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T15:17:06Z",
+          "cmd": ".venv/bin/pytest tests/test_registry_clients.py",
+          "result": "10 passed in 0.07s verifying PyPI JSON and npm registry queries, TTL caching, 404/429/timeout handling, and local catalog fallback",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T15:17:26Z",
+          "cmd": ".venv/bin/pytest tests/test_manifest_service.py tests/test_semver_evaluator.py",
+          "result": "10 passed in 0.08s verifying PEP 440 and SemVer classification into UP_TO_DATE, UPGRADE_AVAILABLE, and PRESERVED",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T15:17:41Z",
+          "cmd": ".venv/bin/pytest tests/test_manifest_api.py -k 'test_analyze_empty_content_fails or test_analyze_malformed_json_fails_gracefully or test_upload_unsupported_file_fails or test_upload_empty_file_fails or test_upload_oversized_file_fails'",
+          "result": "5 passed in 0.16s verifying graceful handling of empty content, malformed JSON, unsupported file types, and oversized uploads with diagnostics",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T15:17:52Z",
+          "cmd": "cd frontend && npm run test",
+          "result": "11 passed in 0.61s across 3 test files (App.test.tsx, BackendStatus.test.tsx, ManifestAnalyzer.test.tsx)",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T15:17:56Z",
+          "cmd": "cd frontend && npm run build",
+          "result": "tsc -b && vite build completed successfully with 0 errors",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T15:18:01Z",
+          "cmd": ".venv/bin/pytest",
+          "result": "294 passed, 5 warnings in 4.82s across 24 test modules (100% green, 0 regressions)",
+          "file": null,
+          "sha256": null
+        }
+      ],
       "approval": null,
       "rework": 0,
-      "started": null,
+      "started": "2026-11-10T15:02:54Z",
       "note": null
     },
     {
@@ -413,5 +474,5 @@
       "at": "2026-11-09T13:32:28Z"
     }
   ],
-  "head": "b37d1ceb123d375727205d4b6330235e07f4244e136e51f3e0dbac4d0b12dcdb"
+  "head": "e6deb30f6a93096d49c18fa9802e7a6a2a1b611c54fba0c8652d07a4e43a5c8d"
 }
