@@ -611,6 +611,42 @@ def cmd_note(args):
     return 0
 
 
+def cmd_config(args):
+    root = require_root(args)
+    state = load_state(root)
+    act = args.action
+    if act == "get":
+        param = args.param
+        val = state.get("config", {}).get(param)
+        print(f"{param}: {val}")
+        return 0
+    elif act == "set":
+        param = args.param
+        raw_val = args.value.strip().lower() if isinstance(args.value, str) else str(args.value).lower()
+        if raw_val in ("true", "1", "yes", "on"):
+            val = True
+        elif raw_val in ("false", "0", "no", "off"):
+            val = False
+        else:
+            val = args.value
+
+        old_val = state.get("config", {}).get(param)
+        if not args.reason:
+            raise AidlcError("--reason is required for configuration changes")
+
+        state.setdefault("config", {})[param] = val
+        data = {
+            "param": param,
+            "old": old_val,
+            "new": val,
+            "reason": args.reason,
+        }
+        actor = default_actor()
+        commit(root, state, "config.update", data, actor=actor)
+        print(f"config updated: {param} = {val} (was {old_val})")
+        return 0
+
+
 def cmd_adr(args):
     root = require_root(args)
     d = root / "docs" / "aidlc" / "adr"
@@ -656,6 +692,22 @@ def derived_approvals(events: list):
     return gates, ms
 
 
+def derived_config(events: list) -> dict:
+    cfg = {"strict_approvals": False, "hook_enforcement": True}
+    for e in events:
+        t, d = e.get("type"), e.get("data", {})
+        if t == "project.init":
+            cfg["strict_approvals"] = bool(d.get("strict", False))
+            if "no_hook" in d:
+                cfg["hook_enforcement"] = not bool(d.get("no_hook", False))
+        elif t == "config.update":
+            param = d.get("param")
+            val = d.get("new")
+            if param is not None:
+                cfg[param] = val
+    return cfg
+
+
 def verify(root: Path, state: dict):
     errs, warns = [], []
     if state.get("schema_version") != SCHEMA_VERSION:
@@ -668,6 +720,14 @@ def verify(root: Path, state: dict):
     errs += chain_errs
     if events and state.get("head") != head:
         errs.append("state.json head does not match the last event (state or log was edited)")
+    d_cfg = derived_config(events)
+    s_cfg = state.get("config", {})
+    for k, v in d_cfg.items():
+        if s_cfg.get(k) != v:
+            errs.append(
+                f"config '{k}' mismatch: state.json has {s_cfg.get(k)!r} "
+                f"but event history derives {v!r} (missing config.update event)"
+            )
     g_ev, m_ev = derived_approvals(events)
     g_state = {g for g in GATE_ORDER if state["gates"][g]["status"] == "approved"}
     for g in sorted(g_state - g_ev):
@@ -786,6 +846,13 @@ def build_parser():
     p.add_argument("--proof")
     p.add_argument("--note")
     p.set_defaults(fn=cmd_milestone)
+
+    p = sub.add_parser("config", help="view or update project configuration")
+    p.add_argument("action", choices=["get", "set"])
+    p.add_argument("param", help="parameter name, e.g. strict_approvals")
+    p.add_argument("value", nargs="?", help="parameter value (for set)")
+    p.add_argument("--reason", help="reason for configuration change")
+    p.set_defaults(fn=cmd_config)
 
     p = sub.add_parser("note", help="record decisions, risks, deviations, blockers")
     p.add_argument("action", choices=["add", "close"])
