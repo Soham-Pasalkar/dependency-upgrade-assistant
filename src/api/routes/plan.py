@@ -17,6 +17,7 @@ from src.models.plan import (
     WorkspaceApplyResponse,
 )
 from src.services.patch_validator import PatchValidator
+from src.services.proposal_registry import RegistryCapacityExceededError
 from src.services.upgrade_planner import HumanApprovalRequiredError, UpgradePlannerService
 
 logger = logging.getLogger("dua.api.plan")
@@ -61,6 +62,12 @@ async def generate_upgrade_plan(
     try:
         proposal = await run_in_threadpool(planner.create_upgrade_proposal, request)
         return proposal
+    except RegistryCapacityExceededError as err:
+        logger.warning(f"Proposal generation rejected: registry capacity exhausted: {err}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(err),
+        )
     except Exception as err:
         logger.exception(f"Error generating upgrade plan: {err}")
         raise HTTPException(

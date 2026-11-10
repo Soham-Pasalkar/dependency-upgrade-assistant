@@ -34,6 +34,11 @@ class ProposalLifecycleState(str, Enum):
     ABANDONED = "ABANDONED"      # Failed during/after write; failed closed to prevent unsafe replay
 
 
+class RegistryCapacityExceededError(RuntimeError):
+    """Raised when proposal registry capacity is exhausted and all entries are active (APPLYING)."""
+    pass
+
+
 @dataclass
 class ProposalClaimResult:
     """Result of an atomic proposal claim attempt."""
@@ -75,19 +80,51 @@ class ProposalRegistry:
         ttl_seconds: float = DEFAULT_PROPOSAL_TTL_SECONDS,
         max_entries: int = DEFAULT_MAX_PROPOSALS,
     ) -> None:
-        self.ttl_seconds = max(10.0, float(ttl_seconds))
-        self.max_entries = max(10, int(max_entries))
+        self.ttl_seconds = max(1.0, float(ttl_seconds))
+        self.max_entries = max(1, int(max_entries))
         self._store: Dict[str, StoredProposal] = {}
         self._lock = threading.Lock()
 
     def store(self, proposal: UpgradeProposalResponse) -> str:
-        """Register a synthesized proposal in the server store and assign a proposal_id."""
+        """Register a synthesized proposal in the server store and assign a proposal_id.
+
+        Capacity and Eviction Guarantees:
+        - Never evicts a proposal in APPLYING state.
+        - Prioritizes evicting CONSUMED or ABANDONED proposals first when over capacity.
+        - If all non-APPLYING entries are exhausted, evicts oldest AVAILABLE proposal.
+        - If all entries in the registry are in APPLYING state, raises RegistryCapacityExceededError.
+        """
         with self._lock:
             self._evict_expired()
-            # If over capacity, remove oldest
+
+            # If over capacity, find non-APPLYING candidate for eviction
             if len(self._store) >= self.max_entries:
-                oldest_id = min(self._store.keys(), key=lambda k: self._store[k].created_at)
+                evictable = [
+                    k for k, v in self._store.items()
+                    if v.state != ProposalLifecycleState.APPLYING
+                ]
+                if not evictable:
+                    logger.error(
+                        f"Cannot store new proposal: registry capacity ({self.max_entries}) exhausted "
+                        f"and all entries are currently in APPLYING state."
+                    )
+                    raise RegistryCapacityExceededError(
+                        f"Proposal registry capacity exhausted ({self.max_entries} entries); "
+                        "all entries are actively in progress."
+                    )
+
+                # Prioritize evicting CONSUMED or ABANDONED proposals first
+                completed = [
+                    k for k in evictable
+                    if self._store[k].state in (ProposalLifecycleState.CONSUMED, ProposalLifecycleState.ABANDONED)
+                ]
+                if completed:
+                    oldest_id = min(completed, key=lambda k: self._store[k].created_at)
+                else:
+                    oldest_id = min(evictable, key=lambda k: self._store[k].created_at)
+
                 del self._store[oldest_id]
+                logger.info(f"Evicted proposal '{oldest_id}' to maintain capacity ({len(self._store)}/{self.max_entries})")
 
             proposal_id = f"prop_{uuid.uuid4().hex}"
             proposal.proposal_id = proposal_id
@@ -234,11 +271,12 @@ class ProposalRegistry:
             self._store.clear()
 
     def _evict_expired(self) -> None:
-        """Remove entries exceeding TTL."""
+        """Remove entries exceeding TTL (never evicts active APPLYING proposals)."""
         now = time.time()
         expired_keys = [
             k for k, v in self._store.items()
             if (now - v.created_at) > self.ttl_seconds
+            and v.state != ProposalLifecycleState.APPLYING
         ]
         for k in expired_keys:
             del self._store[k]

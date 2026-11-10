@@ -20,6 +20,7 @@ import pytest
 
 from src.models.manifest import Ecosystem
 from src.models.plan import (
+    PatchIntegrityResult,
     ProposalStatus,
     UpgradePlanRequest,
     UpgradeProposalResponse,
@@ -35,6 +36,7 @@ from src.models.recommendation import (
 from src.services.proposal_registry import (
     ProposalLifecycleState,
     ProposalRegistry,
+    RegistryCapacityExceededError,
     proposal_registry,
 )
 from src.services.upgrade_planner import UpgradePlannerService
@@ -429,3 +431,242 @@ def test_independent_proposals_apply_concurrently(planner: UpgradePlannerService
     assert results["npm"].success is True
     assert results["npm"].status == "APPLIED"
     assert '"react": "^18.3.1"' in npm_file.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Eviction Safety and Post-Write Lifecycle Integrity Tests
+# ---------------------------------------------------------------------------
+def test_active_proposal_protected_from_eviction():
+    """Verify proposal in APPLYING state is NEVER evicted when registry reaches capacity."""
+    reg = ProposalRegistry(max_entries=2)
+
+    def _make_dummy_proposal():
+        return UpgradeProposalResponse(
+            proposal_id="",
+            manifest_type="requirements.txt",
+            ecosystem=Ecosystem.PYTHON,
+            file_path="requirements.txt",
+            plan_items=[],
+            total_planned=1,
+            original_content="requests==2.28.0\n",
+            proposed_content="requests==2.32.3\n",
+            unified_diff="",
+            integrity=PatchIntegrityResult(
+                is_valid=True,
+                can_apply=True,
+                can_reverse=True,
+                syntax_valid=True,
+                target_versions_match=True,
+                unrelated_dependencies_unchanged=True,
+                original_unchanged=True,
+            ),
+            status=ProposalStatus.READY_FOR_REVIEW,
+        )
+
+    id1 = reg.store(_make_dummy_proposal())
+    id2 = reg.store(_make_dummy_proposal())
+
+    # Claim id1 -> state becomes APPLYING
+    claim = reg.claim_for_application(id1)
+    assert claim.success is True
+
+    # Now store id3. Capacity is 2. id1 is APPLYING, id2 is AVAILABLE.
+    # Must evict id2, NOT id1!
+    id3 = reg.store(_make_dummy_proposal())
+
+    stored1 = reg.get(id1)
+    assert stored1 is not None
+    assert stored1.state == ProposalLifecycleState.APPLYING
+
+    assert reg.get(id2) is None  # evicted
+    assert reg.get(id3) is not None
+
+
+def test_capacity_exhaustion_when_all_proposals_applying():
+    """Verify RegistryCapacityExceededError is raised deterministically when all entries are actively claimed."""
+    reg = ProposalRegistry(max_entries=2)
+
+    def _make_dummy_proposal():
+        return UpgradeProposalResponse(
+            proposal_id="",
+            manifest_type="requirements.txt",
+            ecosystem=Ecosystem.PYTHON,
+            file_path="requirements.txt",
+            plan_items=[],
+            total_planned=1,
+            original_content="requests==2.28.0\n",
+            proposed_content="requests==2.32.3\n",
+            unified_diff="",
+            integrity=PatchIntegrityResult(
+                is_valid=True,
+                can_apply=True,
+                can_reverse=True,
+                syntax_valid=True,
+                target_versions_match=True,
+                unrelated_dependencies_unchanged=True,
+                original_unchanged=True,
+            ),
+            status=ProposalStatus.READY_FOR_REVIEW,
+        )
+
+    id1 = reg.store(_make_dummy_proposal())
+    id2 = reg.store(_make_dummy_proposal())
+
+    reg.claim_for_application(id1)
+    reg.claim_for_application(id2)
+
+    # Both are APPLYING. No evictable entries exist.
+    with pytest.raises(RegistryCapacityExceededError, match="all entries are actively in progress"):
+        reg.store(_make_dummy_proposal())
+
+    # Verify active claims remain intact
+    assert reg.get(id1) is not None
+    assert reg.get(id1).state == ProposalLifecycleState.APPLYING
+    assert reg.get(id2) is not None
+    assert reg.get(id2).state == ProposalLifecycleState.APPLYING
+
+
+def test_completion_failure_fails_closed_and_rejects_applied(planner: UpgradePlannerService, tmp_path: Path):
+    """Verify that if complete_application fails after file write, API fails closed and never returns APPLIED."""
+    target_file = tmp_path / "requirements.txt"
+    target_file.write_text("requests==2.28.0\n", encoding="utf-8")
+
+    rec = _make_python_recommendation()
+    proposal = planner.create_upgrade_proposal(
+        UpgradePlanRequest(
+            manifest_type="requirements.txt",
+            original_content="requests==2.28.0\n",
+            recommendations=[rec],
+            file_path="requirements.txt",
+        )
+    )
+
+    # Force complete_application to return False
+    with patch.object(planner.proposal_registry, "complete_application", return_value=False):
+        resp = planner.apply_workspace_mutation(
+            WorkspaceApplyRequest(
+                proposal_id=proposal.proposal_id,
+                approved=True,
+                target_path="requirements.txt",
+            )
+        )
+        assert resp.success is False
+        assert resp.status == "LIFECYCLE_ERROR"
+        assert resp.status != "APPLIED"
+
+    # Verify proposal is marked ABANDONED (fail-closed)
+    stored = planner.proposal_registry.get(proposal.proposal_id)
+    assert stored is not None
+    assert stored.state == ProposalLifecycleState.ABANDONED
+
+    # Any subsequent attempt must be rejected
+    resp2 = planner.apply_workspace_mutation(
+        WorkspaceApplyRequest(
+            proposal_id=proposal.proposal_id,
+            approved=True,
+            target_path="requirements.txt",
+        )
+    )
+    assert resp2.success is False
+    assert resp2.status == "PROPOSAL_ALREADY_CONSUMED"
+
+
+def test_post_write_verification_exception_abandons_proposal(planner: UpgradePlannerService, tmp_path: Path):
+    """Verify that an exception during post-write read-back transitions proposal to ABANDONED."""
+    target_file = tmp_path / "requirements.txt"
+    target_file.write_text("requests==2.28.0\n", encoding="utf-8")
+
+    rec = _make_python_recommendation()
+    proposal = planner.create_upgrade_proposal(
+        UpgradePlanRequest(
+            manifest_type="requirements.txt",
+            original_content="requests==2.28.0\n",
+            recommendations=[rec],
+            file_path="requirements.txt",
+        )
+    )
+
+    # Simulate read-back failure: pre-write read succeeds, post-write read raises
+    real_read_text = Path.read_text
+    read_calls = [0]
+
+    def _mock_read_text(self, *args, **kwargs):
+        read_calls[0] += 1
+        if read_calls[0] == 1:
+            # Pre-write freshness check
+            return real_read_text(self, *args, **kwargs)
+        # Post-write check raises
+        raise OSError("Simulated post-write read-back I/O crash")
+
+    with patch.object(Path, "read_text", _mock_read_text):
+        resp = planner.apply_workspace_mutation(
+            WorkspaceApplyRequest(
+                proposal_id=proposal.proposal_id,
+                approved=True,
+                target_path="requirements.txt",
+            )
+        )
+        assert resp.success is False
+        assert resp.status == "MUTATION_ERROR"
+        assert "post-write" in resp.message.lower()
+
+    # Proposal must be ABANDONED
+    stored = planner.proposal_registry.get(proposal.proposal_id)
+    assert stored is not None
+    assert stored.state == ProposalLifecycleState.ABANDONED
+
+    # Replay is prohibited
+    resp2 = planner.apply_workspace_mutation(
+        WorkspaceApplyRequest(
+            proposal_id=proposal.proposal_id,
+            approved=True,
+            target_path="requirements.txt",
+        )
+    )
+    assert resp2.success is False
+    assert resp2.status == "PROPOSAL_ALREADY_CONSUMED"
+
+
+def test_pre_replacement_failure_safely_releases_to_available(planner: UpgradePlannerService, tmp_path: Path):
+    """Verify failure before replacement touches destination releases claim back to AVAILABLE."""
+    target_file = tmp_path / "requirements.txt"
+    target_file.write_text("requests==2.28.0\n", encoding="utf-8")
+
+    rec = _make_python_recommendation()
+    proposal = planner.create_upgrade_proposal(
+        UpgradePlanRequest(
+            manifest_type="requirements.txt",
+            original_content="requests==2.28.0\n",
+            recommendations=[rec],
+            file_path="requirements.txt",
+        )
+    )
+
+    # Simulate temp file creation failure (before os.replace)
+    with patch("builtins.open", side_effect=PermissionError("Cannot write temp file")):
+        resp = planner.apply_workspace_mutation(
+            WorkspaceApplyRequest(
+                proposal_id=proposal.proposal_id,
+                approved=True,
+                target_path="requirements.txt",
+            )
+        )
+        assert resp.success is False
+        assert resp.status == "MUTATION_ERROR"
+
+    # Because destination was untouched, claim must be released to AVAILABLE
+    stored = planner.proposal_registry.get(proposal.proposal_id)
+    assert stored is not None
+    assert stored.state == ProposalLifecycleState.AVAILABLE
+
+    # Subsequent retry succeeds
+    resp2 = planner.apply_workspace_mutation(
+        WorkspaceApplyRequest(
+            proposal_id=proposal.proposal_id,
+            approved=True,
+            target_path="requirements.txt",
+        )
+    )
+    assert resp2.success is True
+    assert resp2.status == "APPLIED"
+    assert target_file.read_text(encoding="utf-8") == "requests==2.32.3\n"

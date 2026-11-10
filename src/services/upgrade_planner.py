@@ -671,7 +671,9 @@ class UpgradePlannerService:
                     file_path=str(resolved_file),
                 )
 
-        # 9. Safe atomic file replacement (Point of no return: fail closed on error)
+        # 9. Safe atomic file replacement
+        # Explicitly distinguish pre-replacement from post-replacement failures
+        mutation_attempted = False
         temp_file = resolved_file.with_name(f".tmp_{resolved_file.name}_{uuid.uuid4().hex[:8]}")
         try:
             with open(temp_file, "w", encoding="utf-8") as f:
@@ -685,13 +687,19 @@ class UpgradePlannerService:
             except Exception:
                 pass
 
-            # Atomic rename / replace
+            # Point of replacement: once os.replace is initiated, filesystem state may be modified
+            mutation_attempted = True
             os.replace(temp_file, resolved_file)
             logger.info(f"Workspace file '{resolved_file}' mutated successfully via atomic replacement.")
         except Exception as err:
-            logger.exception(f"Error during atomic workspace write: {err}")
-            # Fail closed: mark proposal ABANDONED so it cannot be re-applied or retried
-            self.proposal_registry.fail_application(prop_id, reason=str(err))
+            logger.exception(f"Error during workspace file write/replacement: {err}")
+            if mutation_attempted:
+                # Replacement was initiated; fail closed (ABANDONED) to prevent unsafe replay
+                self.proposal_registry.fail_application(prop_id, reason=f"Filesystem replacement failure: {str(err)}")
+            else:
+                # Failed before destination was touched; safe to release claim back to AVAILABLE
+                self.proposal_registry.release_application_claim(prop_id)
+
             return WorkspaceApplyResponse(
                 success=False,
                 status="MUTATION_ERROR",
@@ -707,34 +715,60 @@ class UpgradePlannerService:
                 except Exception:
                     pass
 
-        # 10. Post-write verification: ensure byte-for-byte on-disk match
-        post_write_content = resolved_file.read_text(encoding="utf-8")
-        if post_write_content != proposal.proposed_content:
-            logger.critical(f"Post-write verification failed for '{resolved_file}': content mismatch!")
-            self.proposal_registry.fail_application(prop_id, reason="Post-write content mismatch")
+        # 10. Post-write verification & completion protected block
+        # Once os.replace() has executed, the destination has been replaced on disk.
+        # Any failure here MUST fail closed (transition to ABANDONED) and never release back to AVAILABLE.
+        try:
+            post_write_content = resolved_file.read_text(encoding="utf-8")
+            if post_write_content != proposal.proposed_content:
+                logger.critical(f"Post-write verification failed for '{resolved_file}': content mismatch!")
+                self.proposal_registry.fail_application(prop_id, reason="Post-write content mismatch")
+                return WorkspaceApplyResponse(
+                    success=False,
+                    status="MUTATION_ERROR",
+                    message="Post-write verification failed: on-disk content does not match proposed content.",
+                    applied_changes_count=0,
+                    file_path=str(resolved_file),
+                    proposal_status=ProposalStatus.REJECTED,
+                )
+
+            # 11. Complete proposal application (mandatory transition APPLYING -> CONSUMED)
+            completed = self.proposal_registry.complete_application(prop_id)
+            if not completed:
+                logger.critical(f"Lifecycle integrity failure: could not transition proposal '{prop_id}' to CONSUMED.")
+                self.proposal_registry.fail_application(prop_id, reason="Registry completion transition failed")
+                return WorkspaceApplyResponse(
+                    success=False,
+                    status="LIFECYCLE_ERROR",
+                    message="Workspace file was replaced, but registry lifecycle completion failed. Failing closed to prevent replay.",
+                    applied_changes_count=0,
+                    file_path=str(resolved_file),
+                    proposal_status=ProposalStatus.REJECTED,
+                )
+
+            content_bytes = proposal.proposed_content.encode("utf-8")
+            sha256_hash = hashlib.sha256(content_bytes).hexdigest()
+
+            return WorkspaceApplyResponse(
+                success=True,
+                status="APPLIED",
+                message=f"Upgrade proposal successfully applied with {proposal.total_planned} dependency update(s).",
+                applied_changes_count=proposal.total_planned,
+                file_path=str(resolved_file),
+                sha256=sha256_hash,
+                proposal_status=ProposalStatus.APPROVED,
+            )
+        except Exception as err:
+            logger.exception(f"Unexpected error during post-write verification or completion: {err}")
+            self.proposal_registry.fail_application(prop_id, reason=f"Post-write exception: {str(err)}")
             return WorkspaceApplyResponse(
                 success=False,
                 status="MUTATION_ERROR",
-                message="Post-write verification failed: on-disk content does not match proposed content.",
+                message=f"Post-write verification failed due to unexpected error: {str(err)}",
                 applied_changes_count=0,
                 file_path=str(resolved_file),
                 proposal_status=ProposalStatus.REJECTED,
             )
-
-        # 11. Complete proposal application (transitions APPLYING -> CONSUMED)
-        self.proposal_registry.complete_application(prop_id)
-        content_bytes = proposal.proposed_content.encode("utf-8")
-        sha256_hash = hashlib.sha256(content_bytes).hexdigest()
-
-        return WorkspaceApplyResponse(
-            success=True,
-            status="APPLIED",
-            message=f"Upgrade proposal successfully applied with {proposal.total_planned} dependency update(s).",
-            applied_changes_count=proposal.total_planned,
-            file_path=str(resolved_file),
-            sha256=sha256_hash,
-            proposal_status=ProposalStatus.APPROVED,
-        )
 
     def _compute_proposed_specifier(self, dep: ParsedDependency, target_ver: str) -> str:
         """Formulate the proposed specifier based on original constraint and ecosystem."""
