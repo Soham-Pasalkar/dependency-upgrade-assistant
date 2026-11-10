@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "project": "Dependency Upgrade Assistant 2.0",
+  "tier": 3,
+  "mode": "brownfield",
+  "phase": "inception",
+  "config": {
+    "strict_approvals": true,
+    "hook_enforcement": true
+  },
+  "created": "2026-11-09T11:00:09Z",
+  "updated": "2026-11-09T13:32:28Z",
+  "gates": {
+    "G1": {
+      "name": "Requirements",
+      "status": "approved",
+      "note": "User approved: approve G1",
+      "at": "2026-11-09T11:38:51Z"
+    },
+    "G2": {
+      "name": "Architecture and threat model",
+      "status": "presented",
+      "note": "Target architecture and STRIDE threat model for Dependency Upgrade Assistant 2.0",
+      "at": "2026-11-09T11:42:46Z"
+    },
+    "G3": {
+      "name": "Milestone plan",
+      "status": "pending",
+      "note": null,
+      "at": null
+    },
+    "G5": {
+      "name": "Release",
+      "status": "pending",
+      "note": null,
+      "at": null
+    }
+  },
+  "milestones": [],
+  "notes": [
+    {
+      "id": "N1",
+      "kind": "decision",
+      "text": "Enabling strict approvals mode for Tier 3 project governance as requested by human user",
+      "status": "open",
+      "at": "2026-11-09T13:32:28Z"
+    }
+  ],
+  "head": "688045033f41a4400debbd7472535363577487d622df3dc66fed6ea262e7a2cb"
+}

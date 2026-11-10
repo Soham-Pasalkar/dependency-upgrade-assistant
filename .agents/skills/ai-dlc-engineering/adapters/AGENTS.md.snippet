@@ -1,0 +1,14 @@
+## Engineering workflow (AI-DLC)
+
+For any non-trivial software work (a project, service, multi-file feature, schema change, anything
+touching auth, secrets, payments, PII or untrusted input), follow `.agents/skills/ai-dlc-engineering/SKILL.md`
+(adjust the path if the skill lives elsewhere). In short:
+
+1. State the tier (see `references/tiers.md`). Tier 0 and 1 work skips the ceremony.
+2. Run `python <skill-dir>/scripts/aidlc.py status` and `next`. Resume from `.aidlc/` if it exists.
+3. Clarify once in a batch, then write requirements, architecture, a threat model and a milestone plan.
+4. Stop and wait for my explicit approval at every gate (G1, G2, G3, G4 per milestone, G5). Silence or
+   enthusiasm is not approval. Never approve on my behalf.
+5. Build one milestone at a time, tests first. Run the tests yourself and show real command output.
+6. Never weaken, skip or delete a test to make it pass. Never claim something works without running it.
+7. Change `.aidlc/` only through `aidlc.py`, never by hand.

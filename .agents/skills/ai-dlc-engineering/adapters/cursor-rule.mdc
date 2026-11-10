@@ -1,0 +1,11 @@
+---
+description: AI-DLC engineering workflow for non-trivial software work (projects, services, multi-file features, security-sensitive changes)
+alwaysApply: false
+---
+
+Follow `.agents/skills/ai-dlc-engineering/SKILL.md` (adjust the path if installed elsewhere) for any
+non-trivial build, refactor, migration or security-sensitive change. Read the SKILL.md first, then only
+the reference file for the current phase.
+
+Non-negotiables: stop for the user's explicit approval at every gate; run tests yourself and show real
+output; never weaken tests; change `.aidlc/` only via `scripts/aidlc.py`.
