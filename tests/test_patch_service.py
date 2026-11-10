@@ -122,3 +122,4 @@ def test_reverse_unified_diff_restores_original_content():
 def test_reverse_unified_diff_empty_returns_empty():
     """Verify reverse of empty diff is empty."""
     assert reverse_unified_diff("") == ""
+

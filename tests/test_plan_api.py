@@ -166,8 +166,18 @@ def test_api_apply_workspace_mutation_gate_enforcement(client: TestClient):
     assert "Human approval gate enforced" in apply_res.json()["detail"]
 
 
-def test_api_apply_workspace_mutation_success(client: TestClient, tmp_path: Path):
+def test_api_apply_workspace_mutation_success(client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Verify POST /api/plan/apply succeeds with HTTP 200 when approved=true."""
+    from src.api.config import settings
+    from src.api.routes.plan import get_upgrade_planner, UpgradePlannerService
+    from src.services.proposal_registry import proposal_registry
+
+    # Configure server workspace root to tmp_path
+    monkeypatch.setattr(settings, "WORKSPACE_ROOT", str(tmp_path))
+    # Re-initialize planner instance with tmp_path workspace root
+    custom_planner = UpgradePlannerService(workspace_root=tmp_path, registry=proposal_registry)
+    app.dependency_overrides[get_upgrade_planner] = lambda: custom_planner
+
     target_file = tmp_path / "requirements.txt"
     target_file.write_text("requests==2.28.0\n", encoding="utf-8")
 
@@ -192,9 +202,9 @@ def test_api_apply_workspace_mutation_success(client: TestClient, tmp_path: Path
     proposal = gen_res.json()
 
     apply_payload = {
-        "proposal": proposal,
+        "proposal_id": proposal["proposal_id"],
         "approved": True,
-        "target_path": str(target_file),
+        "target_path": "requirements.txt",
     }
     apply_res = client.post("/api/plan/apply", json=apply_payload)
     assert apply_res.status_code == 200
@@ -204,3 +214,5 @@ def test_api_apply_workspace_mutation_success(client: TestClient, tmp_path: Path
     assert data["applied_changes_count"] == 1
     assert data["sha256"] is not None
     assert target_file.read_text(encoding="utf-8") == "requests==2.32.3\n"
+    app.dependency_overrides.clear()
+

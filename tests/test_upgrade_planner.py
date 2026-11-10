@@ -280,8 +280,9 @@ def test_workspace_mutation_requires_human_approval(planner: UpgradePlannerServi
         planner.apply_workspace_mutation(apply_req)
 
 
-def test_workspace_mutation_succeeds_with_human_approval(tmp_path: Path, planner: UpgradePlannerService):
+def test_workspace_mutation_succeeds_with_human_approval(tmp_path: Path):
     """Verify workspace mutation writes file and reports SHA-256 when approved=True."""
+    planner = UpgradePlannerService(workspace_root=tmp_path)
     target_file = tmp_path / "requirements.txt"
     target_file.write_text("requests==2.28.0\n", encoding="utf-8")
 
@@ -307,11 +308,11 @@ def test_workspace_mutation_succeeds_with_human_approval(tmp_path: Path, planner
         )
     )
 
-    # Apply with approved=True
+    # Apply with approved=True and relative target_path
     apply_req = WorkspaceApplyRequest(
-        proposal=proposal,
+        proposal_id=proposal.proposal_id,
         approved=True,
-        target_path=str(target_file),
+        target_path="requirements.txt",
     )
     resp = planner.apply_workspace_mutation(apply_req)
 
@@ -320,3 +321,4 @@ def test_workspace_mutation_succeeds_with_human_approval(tmp_path: Path, planner
     assert resp.applied_changes_count == 1
     assert resp.sha256 is not None
     assert target_file.read_text(encoding="utf-8") == "requests==2.32.3\n"
+

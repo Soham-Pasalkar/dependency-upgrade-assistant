@@ -158,3 +158,4 @@ def test_validator_handles_noop_cleanly():
     assert result.can_apply is True
     assert result.can_reverse is True
     assert len(result.errors) == 0
+

@@ -300,3 +300,4 @@ def test_unsupported_manifest_format_raises_error():
     """Verify unsupported manifest format raises descriptive ManifestMutationError."""
     with pytest.raises(ManifestMutationError, match="Unsupported manifest format"):
         modify_manifest("Cargo.toml", "[dependencies]", [])
+

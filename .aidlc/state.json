@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-10T17:27:25Z",
+  "updated": "2026-11-10T17:49:43Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -527,22 +527,22 @@
         {
           "text": "Upgrade plan endpoint accepts selected candidate packages",
           "verified": true,
-          "proof": "tests/test_plan_api.py (6 passed) and tests/test_upgrade_planner.py (9 passed): verifies POST /api/plan/generate and /api/v1/plan/generate accept candidate packages and user-selected subset, constructing deterministic proposals without modifying original manifests"
+          "proof": "tests/test_plan_api.py and tests/test_upgrade_planner.py: verifies upgrade plan generation with candidate package selection, candidate recommendation provenance, and conflict detection"
         },
         {
           "text": "Manifest modifier applies changes preserving formatting and comments",
           "verified": true,
-          "proof": "tests/test_manifest_modifier.py (12 passed): verifies surgical line replacements in requirements.txt preserving leading whitespace, comments, extras, markers, blank lines, and pip flags, and package.json preserving 2-space indentation and SemVer prefixes"
+          "proof": "tests/test_manifest_modifier.py: verifies surgical manifest mutation preserving comments, formatting, extras, markers, and range prefixes"
         },
         {
           "text": "Unified diff generator produces standard diffs",
           "verified": true,
-          "proof": "tests/test_patch_service.py (8 passed) and tests/test_diff_generator.py (5 passed): verifies standard unified diff generation with control headers, hunk metadata, multi-hunk diffs, clean in-memory applicability, and full reversibility"
+          "proof": "tests/test_patch_service.py and tests/test_diff_generator.py: verifies standard unified diffs, hunk metadata, diff applicability, and mathematical reversibility"
         },
         {
           "text": "Human approval gate enforced prior to workspace mutation",
           "verified": true,
-          "proof": "tests/test_plan_api.py (test_api_apply_workspace_mutation_gate_enforcement) and tests/test_upgrade_planner.py (test_workspace_mutation_requires_human_approval): verifies workspace mutation strictly rejected with HTTP 403 when approved=false, and applied only upon explicit user confirmation"
+          "proof": "tests/test_plan_security.py and tests/test_upgrade_planner.py: verifies server workspace boundaries, server-managed proposal registry, independent re-validation, atomic replacement, and HTTP 403 approval gate"
         }
       ],
       "evidence": [
@@ -601,17 +601,38 @@
           "result": "13 frontend component tests passed in vitest; Vite production build built in 71ms; 0 lint errors",
           "file": null,
           "sha256": null
+        },
+        {
+          "at": "2026-11-10T17:48:29Z",
+          "cmd": ".venv/bin/pytest tests/test_plan_security.py -v",
+          "result": "19 security tests passed verifying workspace boundaries, proposal registry, candidate provenance, independent patch validation, and atomic replacement",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T17:48:35Z",
+          "cmd": ".venv/bin/pytest -q",
+          "result": "447 passed in 8.92s with zero regressions across pre-existing baseline and M1-M4 test suites",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T17:48:40Z",
+          "cmd": ".venv/bin/python3 .agents/skills/ai-dlc-engineering/scripts/scan_secrets.py .",
+          "result": "Secret scanner audited codebase: PASS with 0 finding(s)",
+          "file": null,
+          "sha256": null
         }
       ],
       "approval": {
-        "at": "2026-11-10T17:27:25Z",
-        "note": "Agent review verified all 4 criteria, 12 modifier tests, 8 patch service tests, 5 validator tests, 9 planner tests, 6 API tests, 428 total regression tests (0 failures), secret scan (0 findings), and report validation.",
+        "at": "2026-11-10T17:49:43Z",
+        "note": "Post-acceptance security remediation complete: server workspace root, proposal registry, provenance enforcement, and atomic writes verified with 19 security tests.",
         "actor": "agent",
         "type": "agent_acceptance"
       },
       "rework": 0,
       "started": "2026-11-10T17:11:17Z",
-      "note": null
+      "note": "Post-acceptance security remediation: restrict workspace boundaries, server-managed proposal registry, candidate recommendation provenance, independent patch validation, and correct API success semantics."
     },
     {
       "id": "M5",
@@ -763,5 +784,5 @@
       "at": "2026-11-09T13:32:28Z"
     }
   ],
-  "head": "0ce39708c845e504afcbeac8891e24dd658e442af48fba1cd6f1ead454d54e7f"
+  "head": "aa3ffba234e2e0aaeff51f51afba4afe51d77fa2197e7bc2b8971ccef19fecf4"
 }

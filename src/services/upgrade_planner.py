@@ -7,18 +7,23 @@ Coordinates:
 4. Unified diff generation with standard hunks.
 5. Multi-point patch integrity and safety verification.
 6. Enforcing explicit human approval gates prior to workspace mutation.
+7. Server-side proposal lifecycle registry preventing forgery.
+8. Server-controlled workspace boundary enforcement with atomic writes.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
 import os
+import shutil
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from packaging.version import InvalidVersion, parse as parse_pep440
 from src.analysis.manifest_parser import parse_manifest
 from src.analysis.semver_evaluator import SemVer
+from src.api.config import settings
 from src.data.catalog_loader import normalize_package_name
 from src.models.manifest import DependencyType, Ecosystem, ParsedDependency
 from src.models.plan import (
@@ -39,9 +44,20 @@ from src.models.recommendation import (
 )
 from src.services.manifest_modifier import ManifestMutationError, modify_manifest
 from src.services.patch_service import generate_unified_diff
-from src.services.patch_validator import PatchValidator, is_safe_manifest_path
+from src.services.patch_validator import (
+    PatchValidator,
+    is_safe_manifest_path,
+    validate_workspace_destination,
+)
+from src.services.proposal_registry import ProposalRegistry, proposal_registry as default_proposal_registry
 
 logger = logging.getLogger(__name__)
+
+# Only validation statuses established as safe by M3 ground-truth evaluation
+TRUSTED_VALIDATION_STATUSES: Set[ValidationStatus] = {
+    ValidationStatus.VALIDATED,
+    ValidationStatus.FALLBACK_DETERMINISTIC,
+}
 
 
 class HumanApprovalRequiredError(Exception):
@@ -49,11 +65,25 @@ class HumanApprovalRequiredError(Exception):
     pass
 
 
+class StaleManifestError(Exception):
+    """Raised when on-disk manifest content does not match the proposal's original content."""
+    pass
+
+
 class UpgradePlannerService:
     """Orchestrates deterministic upgrade planning, diff generation, and approval gates."""
 
-    def __init__(self) -> None:
-        pass
+    def __init__(
+        self,
+        workspace_root: Optional[Path | str] = None,
+        registry: Optional[ProposalRegistry] = None,
+    ) -> None:
+        if workspace_root:
+            self.workspace_root = Path(workspace_root).resolve()
+        else:
+            self.workspace_root = settings.resolved_workspace_root
+        self.workspace_root.mkdir(parents=True, exist_ok=True)
+        self.proposal_registry = registry or default_proposal_registry
 
     def create_upgrade_proposal(self, request: UpgradePlanRequest) -> UpgradeProposalResponse:
         """Construct an upgrade plan, generate proposed manifest, diff, and validate integrity.
@@ -62,7 +92,7 @@ class UpgradePlannerService:
             request: UpgradePlanRequest with manifest content, recommendations, and selections.
             
         Returns:
-            Structured UpgradeProposalResponse.
+            Structured UpgradeProposalResponse stored in server proposal registry.
         """
         diagnostics: List[str] = []
         original_content = request.original_content
@@ -89,7 +119,8 @@ class UpgradePlannerService:
                 errors=[f"Original manifest could not be parsed: {str(err)}"],
                 warnings=[],
             )
-            return UpgradeProposalResponse(
+            failed_proposal = UpgradeProposalResponse(
+                proposal_id="",
                 manifest_type=manifest_type,
                 ecosystem=Ecosystem.PYTHON if "requirements" in manifest_type.lower() else Ecosystem.NPM,
                 file_path=file_path,
@@ -106,6 +137,9 @@ class UpgradePlannerService:
                 diagnostics=[str(err)],
                 summary="Planning aborted: original manifest syntax error.",
             )
+            # Register in server store for lifecycle consistency
+            self.proposal_registry.store(failed_proposal)
+            return failed_proposal
 
         # Build mapping of original dependencies by normalized name and line number
         orig_by_name: Dict[str, List[ParsedDependency]] = {}
@@ -141,7 +175,6 @@ class UpgradePlannerService:
         conflicts_count = 0
         planned_count = 0
         unchanged_count = 0
-        seen_packages: Set[str] = set()
 
         # 1. Process dependencies from original manifest in order
         for orig_dep in orig_deps:
@@ -202,7 +235,7 @@ class UpgradePlannerService:
                         continue
                     matching_rec = recs[0]
 
-            # Determine whether this package should be upgraded
+            # Determine whether this package was selected by the caller
             is_selected = True
             if selected_set is not None and norm_pkg not in selected_set:
                 is_selected = False
@@ -227,14 +260,12 @@ class UpgradePlannerService:
                 unchanged_count += 1
                 continue
 
-            # Determine target version
-            target_ver = custom_target_overrides.get(norm_pkg) or matching_rec.candidate_version.strip()
+            # -------------------------------------------------------------
+            # Recommendation Provenance & Validation Enforcement
+            # -------------------------------------------------------------
 
-            # Reject hallucinated or invalid version recommendations
-            if matching_rec.validation_status in (
-                ValidationStatus.REJECTED_HALLUCINATION,
-                ValidationStatus.REJECTED_INCOMPATIBLE,
-            ):
+            # A. Ecosystem match verification
+            if matching_rec.ecosystem != orig_dep.ecosystem:
                 conflicts_count += 1
                 plan_items.append(
                     PlannedUpgradeItem(
@@ -245,17 +276,81 @@ class UpgradePlannerService:
                         declared_specifier=orig_dep.declared_specifier,
                         proposed_specifier=orig_dep.declared_specifier,
                         action=UpgradeAction.REJECT_CONFLICT,
-                        rationale=f"Rejected recommendation failed ground-truth validation: {matching_rec.explanation}",
+                        rationale=f"Ecosystem mismatch: recommendation ecosystem '{matching_rec.ecosystem}' does not match manifest ecosystem '{orig_dep.ecosystem}'.",
                         line_number=orig_dep.line_number,
                         dependency_type=orig_dep.dependency_type,
                         is_conflict=True,
-                        conflict_details="Target version was rejected by ground-truth registry validation.",
+                        conflict_details="Ecosystem mismatch between manifest and recommendation.",
                     )
                 )
                 unchanged_count += 1
                 continue
 
-            # Validate version syntax and downgrade prevention
+            # B. Trusted ValidationStatus enforcement
+            if matching_rec.validation_status not in TRUSTED_VALIDATION_STATUSES:
+                conflicts_count += 1
+                if matching_rec.validation_status == ValidationStatus.REJECTED_HALLUCINATION:
+                    rationale = f"Rejected recommendation: candidate version was flagged as hallucinated ({matching_rec.explanation})"
+                    details = "Target version was rejected as hallucination not found in registry ground truth."
+                elif matching_rec.validation_status == ValidationStatus.REJECTED_INCOMPATIBLE:
+                    rationale = f"Rejected recommendation: candidate version is incompatible with manifest constraint ({matching_rec.explanation})"
+                    details = "Target version was rejected by ground-truth registry validation as incompatible."
+                elif matching_rec.validation_status == ValidationStatus.SKIPPED:
+                    rationale = f"Rejected recommendation: registry validation status was SKIPPED; candidate is unverified ({matching_rec.explanation})"
+                    details = "Candidate has SKIPPED validation status and cannot be safely upgraded."
+                else:
+                    rationale = f"Rejected recommendation: untrusted validation status '{matching_rec.validation_status}' ({matching_rec.explanation})"
+                    details = "Recommendation validation status is not established as safe."
+
+                plan_items.append(
+                    PlannedUpgradeItem(
+                        package_name=orig_dep.original_name,
+                        ecosystem=orig_dep.ecosystem,
+                        current_version=orig_dep.current_version,
+                        target_version=orig_dep.current_version,
+                        declared_specifier=orig_dep.declared_specifier,
+                        proposed_specifier=orig_dep.declared_specifier,
+                        action=UpgradeAction.REJECT_CONFLICT,
+                        rationale=rationale,
+                        line_number=orig_dep.line_number,
+                        dependency_type=orig_dep.dependency_type,
+                        is_conflict=True,
+                        conflict_details=details,
+                    )
+                )
+                unchanged_count += 1
+                continue
+
+            # C. Custom target version validation: prohibited from arbitrary override
+            validated_candidate = matching_rec.candidate_version.strip()
+            custom_override = custom_target_overrides.get(norm_pkg)
+            if custom_override is not None:
+                clean_custom = custom_override.strip().lstrip("^~><=")
+                clean_validated = validated_candidate.lstrip("^~><=")
+                if clean_custom != clean_validated:
+                    conflicts_count += 1
+                    plan_items.append(
+                        PlannedUpgradeItem(
+                            package_name=orig_dep.original_name,
+                            ecosystem=orig_dep.ecosystem,
+                            current_version=orig_dep.current_version,
+                            target_version=orig_dep.current_version,
+                            declared_specifier=orig_dep.declared_specifier,
+                            proposed_specifier=orig_dep.declared_specifier,
+                            action=UpgradeAction.REJECT_CONFLICT,
+                            rationale=f"Arbitrary custom target version '{custom_override}' rejected: custom target must match explicitly validated M3 candidate '{validated_candidate}'.",
+                            line_number=orig_dep.line_number,
+                            dependency_type=orig_dep.dependency_type,
+                            is_conflict=True,
+                            conflict_details="Custom candidate version does not match registry-validated candidate.",
+                        )
+                    )
+                    unchanged_count += 1
+                    continue
+
+            target_ver = validated_candidate
+
+            # D. Validate version syntax and downgrade prevention
             if not self._is_valid_version_upgrade(orig_dep.ecosystem, orig_dep.current_version, target_ver):
                 conflicts_count += 1
                 plan_items.append(
@@ -385,7 +480,8 @@ class UpgradePlannerService:
         if conflicts_count > 0:
             summary += f" Detected {conflicts_count} conflict(s) or unsupported item(s)."
 
-        return UpgradeProposalResponse(
+        proposal = UpgradeProposalResponse(
+            proposal_id="",
             manifest_type=manifest_type,
             ecosystem=ecosystem,
             file_path=file_path,
@@ -403,82 +499,233 @@ class UpgradePlannerService:
             summary=summary,
         )
 
+        # Store proposal in server-controlled registry
+        self.proposal_registry.store(proposal)
+        return proposal
+
     def apply_workspace_mutation(self, request: WorkspaceApplyRequest) -> WorkspaceApplyResponse:
         """Apply an approved upgrade proposal to the workspace after enforcing human approval.
         
-        Args:
-            request: WorkspaceApplyRequest containing proposal and explicit human approval flag.
-            
-        Returns:
-            WorkspaceApplyResponse documenting outcome.
-        Raises:
-            HumanApprovalRequiredError if request.approved is False.
+        Security guarantees:
+        1. Human confirmation signal (approved=true) is strictly enforced.
+        2. Proposal is retrieved from server-controlled storage using request.proposal_id.
+        3. Independent server-side re-validation of diff, syntax, reversibility, and traceability.
+        4. Workspace boundary enforcement: destination must reside inside authorized workspace root.
+        5. Absolute paths, traversal (..), null bytes, and symlinks are strictly rejected.
+        6. Manifest existence and freshness check: rejects stale proposals if disk content changed.
+        7. Atomic temporary-file replacement preserves permissions and prevents partial writes.
+        8. Returns status='APPLIED' ONLY after verified on-disk modification.
         """
-        # Strict Human Approval Gate (Criterion 4)
+        # 1. Human confirmation gate check
         if not request.approved:
             logger.warning("Workspace mutation rejected: human approval gate not satisfied.")
             raise HumanApprovalRequiredError(
-                "Human approval gate enforced: Workspace mutation requires explicit user confirmation (approved=true)."
+                "Human approval gate enforced: Workspace mutation requires explicit confirmation (approved=true)."
             )
 
-        proposal = request.proposal
+        # 2. Retrieve authoritative proposal from server-controlled registry
+        prop_id = request.proposal_id or (request.proposal.proposal_id if request.proposal else None)
+        if not prop_id:
+            logger.warning("Workspace mutation rejected: missing proposal_id.")
+            return WorkspaceApplyResponse(
+                success=False,
+                status="PROPOSAL_NOT_FOUND",
+                message="Missing server proposal_id. Unregistered or forged proposals cannot be applied.",
+                applied_changes_count=0,
+                file_path=request.target_path or "",
+                proposal_status=ProposalStatus.REJECTED,
+            )
 
-        # Validate proposal integrity before any disk write
-        if not proposal.integrity.is_valid:
+        stored = self.proposal_registry.get(prop_id)
+        if stored is None:
+            logger.warning(f"Workspace mutation rejected: proposal '{prop_id}' not found or expired.")
+            return WorkspaceApplyResponse(
+                success=False,
+                status="PROPOSAL_NOT_FOUND",
+                message=f"Proposal '{prop_id}' was not found or has expired. Please re-generate the proposal.",
+                applied_changes_count=0,
+                file_path=request.target_path or "",
+                proposal_status=ProposalStatus.REJECTED,
+            )
+
+        if stored.consumed:
+            logger.warning(f"Workspace mutation rejected: proposal '{prop_id}' already consumed.")
+            return WorkspaceApplyResponse(
+                success=False,
+                status="PROPOSAL_ALREADY_CONSUMED",
+                message=f"Proposal '{prop_id}' has already been applied and consumed.",
+                applied_changes_count=0,
+                file_path=request.target_path or "",
+                proposal_status=ProposalStatus.REJECTED,
+            )
+
+        proposal = stored.proposal
+
+        # 3. Independent server-side patch re-validation (do NOT trust client flags)
+        recomputed_integrity = PatchValidator.validate_patch(
+            manifest_type=proposal.manifest_type,
+            original_content=proposal.original_content,
+            proposed_content=proposal.proposed_content,
+            unified_diff=proposal.unified_diff,
+            plan_items=proposal.plan_items,
+            file_path=proposal.file_path,
+        )
+        if not recomputed_integrity.is_valid:
+            logger.error(f"Workspace mutation aborted: server-side patch re-validation failed for '{request.proposal_id}'.")
             return WorkspaceApplyResponse(
                 success=False,
                 status="VALIDATION_FAILED",
-                message="Cannot mutate workspace: proposed patch failed integrity verification.",
+                message=f"Cannot mutate workspace: server-side patch re-validation failed ({'; '.join(recomputed_integrity.errors)}).",
                 applied_changes_count=0,
                 file_path=proposal.file_path,
                 proposal_status=ProposalStatus.INVALID_PATCH,
             )
 
-        target_file = proposal.file_path
-        if request.target_path:
-            target_path_obj = Path(request.target_path)
-            if target_path_obj.is_dir():
-                target_file = str(target_path_obj / Path(proposal.file_path).name)
-            else:
-                target_file = request.target_path
-
-        # Validate path safety
-        if not is_safe_manifest_path(target_file, allow_absolute=True):
-            return WorkspaceApplyResponse(
-                success=False,
-                status="VALIDATION_FAILED",
-                message=f"Cannot mutate workspace: unsafe or traversing target path '{target_file}'.",
-                applied_changes_count=0,
-                file_path=target_file,
-                proposal_status=ProposalStatus.INVALID_PATCH,
-            )
-
-        # Compute SHA-256 of proposed content
-        content_bytes = proposal.proposed_content.encode("utf-8")
-        sha256_hash = hashlib.sha256(content_bytes).hexdigest()
-
-        # If a real directory is configured, write the file safely
-        if request.target_path and os.path.exists(os.path.dirname(os.path.abspath(target_file))):
-            try:
-                with open(target_file, "w", encoding="utf-8") as f:
-                    f.write(proposal.proposed_content)
-                logger.info(f"Workspace file '{target_file}' mutated successfully under human approval.")
-            except Exception as err:
+        # 4. Resolve effective workspace boundary
+        effective_root = self.workspace_root
+        if request.workspace_id:
+            ws_id = request.workspace_id.strip()
+            if ".." in ws_id or "\0" in ws_id or ws_id.startswith(("/", "\\")) or re.match(r"^[a-zA-Z]:", ws_id):
                 return WorkspaceApplyResponse(
                     success=False,
-                    status="MUTATION_ERROR",
-                    message=f"Failed to write workspace file: {str(err)}",
+                    status="INVALID_PATH",
+                    message=f"Illegal workspace ID format: '{ws_id}'",
                     applied_changes_count=0,
-                    file_path=target_file,
+                    file_path="",
                     proposal_status=ProposalStatus.REJECTED,
                 )
+            effective_root = (self.workspace_root / ws_id).resolve()
+            if not (self.workspace_root in effective_root.parents or self.workspace_root == effective_root):
+                return WorkspaceApplyResponse(
+                    success=False,
+                    status="INVALID_PATH",
+                    message=f"Workspace ID '{ws_id}' escapes server workspace root.",
+                    applied_changes_count=0,
+                    file_path="",
+                    proposal_status=ProposalStatus.REJECTED,
+                )
+
+        target_rel = request.target_path if request.target_path is not None else proposal.file_path
+        if not target_rel or not target_rel.strip():
+            return WorkspaceApplyResponse(
+                success=False,
+                status="NOT_APPLIED",
+                message="No target workspace path specified for mutation.",
+                applied_changes_count=0,
+                file_path="",
+                proposal_status=ProposalStatus.REJECTED,
+            )
+
+        # 5. Path safety & workspace containment validation
+        try:
+            resolved_file = validate_workspace_destination(
+                target_rel_path=target_rel,
+                workspace_root=effective_root,
+                expected_filename=proposal.file_path,
+            )
+        except ValueError as err:
+            logger.warning(f"Path safety violation during workspace mutation: {err}")
+            return WorkspaceApplyResponse(
+                success=False,
+                status="INVALID_PATH",
+                message=f"Path safety violation: {str(err)}",
+                applied_changes_count=0,
+                file_path=target_rel,
+                proposal_status=ProposalStatus.REJECTED,
+            )
+
+        # 6. Verify destination file exists and is a regular file
+        if not resolved_file.exists():
+            return WorkspaceApplyResponse(
+                success=False,
+                status="TARGET_NOT_FOUND",
+                message=f"Target manifest file does not exist: '{resolved_file.name}'",
+                applied_changes_count=0,
+                file_path=str(resolved_file),
+                proposal_status=ProposalStatus.REJECTED,
+            )
+
+        if not resolved_file.is_file() or resolved_file.is_symlink():
+            return WorkspaceApplyResponse(
+                success=False,
+                status="INVALID_PATH",
+                message=f"Target destination '{resolved_file.name}' is not a regular file or is a symlink.",
+                applied_changes_count=0,
+                file_path=str(resolved_file),
+                proposal_status=ProposalStatus.REJECTED,
+            )
+
+        # 7. Concurrency / Freshness verification: disk content must match proposal base
+        current_disk_content = resolved_file.read_text(encoding="utf-8")
+        if current_disk_content != proposal.original_content:
+            logger.warning(f"Stale proposal detected for '{resolved_file}': on-disk content has changed.")
+            return WorkspaceApplyResponse(
+                success=False,
+                status="STALE_BASE_CONTENT",
+                message="Destination file has been modified since the upgrade proposal was generated. Aborting mutation to prevent overwriting concurrent changes.",
+                applied_changes_count=0,
+                file_path=str(resolved_file),
+                proposal_status=ProposalStatus.REJECTED,
+            )
+
+        # Check expected SHA-256 if supplied by caller
+        if request.expected_sha256:
+            disk_sha = hashlib.sha256(current_disk_content.encode("utf-8")).hexdigest()
+            if disk_sha.lower() != request.expected_sha256.lower():
+                return WorkspaceApplyResponse(
+                    success=False,
+                    status="STALE_BASE_CONTENT",
+                    message="Destination file checksum does not match expected SHA-256.",
+                    applied_changes_count=0,
+                    file_path=str(resolved_file),
+                    proposal_status=ProposalStatus.REJECTED,
+                )
+
+        # 8. Safe atomic file replacement
+        temp_file = resolved_file.with_name(f".tmp_{resolved_file.name}_{uuid.uuid4().hex[:8]}")
+        try:
+            with open(temp_file, "w", encoding="utf-8") as f:
+                f.write(proposal.proposed_content)
+                f.flush()
+                os.fsync(f.fileno())
+
+            # Preserve file permissions if possible
+            try:
+                shutil.copymode(resolved_file, temp_file)
+            except Exception:
+                pass
+
+            # Atomic rename / replace
+            os.replace(temp_file, resolved_file)
+            logger.info(f"Workspace file '{resolved_file}' mutated successfully via atomic replacement.")
+        except Exception as err:
+            logger.exception(f"Error during atomic workspace write: {err}")
+            return WorkspaceApplyResponse(
+                success=False,
+                status="MUTATION_ERROR",
+                message=f"Failed to write workspace file: {str(err)}",
+                applied_changes_count=0,
+                file_path=str(resolved_file),
+                proposal_status=ProposalStatus.REJECTED,
+            )
+        finally:
+            if temp_file.exists():
+                try:
+                    temp_file.unlink()
+                except Exception:
+                    pass
+
+        # 9. Mark proposal as consumed and return APPLIED
+        self.proposal_registry.mark_consumed(prop_id)
+        content_bytes = proposal.proposed_content.encode("utf-8")
+        sha256_hash = hashlib.sha256(content_bytes).hexdigest()
 
         return WorkspaceApplyResponse(
             success=True,
             status="APPLIED",
             message=f"Upgrade proposal successfully applied with {proposal.total_planned} dependency update(s).",
             applied_changes_count=proposal.total_planned,
-            file_path=target_file,
+            file_path=str(resolved_file),
             sha256=sha256_hash,
             proposal_status=ProposalStatus.APPROVED,
         )

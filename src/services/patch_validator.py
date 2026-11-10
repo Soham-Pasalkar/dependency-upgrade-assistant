@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import urllib.parse
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -23,28 +25,126 @@ from src.services.patch_service import apply_unified_diff, reverse_unified_diff
 
 logger = logging.getLogger(__name__)
 
+ALLOWED_MANIFEST_BASENAMES: Set[str] = {
+    "requirements.txt",
+    "requirements-dev.txt",
+    "requirements-test.txt",
+    "package.json",
+}
 
-def is_safe_manifest_path(file_path: str, base_dir: Optional[Path] = None, allow_absolute: bool = False) -> bool:
+
+def is_allowed_manifest_filename(filename: str) -> bool:
+    """Ensure target filename matches authorized manifest naming conventions."""
+    clean = filename.strip().lower()
+    if clean in ALLOWED_MANIFEST_BASENAMES:
+        return True
+    if clean.startswith("requirements") and clean.endswith(".txt"):
+        return True
+    if clean.endswith("-requirements.txt") or clean.endswith("_requirements.txt"):
+        return True
+    return False
+
+
+def is_safe_manifest_path(file_path: str, base_dir: Optional[Path] = None) -> bool:
     """Validate that file_path is a safe relative path without traversal or absolute path escape."""
     if not file_path or not file_path.strip():
         return False
     cleaned = file_path.strip()
+
+    # Reject null bytes
     if "\0" in cleaned:
         return False
-    parts = Path(cleaned).parts
-    if ".." in parts:
+
+    # Reject absolute paths (POSIX and Windows)
+    if cleaned.startswith(("/", "\\")) or Path(cleaned).is_absolute() or re.match(r"^[a-zA-Z]:", cleaned):
         return False
-    if cleaned.startswith(("/", "\\")):
-        if not allow_absolute:
-            return False
-        try:
-            Path(cleaned).resolve()
-            return True
-        except Exception:
-            return False
+
+    # Check for encoded traversal sequences
+    unquoted = urllib.parse.unquote(cleaned)
+    if "\0" in unquoted or unquoted.startswith(("/", "\\")) or re.match(r"^[a-zA-Z]:", unquoted):
+        return False
+
+    # Reject path traversal components (..) across both / and \ separators
+    normalized_parts = unquoted.replace("\\", "/").split("/")
+    if ".." in normalized_parts:
+        return False
+
     base = (base_dir or Path.cwd()).resolve()
     target = (base / cleaned).resolve()
     return base in target.parents or base == target
+
+
+def validate_workspace_destination(
+    target_rel_path: str,
+    workspace_root: Path,
+    expected_filename: Optional[str] = None,
+) -> Path:
+    """Validate and resolve a client-supplied relative path within the server workspace root.
+    
+    Guarantees:
+    - Absolute paths are strictly rejected.
+    - Null bytes, URL encodings, Windows drive letters, and traversal (..) are strictly rejected.
+    - Target must reside strictly within workspace_root.
+    - Target filename must match allowed manifest filenames.
+    - Symlinks escaping workspace_root or pointing to external targets are strictly rejected.
+    
+    Returns:
+        Resolved absolute Path object guaranteed to reside within workspace_root.
+    Raises:
+        ValueError on any security violation.
+    """
+    if not target_rel_path or not target_rel_path.strip():
+        raise ValueError("Target path cannot be empty.")
+
+    raw_path = target_rel_path.strip()
+
+    # 1. Reject null bytes
+    if "\0" in raw_path:
+        raise ValueError("Target path contains illegal null bytes.")
+
+    # 2. Reject absolute paths (POSIX and Windows drive letters)
+    if raw_path.startswith(("/", "\\")) or Path(raw_path).is_absolute() or re.match(r"^[a-zA-Z]:", raw_path):
+        raise ValueError(f"Absolute paths are strictly prohibited in workspace operations: '{raw_path}'")
+
+    # 3. Check for URL-encoded traversal attempts
+    unquoted = urllib.parse.unquote(raw_path)
+    if unquoted != raw_path:
+        if "\0" in unquoted or unquoted.startswith(("/", "\\")) or re.match(r"^[a-zA-Z]:", unquoted):
+            raise ValueError(f"Target path contains encoded illegal path characters: '{raw_path}'")
+
+    # 4. Check for '..' traversal across / and \
+    parts = unquoted.replace("\\", "/").split("/")
+    if ".." in parts:
+        raise ValueError(f"Target path contains illegal directory traversal '..': '{raw_path}'")
+
+    # 5. Check allowed manifest filename
+    target_name = Path(raw_path).name
+    if not is_allowed_manifest_filename(target_name):
+        raise ValueError(
+            f"Restricted target filename '{target_name}': mutations are restricted to authorized manifest files."
+        )
+
+    # 6. Check expected filename correspondence if provided
+    if expected_filename:
+        exp_name = Path(expected_filename).name
+        if exp_name.lower() != target_name.lower():
+            raise ValueError(
+                f"Target filename '{target_name}' does not match expected proposal filename '{exp_name}'."
+            )
+
+    # 7. Workspace root containment
+    resolved_root = workspace_root.resolve()
+    resolved_target = (resolved_root / raw_path).resolve()
+
+    if not (resolved_root in resolved_target.parents or resolved_root == resolved_target):
+        raise ValueError(f"Target path '{raw_path}' escapes authorized workspace root '{resolved_root}'.")
+
+    # 8. Symlink inspection: do not allow mutating files through symlinks
+    direct_path = resolved_root / raw_path
+    if direct_path.is_symlink():
+        raise ValueError(f"Target path '{raw_path}' is a symlink. Mutating files via symlinks is prohibited.")
+
+    return resolved_target
 
 
 class PatchValidator:

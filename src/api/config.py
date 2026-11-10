@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     # Persistence Settings
     DATABASE_PATH: str = Field(default="dua_local.db", description="Path to the SQLite database file")
 
+    # Workspace Settings
+    WORKSPACE_ROOT: str = Field(
+        default=str(Path.home() / ".dua" / "workspaces"),
+        description="Root directory for isolated mutable repository workspaces",
+    )
+
     # Security & CORS Settings
     CORS_ORIGINS: List[str] = Field(
         default_factory=lambda: [
@@ -69,6 +75,12 @@ class Settings(BaseSettings):
     @property
     def resolved_database_path(self) -> Path:
         return Path(self.DATABASE_PATH).resolve()
+
+    @property
+    def resolved_workspace_root(self) -> Path:
+        p = Path(self.WORKSPACE_ROOT).expanduser().resolve()
+        p.mkdir(parents=True, exist_ok=True)
+        return p
 
 
 # Singleton settings instance

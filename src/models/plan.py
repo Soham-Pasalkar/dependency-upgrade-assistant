@@ -88,6 +88,7 @@ class PatchIntegrityResult(BaseModel):
 
 class UpgradeProposalResponse(BaseModel):
     """Complete, structured upgrade proposal containing plan, mutated content, diff, and integrity checks."""
+    proposal_id: str = Field(default="", description="Server-generated unique identifier for proposal lifecycle tracking")
     manifest_type: str = Field(..., description="Source manifest type analyzed")
     ecosystem: Ecosystem = Field(..., description="Target ecosystem")
     file_path: str = Field(..., description="Target manifest path")
@@ -107,10 +108,19 @@ class UpgradeProposalResponse(BaseModel):
 
 class WorkspaceApplyRequest(BaseModel):
     """Request payload to apply an approved proposal to a mutable workspace."""
-    proposal: UpgradeProposalResponse = Field(..., description="The complete proposal to be applied")
-    approved: bool = Field(..., description="Explicit human approval gate confirmation (must be true)")
-    approval_note: Optional[str] = Field(default=None, description="Optional note documenting user approval")
-    target_path: Optional[str] = Field(default=None, description="Target workspace directory or file path")
+    proposal_id: Optional[str] = Field(default=None, description="Server-generated unique identifier of the proposal to apply")
+    approved: bool = Field(..., description="Explicit human confirmation signal (must be true)")
+    approval_note: Optional[str] = Field(default=None, description="Optional note documenting user confirmation")
+    target_path: Optional[str] = Field(
+        default=None,
+        description="Relative path to target manifest within authorized workspace root (e.g. 'requirements.txt')",
+    )
+    workspace_id: Optional[str] = Field(default=None, description="Optional workspace session ID")
+    expected_sha256: Optional[str] = Field(default=None, description="Optional expected SHA-256 of original content for freshness check")
+    proposal: Optional[UpgradeProposalResponse] = Field(
+        default=None,
+        description="Optional client-submitted proposal (never trusted over server-stored state)",
+    )
     run_id: Optional[str] = Field(default=None, description="Optional analysis run ID")
 
 
@@ -123,3 +133,4 @@ class WorkspaceApplyResponse(BaseModel):
     file_path: str = Field(..., description="Path to the modified manifest file")
     sha256: Optional[str] = Field(default=None, description="SHA-256 hash of the updated file")
     proposal_status: ProposalStatus = Field(..., description="Updated proposal status")
+

@@ -300,3 +300,4 @@ def modify_manifest(
     raise ManifestMutationError(
         f"Unsupported manifest format '{manifest_type}'. Supported formats: 'requirements.txt', 'package.json'."
     )
+

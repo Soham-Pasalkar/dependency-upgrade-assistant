@@ -227,3 +227,4 @@ def reverse_unified_diff(diff_text: str) -> str:
             i += 1
 
     return "".join(rev_lines)
+
