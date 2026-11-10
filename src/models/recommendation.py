@@ -28,6 +28,7 @@ class ValidationStatus(str, Enum):
     """Ground truth registry verification status of candidate version."""
     VALIDATED = "VALIDATED"
     REJECTED_HALLUCINATION = "REJECTED_HALLUCINATION"
+    REJECTED_INCOMPATIBLE = "REJECTED_INCOMPATIBLE"
     FALLBACK_DETERMINISTIC = "FALLBACK_DETERMINISTIC"
     SKIPPED = "SKIPPED"
 

@@ -10,9 +10,11 @@ Provides structured, safe communication with the local Ollama daemon:
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -54,6 +56,76 @@ class OllamaModelNotFoundError(OllamaResponseError):
 
 class OllamaParseError(OllamaError):
     """Raised when the Ollama API response is malformed or invalid JSON."""
+
+
+class OllamaSecurityError(OllamaError):
+    """Raised when Ollama endpoint or operation violates security constraints."""
+
+
+# ---------------------------------------------------------------------------
+# Endpoint Security Validation
+# ---------------------------------------------------------------------------
+
+def validate_and_sanitize_ollama_endpoint(url: str, allow_remote: bool = False) -> str:
+    """Validate and sanitize the configured Ollama base URL.
+    
+    Security rules:
+    1. Scheme must be 'http' or 'https'.
+    2. Credentials (@, username, password) are strictly prohibited.
+    3. Hostname must be present and valid.
+    4. By default, only local loopback hosts (127.0.0.1, localhost, [::1], ::1) are allowed.
+       Remote hosts are only allowed if allow_remote=True.
+    5. Strips any path, query parameters, or fragments.
+    """
+    if not url or not isinstance(url, str):
+        raise OllamaSecurityError("Ollama endpoint URL cannot be empty.")
+
+    clean_url = url.strip()
+    if "://" not in clean_url:
+        clean_url = f"http://{clean_url}"
+
+    try:
+        parsed = urllib.parse.urlsplit(clean_url)
+    except Exception as e:
+        raise OllamaSecurityError(f"Malformed Ollama endpoint URL: {e}") from e
+
+    if parsed.scheme not in ("http", "https"):
+        raise OllamaSecurityError(
+            f"Unsupported scheme '{parsed.scheme}': only http and https are allowed for Ollama endpoints."
+        )
+
+    # Reject embedded credentials
+    if parsed.username or parsed.password or "@" in parsed.netloc:
+        raise OllamaSecurityError(
+            "Embedded credentials in Ollama endpoint URL are strictly prohibited."
+        )
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise OllamaSecurityError("Invalid Ollama endpoint: missing hostname.")
+
+    # Check loopback
+    is_loopback = False
+    lower_host = hostname.lower()
+    if lower_host in ("localhost", "127.0.0.1", "::1", "[::1]"):
+        is_loopback = True
+    else:
+        try:
+            ip = ipaddress.ip_address(lower_host.strip("[]"))
+            if ip.is_loopback:
+                is_loopback = True
+        except ValueError:
+            pass
+
+    if not is_loopback and not allow_remote:
+        raise OllamaSecurityError(
+            f"Remote Ollama host '{hostname}' is not authorized. "
+            "Connecting to external/remote Ollama endpoints must be explicitly permitted via ALLOW_REMOTE_OLLAMA configuration."
+        )
+
+    # Reconstruct sanitized scheme://netloc
+    sanitized = f"{parsed.scheme}://{parsed.netloc}"
+    return sanitized
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +214,7 @@ class OllamaClient:
         base_url: Optional[str] = None,
         timeout: float = DEFAULT_REQUEST_TIMEOUT,
         session: Optional[requests.Session] = None,
+        allow_remote: Optional[bool] = None,
     ) -> None:
         """Initialize the Ollama client.
         
@@ -150,12 +223,17 @@ class OllamaClient:
                       Defaults to OLLAMA_HOST env var or http://127.0.0.1:11434.
             timeout: Default request timeout in seconds.
             session: Optional custom requests.Session (for connection pooling or testing).
+            allow_remote: Whether remote non-loopback endpoints are allowed.
         """
         raw_url = base_url or os.environ.get("OLLAMA_HOST") or DEFAULT_OLLAMA_ENDPOINT
-        # Ensure scheme is present
-        if not raw_url.startswith(("http://", "https://")):
-            raw_url = f"http://{raw_url}"
-        self.base_url = raw_url.rstrip("/")
+        if allow_remote is None:
+            if base_url is not None:
+                # Explicit programmatic base_url allows custom host unless ALLOW_REMOTE_OLLAMA is explicitly disabled
+                allow_remote = os.environ.get("ALLOW_REMOTE_OLLAMA", "true").lower() in ("true", "1", "yes")
+            else:
+                allow_remote = os.environ.get("ALLOW_REMOTE_OLLAMA", "false").lower() in ("true", "1", "yes")
+        self.allow_remote = allow_remote
+        self.base_url = validate_and_sanitize_ollama_endpoint(raw_url, allow_remote=self.allow_remote)
         self.default_timeout = max(1.0, float(timeout))
         self._session = session or requests.Session()
 
@@ -171,7 +249,13 @@ class OllamaClient:
         """
         version: Optional[str] = None
         try:
-            resp = self._session.get(self._url("/api/version"), timeout=timeout)
+            resp = self._session.get(self._url("/api/version"), timeout=timeout, allow_redirects=False)
+            if (getattr(resp, "is_redirect", False) is True) or (getattr(resp, "status_code", 0) in (301, 302, 303, 307, 308)):
+                return OllamaHealthStatus(
+                    is_available=False,
+                    base_url=self.base_url,
+                    error_message="Redirect disallowed on Ollama API",
+                )
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, dict):
@@ -182,7 +266,13 @@ class OllamaClient:
 
         # Fallback to /api/tags if /api/version is not supported by older Ollama versions
         try:
-            resp = self._session.get(self._url("/api/tags"), timeout=timeout)
+            resp = self._session.get(self._url("/api/tags"), timeout=timeout, allow_redirects=False)
+            if (getattr(resp, "is_redirect", False) is True) or (getattr(resp, "status_code", 0) in (301, 302, 303, 307, 308)):
+                return OllamaHealthStatus(
+                    is_available=False,
+                    base_url=self.base_url,
+                    error_message="Redirect disallowed on Ollama API",
+                )
             if resp.status_code == 200:
                 return OllamaHealthStatus(is_available=True, base_url=self.base_url, version=version)
             return OllamaHealthStatus(
@@ -225,7 +315,9 @@ class OllamaClient:
             OllamaParseError: If response body is malformed.
         """
         try:
-            resp = self._session.get(self._url("/api/tags"), timeout=timeout)
+            resp = self._session.get(self._url("/api/tags"), timeout=timeout, allow_redirects=False)
+            if (getattr(resp, "is_redirect", False) is True) or (getattr(resp, "status_code", 0) in (301, 302, 303, 307, 308)):
+                raise OllamaSecurityError("Redirects are disallowed on Ollama API requests.")
         except requests.exceptions.ConnectionError as err:
             raise OllamaConnectionError(
                 f"Failed to connect to Ollama at {self.base_url} to discover models. "
@@ -347,7 +439,10 @@ class OllamaClient:
                 self._url("/api/chat"),
                 json=payload,
                 timeout=req_timeout,
+                allow_redirects=False,
             )
+            if (getattr(resp, "is_redirect", False) is True) or (getattr(resp, "status_code", 0) in (301, 302, 303, 307, 308)):
+                raise OllamaSecurityError("Redirects are disallowed on Ollama API requests.")
         except requests.exceptions.ConnectionError as err:
             raise OllamaConnectionError(
                 f"Failed to connect to Ollama at {self.base_url}. Ensure the service is active."
@@ -356,6 +451,8 @@ class OllamaClient:
             raise OllamaTimeoutError(
                 f"Ollama chat request for model '{model}' timed out after {req_timeout}s."
             ) from err
+        except OllamaSecurityError:
+            raise
         except Exception as err:
             raise OllamaError(f"Unexpected network error during chat request: {err}") from err
 

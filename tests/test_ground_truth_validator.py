@@ -174,3 +174,213 @@ def test_validator_batch_validation(validator):
 
     assert batch[1].validation_status == ValidationStatus.REJECTED_HALLUCINATION
     assert batch[1].candidate_version == "1.1.0"
+
+
+def test_validator_rejects_incompatible_pypi_range_violation(validator):
+    """Scenario 2 & 10: Real PyPI version that violates range constraint is rejected as incompatible."""
+    dep = AnalyzedDependency(
+        name="urllib3",
+        original_name="urllib3",
+        ecosystem=Ecosystem.PYTHON,
+        current_version="1.26.5",
+        declared_specifier="<2.0.0",
+        latest_version="2.2.3",
+        latest_compatible_version="1.26.18",
+        status=DependencyStatus.UPGRADE_AVAILABLE,
+        available_versions=["1.26.5", "1.26.18", "2.0.0", "2.2.3"],
+    )
+    # AI suggests 2.2.3, which exists on PyPI but violates <2.0.0
+    rec = PackageUpgradeRecommendation(
+        package_name="urllib3",
+        ecosystem=Ecosystem.PYTHON,
+        current_version="1.26.5",
+        candidate_version="2.2.3",
+        category=RecommendationCategory.RECOMMENDED,
+        priority=RecommendationPriority.MEDIUM,
+        explanation="AI proposes 2.2.3",
+        is_ai_generated=True,
+    )
+    validated = validator.validate_recommendation(rec, dep)
+    assert validated.validation_status == ValidationStatus.REJECTED_INCOMPATIBLE
+    # Must revert to safe compatible version 1.26.18
+    assert validated.candidate_version == "1.26.18"
+    assert validated.is_ai_generated is False
+    assert "[REJECTED INCOMPATIBLE]" in validated.explanation
+    assert "<2.0.0" in validated.explanation
+
+
+def test_validator_rejects_incompatible_npm_range_violation(validator):
+    """Scenario 3: Real npm version outside verified compatibility constraint is rejected."""
+    dep = AnalyzedDependency(
+        name="react",
+        original_name="react",
+        ecosystem=Ecosystem.NPM,
+        current_version="17.0.2",
+        declared_specifier="^17.0.0",
+        latest_version="18.2.0",
+        latest_compatible_version="17.0.2",
+        status=DependencyStatus.UPGRADE_AVAILABLE,
+        available_versions=["17.0.0", "17.0.1", "17.0.2", "18.0.0", "18.2.0"],
+    )
+    rec = PackageUpgradeRecommendation(
+        package_name="react",
+        ecosystem=Ecosystem.NPM,
+        current_version="17.0.2",
+        candidate_version="18.2.0",
+        category=RecommendationCategory.RECOMMENDED,
+        priority=RecommendationPriority.HIGH,
+        explanation="AI proposes major version jump",
+        is_ai_generated=True,
+    )
+    validated = validator.validate_recommendation(rec, dep)
+    assert validated.validation_status == ValidationStatus.REJECTED_INCOMPATIBLE
+    # No newer compatible candidate exists in range ^17.0.0 -> fail-closed safe no-upgrade
+    assert validated.candidate_version is None
+    assert validated.category == RecommendationCategory.NO_UPGRADE_NEEDED
+    assert validated.confidence_score == 0.0
+
+
+def test_validator_rejects_unparseable_version_string(validator):
+    """Scenario 6: Syntax failure or unparseable version string is rejected."""
+    dep = AnalyzedDependency(
+        name="requests",
+        original_name="requests",
+        ecosystem=Ecosystem.PYTHON,
+        current_version="2.25.0",
+        latest_version="2.32.3",
+        latest_compatible_version="2.32.3",
+        status=DependencyStatus.UPGRADE_AVAILABLE,
+        available_versions=["2.25.0", "2.32.3", "not_a_version!!"],
+    )
+    rec = PackageUpgradeRecommendation(
+        package_name="requests",
+        ecosystem=Ecosystem.PYTHON,
+        current_version="2.25.0",
+        candidate_version="not_a_version!!",
+        category=RecommendationCategory.RECOMMENDED,
+        priority=RecommendationPriority.LOW,
+        explanation="AI hallucinates garbage version string",
+        is_ai_generated=True,
+    )
+    validated = validator.validate_recommendation(rec, dep)
+    assert validated.validation_status == ValidationStatus.REJECTED_INCOMPATIBLE
+    assert validated.candidate_version == "2.32.3"
+    assert "PEP 440" in validated.explanation
+
+
+def test_validator_rejects_version_downgrade(validator):
+    """Scenario 7: Candidate lower than current version is rejected (downgrade prevention)."""
+    dep = AnalyzedDependency(
+        name="requests",
+        original_name="requests",
+        ecosystem=Ecosystem.PYTHON,
+        current_version="2.32.3",
+        latest_version="2.32.3",
+        latest_compatible_version="2.32.3",
+        status=DependencyStatus.UP_TO_DATE,
+        available_versions=["2.25.0", "2.32.0", "2.32.3"],
+    )
+    # AI proposes downgrade to 2.25.0
+    rec = PackageUpgradeRecommendation(
+        package_name="requests",
+        ecosystem=Ecosystem.PYTHON,
+        current_version="2.32.3",
+        candidate_version="2.25.0",
+        category=RecommendationCategory.RECOMMENDED,
+        priority=RecommendationPriority.LOW,
+        explanation="AI erroneously proposes downgrade",
+        is_ai_generated=True,
+    )
+    validated = validator.validate_recommendation(rec, dep)
+    assert validated.validation_status == ValidationStatus.REJECTED_INCOMPATIBLE
+    assert "downgrade prevention" in validated.explanation.lower()
+
+
+def test_validator_rejects_prerelease_when_current_is_stable(validator):
+    """Scenario 8: Prerelease candidate is rejected when current release is stable."""
+    dep = AnalyzedDependency(
+        name="pydantic",
+        original_name="pydantic",
+        ecosystem=Ecosystem.PYTHON,
+        current_version="1.10.12",
+        declared_specifier="==1.10.12",
+        latest_version="2.0.0a1",
+        status=DependencyStatus.UPGRADE_AVAILABLE,
+        available_versions=["1.10.12", "2.0.0a1"],
+    )
+    rec = PackageUpgradeRecommendation(
+        package_name="pydantic",
+        ecosystem=Ecosystem.PYTHON,
+        current_version="1.10.12",
+        candidate_version="2.0.0a1",
+        category=RecommendationCategory.RECOMMENDED,
+        priority=RecommendationPriority.HIGH,
+        explanation="AI proposes alpha prerelease",
+        is_ai_generated=True,
+    )
+    validated = validator.validate_recommendation(rec, dep)
+    assert validated.validation_status == ValidationStatus.REJECTED_INCOMPATIBLE
+    assert "prerelease" in validated.explanation.lower()
+
+
+def test_validator_handles_exact_pin_bump_with_caution(validator):
+    """Scenario 9: Exact pin bump is accepted as VALIDATED with CAUTION and M4 note."""
+    dep = AnalyzedDependency(
+        name="requests",
+        original_name="requests",
+        ecosystem=Ecosystem.PYTHON,
+        current_version="2.25.0",
+        declared_specifier="==2.25.0",
+        latest_version="2.32.3",
+        latest_compatible_version="2.32.3",
+        status=DependencyStatus.UPGRADE_AVAILABLE,
+        available_versions=["2.25.0", "2.31.0", "2.32.3"],
+    )
+    rec = PackageUpgradeRecommendation(
+        package_name="requests",
+        ecosystem=Ecosystem.PYTHON,
+        current_version="2.25.0",
+        candidate_version="2.32.3",
+        category=RecommendationCategory.RECOMMENDED,
+        priority=RecommendationPriority.LOW,
+        explanation="AI proposes upgrade for pinned dependency",
+        is_ai_generated=True,
+    )
+    validated = validator.validate_recommendation(rec, dep)
+    assert validated.validation_status == ValidationStatus.VALIDATED
+    assert validated.candidate_version == "2.32.3"
+    assert validated.category == RecommendationCategory.CAUTION
+    assert "M4" in validated.explanation
+    assert "==2.25.0" in validated.explanation
+
+
+def test_validator_rejects_unknown_package_in_batch(validator):
+    """Scenario 13: Package not present in manifest is rejected."""
+    deps = [
+        AnalyzedDependency(
+            name="requests",
+            original_name="requests",
+            ecosystem=Ecosystem.PYTHON,
+            current_version="2.25.0",
+            latest_version="2.32.3",
+            status=DependencyStatus.UPGRADE_AVAILABLE,
+            available_versions=["2.25.0", "2.32.3"],
+        )
+    ]
+    recs = [
+        PackageUpgradeRecommendation(
+            package_name="unknown-lib",
+            ecosystem=Ecosystem.PYTHON,
+            candidate_version="1.0.0",
+            category=RecommendationCategory.RECOMMENDED,
+            priority=RecommendationPriority.LOW,
+            explanation="Hallucinated package not in manifest",
+            is_ai_generated=True,
+        )
+    ]
+    batch = validator.validate_batch(recs, deps)
+    assert len(batch) == 1
+    assert batch[0].validation_status == ValidationStatus.REJECTED_INCOMPATIBLE
+    assert batch[0].candidate_version is None
+    assert "not present in the analyzed manifest" in batch[0].explanation
+

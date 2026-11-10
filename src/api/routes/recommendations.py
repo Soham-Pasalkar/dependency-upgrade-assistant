@@ -5,6 +5,7 @@ import logging
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from starlette.concurrency import run_in_threadpool
 
 from src.models.recommendation import (
     AIProviderStatusResponse,
@@ -43,7 +44,7 @@ async def check_ai_status(
     service: Annotated[RecommendationService, Depends(get_recommendation_service)],
 ) -> AIProviderStatusResponse:
     """Check AI provider status and return dynamically discovered models."""
-    return service.get_ai_status()
+    return await run_in_threadpool(service.get_ai_status)
 
 
 @router.post(
@@ -62,7 +63,7 @@ async def generate_recommendations(
 ) -> RecommendationBatchResponse:
     """Generate structured upgrade recommendations for analyzed dependencies."""
     try:
-        response = service.generate_recommendations(request)
+        response = await run_in_threadpool(service.generate_recommendations, request)
         return response
     except Exception as e:
         logger.exception(f"Error generating recommendations: {e}")

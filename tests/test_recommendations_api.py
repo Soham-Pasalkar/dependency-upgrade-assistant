@@ -263,3 +263,61 @@ def test_generate_recommendations_force_deterministic(client, sample_manifest_an
         mock_ai.generate_recommendations.assert_not_called()
     finally:
         app.dependency_overrides.clear()
+
+
+def test_recommendations_route_does_not_block_event_loop(sample_manifest_analysis):
+    """Verify synchronous recommendation operations running in threadpool do not block concurrent requests."""
+    import asyncio
+    import time
+    from httpx import AsyncClient, ASGITransport
+    from src.models.recommendation import AIProviderStatusResponse, RecommendationBatchResponse
+
+    mock_service = MagicMock()
+
+    def slow_generate(request):
+        time.sleep(0.35)
+        return RecommendationBatchResponse(
+            manifest_type="requirements.txt",
+            ecosystem=Ecosystem.PYTHON,
+            provider_used="deterministic",
+            total_upgrades_recommended=0,
+            recommendations=[],
+            is_offline_fallback=True,
+        )
+
+    mock_service.generate_recommendations.side_effect = slow_generate
+    mock_service.get_ai_status.return_value = AIProviderStatusResponse(
+        is_available=True,
+        provider_name="ollama",
+        endpoint="http://127.0.0.1:11434",
+        discovered_models=[],
+        message="Active",
+    )
+    app.dependency_overrides[get_recommendation_service] = lambda: mock_service
+
+    async def run_concurrent():
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            payload = {
+                "manifest_analysis": sample_manifest_analysis.model_dump(),
+                "force_deterministic": False,
+            }
+            start = time.perf_counter()
+            t1 = asyncio.create_task(ac.post("/api/recommendations/generate", json=payload))
+            await asyncio.sleep(0.04)
+            t2 = asyncio.create_task(ac.get("/api/health"))
+
+            resp_health = await t2
+            elapsed_health = time.perf_counter() - start
+            resp_gen = await t1
+            total_elapsed = time.perf_counter() - start
+
+            assert resp_health.status_code == 200
+            assert resp_gen.status_code == 200
+            assert elapsed_health < 0.25, f"Health request was blocked by slow recommendation route: {elapsed_health}s"
+            assert total_elapsed >= 0.30
+
+    try:
+        asyncio.run(run_concurrent())
+    finally:
+        app.dependency_overrides.clear()
+

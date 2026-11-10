@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from src.models.manifest import AnalyzedDependency, DependencyStatus, Ecosystem
 from src.models.recommendation import (
@@ -47,8 +47,9 @@ class OllamaProvider(AIRecommendationProvider):
         client: Optional[OllamaClient] = None,
         base_url: Optional[str] = None,
         timeout: float = 30.0,
+        allow_remote: Optional[bool] = None,
     ) -> None:
-        self.client = client or OllamaClient(base_url=base_url, timeout=timeout)
+        self.client = client or OllamaClient(base_url=base_url, timeout=timeout, allow_remote=allow_remote)
         self.timeout = timeout
 
     @property
@@ -274,7 +275,15 @@ class OllamaProvider(AIRecommendationProvider):
         dependencies: List[AnalyzedDependency],
         model_name: str,
     ) -> Dict[str, PackageUpgradeRecommendation]:
-        """Parse structured model output into PackageUpgradeRecommendation items."""
+        """Parse structured model output into PackageUpgradeRecommendation items.
+        
+        Security and Integrity Guards:
+        - Unknown package names not in analyzed dependencies are rejected.
+        - Duplicate package recommendations are safely ignored (first occurrence preserved).
+        - Candidate versions are validated against string length and illegal characters.
+        - Explanations and risk summaries are strictly bounded (<= 500 chars).
+        - Unknown enum categories/priorities fall back to safe defaults.
+        """
         dep_map = {d.name.lower(): d for d in dependencies}
         recs_data = data.get("recommendations", [])
         if isinstance(data, list):
@@ -283,6 +292,7 @@ class OllamaProvider(AIRecommendationProvider):
             recs_data = [recs_data] if isinstance(recs_data, dict) else []
 
         result: Dict[str, PackageUpgradeRecommendation] = {}
+        seen_packages: Set[str] = set()
 
         for item in recs_data:
             if not isinstance(item, dict):
@@ -292,32 +302,44 @@ class OllamaProvider(AIRecommendationProvider):
             if not pkg_name or not isinstance(pkg_name, str):
                 continue
 
-            dep = dep_map.get(pkg_name.lower())
+            dep_key = pkg_name.strip().lower()
+            # Ignore unknown packages not in analyzed manifest
+            dep = dep_map.get(dep_key)
             if not dep:
                 continue
 
+            # Prevent duplicate packages from overwriting earlier entries
+            if dep_key in seen_packages:
+                continue
+            seen_packages.add(dep_key)
+
             cand = item.get("candidate_version")
             cand_str = str(cand).strip() if cand is not None else None
+            # Validate candidate string bounds
+            if cand_str:
+                if len(cand_str) > 64 or any(c.isspace() or c in ("\x00", "\r", "\n", ";", "&", "|") for c in cand_str):
+                    cand_str = None
 
-            # Category parsing
+            # Category parsing with safe fallback
             cat_raw = str(item.get("category", "RECOMMENDED")).upper()
             try:
                 cat = RecommendationCategory(cat_raw)
             except ValueError:
                 cat = RecommendationCategory.RECOMMENDED
 
-            # Priority parsing
+            # Priority parsing with safe fallback
             prio_raw = str(item.get("priority", "MEDIUM")).upper()
             try:
                 prio = RecommendationPriority(prio_raw)
             except ValueError:
                 prio = RecommendationPriority.MEDIUM
 
-            explanation = str(item.get("explanation", f"AI recommendation for {dep.name}"))
+            # Bounded text fields
+            explanation = str(item.get("explanation", f"AI recommendation for {dep.name}"))[:500]
             breaking = item.get("breaking_changes_summary")
-            breaking_str = str(breaking) if breaking else None
+            breaking_str = str(breaking)[:500] if breaking else None
 
-            result[dep.name.lower()] = PackageUpgradeRecommendation(
+            result[dep_key] = PackageUpgradeRecommendation(
                 package_name=dep.name,
                 ecosystem=dep.ecosystem,
                 current_version=dep.current_version,

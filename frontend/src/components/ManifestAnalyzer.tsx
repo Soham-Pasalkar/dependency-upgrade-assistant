@@ -546,6 +546,7 @@ export const ManifestAnalyzer: React.FC = () => {
                               >
                                 {rec.validation_status === 'VALIDATED' && '✓ Validated'}
                                 {rec.validation_status === 'REJECTED_HALLUCINATION' && '⚠ Reverted'}
+                                {rec.validation_status === 'REJECTED_INCOMPATIBLE' && '⚠ Incompatible'}
                                 {rec.validation_status === 'FALLBACK_DETERMINISTIC' && 'Rules'}
                                 {rec.validation_status === 'SKIPPED' && '—'}
                               </span>

@@ -20,6 +20,7 @@ export type RecommendationPriority = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
 export type ValidationStatus =
   | 'VALIDATED'
   | 'REJECTED_HALLUCINATION'
+  | 'REJECTED_INCOMPATIBLE'
   | 'FALLBACK_DETERMINISTIC'
   | 'SKIPPED';
 

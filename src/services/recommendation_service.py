@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import logging
+import urllib.parse
 from typing import Optional
 
+from src.api.config import settings
 from src.models.recommendation import (
     AIProviderStatusResponse,
     ModelMetadata,
@@ -31,7 +33,11 @@ class RecommendationService:
         deterministic_engine: Optional[DeterministicRecommendationEngine] = None,
         validator: Optional[RegistryGroundTruthValidator] = None,
     ) -> None:
-        self.ai_provider = ai_provider or OllamaProvider()
+        self.ai_provider = ai_provider or OllamaProvider(
+            base_url=settings.OLLAMA_BASE_URL,
+            timeout=settings.OLLAMA_TIMEOUT_SECONDS,
+            allow_remote=settings.ALLOW_REMOTE_OLLAMA,
+        )
         self.deterministic_engine = deterministic_engine or DeterministicRecommendationEngine()
         self.validator = validator or RegistryGroundTruthValidator()
 
@@ -45,7 +51,12 @@ class RecommendationService:
             # Sanitize endpoint display for security
             endpoint_display = "http://127.0.0.1:11434"
             if isinstance(self.ai_provider, OllamaProvider) and hasattr(self.ai_provider, "client"):
-                endpoint_display = self.ai_provider.client.base_url
+                raw_endpoint = self.ai_provider.client.base_url
+                try:
+                    parsed = urllib.parse.urlsplit(raw_endpoint)
+                    endpoint_display = f"{parsed.scheme}://{parsed.hostname}" + (f":{parsed.port}" if parsed.port else "")
+                except Exception:
+                    endpoint_display = "http://127.0.0.1:11434"
 
             return AIProviderStatusResponse(
                 is_available=is_avail,

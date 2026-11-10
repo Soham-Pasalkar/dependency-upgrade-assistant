@@ -263,3 +263,89 @@ def test_ollama_provider_parse_error_maps_to_ai_parse_error(mock_ollama_client):
     ]
     with pytest.raises(AIResponseParseError):
         provider.generate_recommendations(deps)
+
+
+def test_ollama_provider_untrusted_data_handling(mock_ollama_client):
+    """Verify provider rejects unknown packages, deduplicates, and bounds strings."""
+    mock_ollama_client.check_health.return_value = OllamaHealthStatus(is_available=True, base_url="http://127.0.0.1:11434")
+    mock_ollama_client.list_models.return_value = [
+        OllamaModelInfo(name="llama3.2:latest", model="llama3.2:latest", size_bytes=10, modified_at="", digest="")
+    ]
+    # AI returns:
+    # 1. requests (valid)
+    # 2. malicious-pkg (unknown, should be skipped)
+    # 3. requests (duplicate, should be ignored)
+    # 4. urllib3 (valid, with oversized string fields and invalid enums)
+    mock_ollama_client.chat_json.return_value = (
+        {
+            "recommendations": [
+                {
+                    "package_name": "requests",
+                    "candidate_version": "2.32.3",
+                    "category": "RECOMMENDED",
+                    "priority": "LOW",
+                    "explanation": "Valid update",
+                },
+                {
+                    "package_name": "malicious-pkg",
+                    "candidate_version": "9.9.9",
+                    "category": "RECOMMENDED",
+                    "priority": "HIGH",
+                    "explanation": "Injected unknown package",
+                },
+                {
+                    "package_name": "requests",
+                    "candidate_version": "2.31.0",
+                    "category": "CAUTION",
+                    "priority": "HIGH",
+                    "explanation": "Duplicate recommendation",
+                },
+                {
+                    "package_name": "urllib3",
+                    "candidate_version": "2.2.3",
+                    "category": "TOTALLY_INVALID_CATEGORY",
+                    "priority": "TOTALLY_INVALID_PRIORITY",
+                    "explanation": "X" * 1000,  # Oversized explanation
+                    "breaking_changes_summary": "Y" * 800,  # Oversized summary
+                },
+            ]
+        },
+        MagicMock(),
+    )
+
+    provider = OllamaProvider(client=mock_ollama_client)
+    deps = [
+        AnalyzedDependency(
+            name="requests",
+            original_name="requests",
+            ecosystem=Ecosystem.PYTHON,
+            current_version="2.25.0",
+            latest_version="2.32.3",
+            status=DependencyStatus.UPGRADE_AVAILABLE,
+        ),
+        AnalyzedDependency(
+            name="urllib3",
+            original_name="urllib3",
+            ecosystem=Ecosystem.PYTHON,
+            current_version="1.26.5",
+            latest_version="2.2.3",
+            status=DependencyStatus.UPGRADE_AVAILABLE,
+        ),
+    ]
+
+    recs = provider.generate_recommendations(deps)
+    assert len(recs) == 2
+    # First is requests
+    assert recs[0].package_name == "requests"
+    assert recs[0].candidate_version == "2.32.3"
+
+    # Second is urllib3 (malicious-pkg and duplicate requests were dropped)
+    assert recs[1].package_name == "urllib3"
+    assert recs[1].candidate_version == "2.2.3"
+    # Safe enum fallbacks applied
+    assert recs[1].category == RecommendationCategory.RECOMMENDED
+    assert recs[1].priority == RecommendationPriority.MEDIUM
+    # Text bounds enforced (<= 500 characters)
+    assert len(recs[1].explanation) <= 500
+    assert len(recs[1].breaking_changes_summary or "") <= 500
+

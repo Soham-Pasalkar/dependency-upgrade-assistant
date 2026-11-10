@@ -1,12 +1,12 @@
 """Deterministic rule-based recommendation engine for offline and fallback operation."""
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import List, Optional, Set, Tuple
 
-from packaging.version import InvalidVersion
-from packaging.version import Version as PyVersion
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version as PyVersion
 
-from src.analysis.semver_evaluator import SemVer
+from src.analysis.semver_evaluator import SemVer, semver_satisfies
 from src.models.manifest import AnalyzedDependency, DependencyStatus, Ecosystem
 from src.models.recommendation import (
     ModelMetadata,
@@ -24,6 +24,13 @@ class DeterministicRecommendationEngine(AIRecommendationProvider):
     Uses pure semantic versioning arithmetic, registry metadata, and declared constraints
     to generate safe, structured upgrade recommendations when local AI daemon is offline
     or when deterministic operation is explicitly enforced.
+    
+    Grounded Principles:
+    1. Prefer latest_compatible_version only when it is present, valid, and strictly newer.
+    2. Never substitute latest_version blindly for a missing compatible range candidate.
+    3. If the candidate is missing, invalid, or identical to current: return safe no-upgrade.
+    4. Exact pin bumps are treated as out-of-range targets requiring CAUTION and M4 pin updates.
+    5. Downgrades are strictly prevented under all conditions.
     """
 
     @property
@@ -41,7 +48,7 @@ class DeterministicRecommendationEngine(AIRecommendationProvider):
                 size_bytes=0,
                 family="rules",
                 parameter_size="0B",
-                display_label="Deterministic SemVer Engine (Rule-based, 0% Hallucination)",
+                display_label="Deterministic SemVer Engine (Rule-based, Grounded Metadata)",
             )
         ]
 
@@ -105,16 +112,81 @@ class DeterministicRecommendationEngine(AIRecommendationProvider):
                 line_number=dep.line_number,
             )
 
-        # 3. Upgrade Available
-        # Select best candidate:
-        # Prefer latest_compatible_version if present and different from current_version;
-        # otherwise use latest_version.
-        candidate = dep.latest_compatible_version
-        if not candidate or candidate == dep.current_version:
-            candidate = dep.latest_version or dep.current_version
+        # 3. Upgrade Available: Determine candidate grounded in M2 evidence
+        specifier_str = dep.declared_specifier.strip() if dep.declared_specifier else ""
+        # Check if declared specifier contains range operators
+        is_range = any(op in specifier_str for op in ("^", "~", "<", ">", "!="))
 
-        # Evaluate risk, delta, and priority
-        category, priority, explanation, breaking_changes = self._classify_upgrade(dep, candidate)
+        known_versions: Set[str] = set(dep.available_versions)
+        if dep.latest_version:
+            known_versions.add(dep.latest_version)
+        if dep.latest_compatible_version:
+            known_versions.add(dep.latest_compatible_version)
+
+        candidate: Optional[str] = None
+        category: RecommendationCategory = RecommendationCategory.RECOMMENDED
+        priority: RecommendationPriority = RecommendationPriority.LOW
+        explanation: str = ""
+        breaking_changes: Optional[str] = None
+
+        if is_range:
+            # Range constraint: strictly prefer latest_compatible_version. Never substitute latest_version blindly.
+            cand_cand = dep.latest_compatible_version
+            if cand_cand and cand_cand in known_versions and self._is_strictly_newer(dep.ecosystem, dep.current_version, cand_cand):
+                candidate = cand_cand
+                category, priority, explanation, breaking_changes = self._classify_upgrade(dep, candidate)
+            else:
+                # No compatible upgrade found in range
+                return PackageUpgradeRecommendation(
+                    package_name=dep.name,
+                    ecosystem=dep.ecosystem,
+                    current_version=dep.current_version,
+                    declared_specifier=dep.declared_specifier,
+                    latest_registry_version=dep.latest_version,
+                    candidate_version=None,
+                    category=RecommendationCategory.NO_UPGRADE_NEEDED,
+                    priority=RecommendationPriority.LOW,
+                    explanation=(
+                        f"No compatible upgrade candidate found satisfying constraint '{dep.declared_specifier}'. "
+                        f"Current version ({dep.current_version or 'resolved'}) is at latest compatible release."
+                    ),
+                    breaking_changes_summary=None,
+                    confidence_score=1.0,
+                    provider_used=self.provider_id,
+                    model_used=None,
+                    is_ai_generated=False,
+                    validation_status=ValidationStatus.FALLBACK_DETERMINISTIC,
+                    raw_line=dep.raw_line,
+                    line_number=dep.line_number,
+                )
+        else:
+            # Exact pin or unpinned: target is latest_version
+            cand_cand = dep.latest_version or dep.latest_compatible_version
+            if cand_cand and cand_cand in known_versions and self._is_strictly_newer(dep.ecosystem, dep.current_version, cand_cand):
+                candidate = cand_cand
+                category, priority, explanation, breaking_changes = self._classify_upgrade(dep, candidate)
+                if specifier_str.startswith("==") or specifier_str.startswith("==="):
+                    explanation = f"Exact pin bump from '{dep.current_version}' to '{candidate}'. Requires manifest pin update in M4. {explanation}".strip()
+            else:
+                return PackageUpgradeRecommendation(
+                    package_name=dep.name,
+                    ecosystem=dep.ecosystem,
+                    current_version=dep.current_version,
+                    declared_specifier=dep.declared_specifier,
+                    latest_registry_version=dep.latest_version,
+                    candidate_version=dep.current_version,
+                    category=RecommendationCategory.NO_UPGRADE_NEEDED,
+                    priority=RecommendationPriority.LOW,
+                    explanation=f"Dependency '{dep.name}' has no verified newer release in registry metadata.",
+                    breaking_changes_summary=None,
+                    confidence_score=1.0,
+                    provider_used=self.provider_id,
+                    model_used=None,
+                    is_ai_generated=False,
+                    validation_status=ValidationStatus.SKIPPED,
+                    raw_line=dep.raw_line,
+                    line_number=dep.line_number,
+                )
 
         return PackageUpgradeRecommendation(
             package_name=dep.name,
@@ -136,40 +208,53 @@ class DeterministicRecommendationEngine(AIRecommendationProvider):
             line_number=dep.line_number,
         )
 
+    def _is_strictly_newer(self, ecosystem: Ecosystem, current_str: Optional[str], candidate_str: str) -> bool:
+        """Check if candidate is strictly newer than current version (preventing downgrades)."""
+        if not current_str:
+            return True
+
+        if ecosystem == Ecosystem.PYTHON:
+            try:
+                curr_v = PyVersion(current_str)
+                cand_v = PyVersion(candidate_str)
+                # Disallow prereleases if current is stable
+                if cand_v.is_prerelease and not curr_v.is_prerelease:
+                    return False
+                return cand_v > curr_v
+            except InvalidVersion:
+                return False
+        else:  # NPM
+            curr_s = SemVer.parse(current_str)
+            cand_s = SemVer.parse(candidate_str)
+            if curr_s is None or cand_s is None:
+                return False
+            if cand_s.is_prerelease() and not curr_s.is_prerelease():
+                return False
+            return cand_s > curr_s
+
     def _classify_upgrade(
         self,
         dep: AnalyzedDependency,
-        candidate: Optional[str],
+        candidate: str,
     ) -> Tuple[RecommendationCategory, RecommendationPriority, str, Optional[str]]:
-        """Classify upgrade urgency, safety category, and potential breaking changes."""
-        curr = dep.current_version
+        """Classify an upgrade candidate by SemVer bump magnitude."""
+        curr = dep.current_version or ""
+        is_major, is_minor, _ = self._compare_versions(dep.ecosystem, curr, candidate)
 
-        # Check deprecation / yanked status first
         if dep.yanked_or_deprecated:
             reason = dep.deprecation_reason or "Marked as yanked on PyPI or deprecated on npm"
             return (
                 RecommendationCategory.CAUTION,
                 RecommendationPriority.CRITICAL,
-                f"Package '{dep.name}' is deprecated or yanked upstream ({reason}). Upgrade to '{candidate}' is urgently recommended.",
+                f"Package '{dep.name}' is deprecated or yanked upstream ({reason}). Upgrade to '{candidate}' is urgently recommended in M4.",
                 f"Critical advisory: {reason}. Review migration guide.",
             )
-
-        if not curr or not candidate:
-            return (
-                RecommendationCategory.RECOMMENDED,
-                RecommendationPriority.MEDIUM,
-                f"Upgrade package '{dep.name}' to version '{candidate}'.",
-                None,
-            )
-
-        # SemVer delta evaluation
-        is_major, is_minor, is_patch = self._compare_versions(dep.ecosystem, curr, candidate)
 
         if is_major:
             return (
                 RecommendationCategory.CAUTION,
                 RecommendationPriority.HIGH,
-                f"Major version bump for '{dep.name}' from {curr} to {candidate}. Review breaking changes before upgrading.",
+                f"Major version bump for '{dep.name}' from {curr} to {candidate}. Requires breaking change testing in M4.",
                 f"Major version jump ({curr} -> {candidate}). Backwards-incompatible API changes are likely.",
             )
 
@@ -177,15 +262,14 @@ class DeterministicRecommendationEngine(AIRecommendationProvider):
             return (
                 RecommendationCategory.RECOMMENDED,
                 RecommendationPriority.MEDIUM,
-                f"Minor version upgrade for '{dep.name}' from {curr} to {candidate}. Introduces backwards-compatible features.",
+                f"Minor version upgrade for '{dep.name}' from {curr} to {candidate}.",
                 None,
             )
 
-        # Patch or default
         return (
             RecommendationCategory.RECOMMENDED,
             RecommendationPriority.LOW,
-            f"Patch upgrade for '{dep.name}' from {curr} to {candidate}. Includes bug fixes and performance improvements.",
+            f"Patch version upgrade for '{dep.name}' from {curr} to {candidate}.",
             None,
         )
 

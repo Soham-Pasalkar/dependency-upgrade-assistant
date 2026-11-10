@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = Field(default="http://127.0.0.1:11434", description="Base URL of the Ollama server")
     OLLAMA_DEFAULT_MODEL: str = Field(default="llama3:latest", description="Default model tag for Ollama")
     OLLAMA_TIMEOUT_SECONDS: float = Field(default=30.0, description="Ollama API query timeout in seconds")
+    ALLOW_REMOTE_OLLAMA: bool = Field(default=False, description="Explicit authorization to connect to non-loopback remote Ollama endpoints")
 
     # Docker Sandbox Settings
     DOCKER_TIMEOUT_SECONDS: int = Field(default=60, description="Container execution timeout in seconds")

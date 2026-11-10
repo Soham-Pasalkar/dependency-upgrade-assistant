@@ -152,3 +152,67 @@ def test_deterministic_idempotency(engine):
     run1 = engine.generate_recommendations([dep])
     run2 = engine.generate_recommendations([dep])
     assert run1[0].model_dump() == run2[0].model_dump()
+
+
+def test_deterministic_range_constraint_prefers_compatible(engine):
+    """Verify range constraints strictly prefer latest_compatible_version and never substitute latest_version."""
+    dep = AnalyzedDependency(
+        name="urllib3",
+        original_name="urllib3",
+        ecosystem=Ecosystem.PYTHON,
+        current_version="1.26.5",
+        declared_specifier="<2.0.0",
+        latest_version="2.2.3",
+        latest_compatible_version="1.26.18",
+        status=DependencyStatus.UPGRADE_AVAILABLE,
+        available_versions=["1.26.5", "1.26.18", "2.0.0", "2.2.3"],
+    )
+    recs = engine.generate_recommendations([dep])
+    assert len(recs) == 1
+    rec = recs[0]
+    assert rec.candidate_version == "1.26.18"
+    assert rec.category == RecommendationCategory.RECOMMENDED
+    assert rec.priority == RecommendationPriority.LOW  # Patch bump
+
+
+def test_deterministic_range_constraint_no_compatible_returns_safe_no_upgrade(engine):
+    """Verify range constraint with no newer compatible release returns safe no-upgrade without picking latest_version."""
+    dep = AnalyzedDependency(
+        name="urllib3",
+        original_name="urllib3",
+        ecosystem=Ecosystem.PYTHON,
+        current_version="1.26.18",
+        declared_specifier="<2.0.0",
+        latest_version="2.2.3",
+        latest_compatible_version="1.26.18",
+        status=DependencyStatus.UPGRADE_AVAILABLE,
+        available_versions=["1.26.5", "1.26.18", "2.0.0", "2.2.3"],
+    )
+    recs = engine.generate_recommendations([dep])
+    assert len(recs) == 1
+    rec = recs[0]
+    assert rec.candidate_version is None
+    assert rec.category == RecommendationCategory.NO_UPGRADE_NEEDED
+    assert "No compatible upgrade candidate found" in rec.explanation
+
+
+def test_deterministic_exact_pin_bump_caution_m4_notice(engine):
+    """Verify exact pin bump selects latest_version with CAUTION category and M4 manifest notice."""
+    dep = AnalyzedDependency(
+        name="requests",
+        original_name="requests",
+        ecosystem=Ecosystem.PYTHON,
+        current_version="2.25.0",
+        declared_specifier="==2.25.0",
+        latest_version="2.32.3",
+        latest_compatible_version="2.32.3",
+        status=DependencyStatus.UPGRADE_AVAILABLE,
+        available_versions=["2.25.0", "2.31.0", "2.32.3"],
+    )
+    recs = engine.generate_recommendations([dep])
+    assert len(recs) == 1
+    rec = recs[0]
+    assert rec.candidate_version == "2.32.3"
+    assert rec.category == RecommendationCategory.RECOMMENDED
+    assert "Requires manifest pin update in M4" in rec.explanation
+
