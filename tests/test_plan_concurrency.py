@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 from typing import List
 from unittest.mock import patch
@@ -655,6 +656,245 @@ def test_pre_replacement_failure_safely_releases_to_available(planner: UpgradePl
         assert resp.status == "MUTATION_ERROR"
 
     # Because destination was untouched, claim must be released to AVAILABLE
+    stored = planner.proposal_registry.get(proposal.proposal_id)
+    assert stored is not None
+    assert stored.state == ProposalLifecycleState.AVAILABLE
+
+    # Subsequent retry succeeds
+    resp2 = planner.apply_workspace_mutation(
+        WorkspaceApplyRequest(
+            proposal_id=proposal.proposal_id,
+            approved=True,
+            target_path="requirements.txt",
+        )
+    )
+    assert resp2.success is True
+    assert resp2.status == "APPLIED"
+    assert target_file.read_text(encoding="utf-8") == "requests==2.32.3\n"
+
+
+# ---------------------------------------------------------------------------
+# Active Claim TTL and Pre-Replacement Exception Safety Tests
+# ---------------------------------------------------------------------------
+def test_active_proposal_survives_ttl():
+    """Test A: An actively claiming/APPLYING proposal is not deleted by direct TTL check during a competing claim."""
+    reg = ProposalRegistry(ttl_seconds=10.0)
+    proposal = UpgradeProposalResponse(
+        proposal_id="",
+        manifest_type="requirements.txt",
+        ecosystem=Ecosystem.PYTHON,
+        file_path="requirements.txt",
+        plan_items=[],
+        total_planned=1,
+        original_content="requests==2.28.0\n",
+        proposed_content="requests==2.32.3\n",
+        unified_diff="",
+        integrity=PatchIntegrityResult(
+            is_valid=True,
+            can_apply=True,
+            can_reverse=True,
+            syntax_valid=True,
+            target_versions_match=True,
+            unrelated_dependencies_unchanged=True,
+            original_unchanged=True,
+        ),
+        status=ProposalStatus.READY_FOR_REVIEW,
+    )
+    prop_id = reg.store(proposal)
+    claim1 = reg.claim_for_application(prop_id)
+    assert claim1.success is True
+
+    # Simulate proposal created_at older than TTL
+    stored = reg.get(prop_id)
+    assert stored is not None
+    stored.created_at = time.time() - 100.0  # past 10s TTL
+
+    # Second claim attempt against expired-but-applying proposal
+    claim2 = reg.claim_for_application(prop_id)
+    assert claim2.success is False
+    assert claim2.status == "PROPOSAL_ALREADY_IN_PROGRESS"
+
+    # Verify original proposal remains registered in APPLYING
+    still_stored = reg.get(prop_id)
+    assert still_stored is not None
+    assert still_stored.state == ProposalLifecycleState.APPLYING
+
+
+def test_active_proposal_survives_ttl_cleanup():
+    """Test B: _evict_expired preserves actively claiming proposal even when its creation timestamp is expired."""
+    reg = ProposalRegistry(ttl_seconds=5.0)
+    proposal = UpgradeProposalResponse(
+        proposal_id="",
+        manifest_type="requirements.txt",
+        ecosystem=Ecosystem.PYTHON,
+        file_path="requirements.txt",
+        plan_items=[],
+        total_planned=1,
+        original_content="requests==2.28.0\n",
+        proposed_content="requests==2.32.3\n",
+        unified_diff="",
+        integrity=PatchIntegrityResult(
+            is_valid=True,
+            can_apply=True,
+            can_reverse=True,
+            syntax_valid=True,
+            target_versions_match=True,
+            unrelated_dependencies_unchanged=True,
+            original_unchanged=True,
+        ),
+        status=ProposalStatus.READY_FOR_REVIEW,
+    )
+    prop_id = reg.store(proposal)
+    reg.claim_for_application(prop_id)
+
+    # Force timestamp to be expired
+    reg._store[prop_id].created_at = time.time() - 100.0
+
+    # Trigger explicit eviction cleanup via _evict_expired()
+    with reg._lock:
+        reg._evict_expired()
+
+    # Verify still in store and state is APPLYING
+    assert prop_id in reg._store
+    assert reg._store[prop_id].state == ProposalLifecycleState.APPLYING
+
+
+def test_expired_inactive_proposal_is_cleaned_up():
+    """Test C: Inactive proposals (AVAILABLE, CONSUMED, ABANDONED) are cleaned up by TTL expiration."""
+    reg = ProposalRegistry(ttl_seconds=5.0)
+
+    def _make_prop():
+        return UpgradeProposalResponse(
+            proposal_id="",
+            manifest_type="requirements.txt",
+            ecosystem=Ecosystem.PYTHON,
+            file_path="requirements.txt",
+            plan_items=[],
+            total_planned=1,
+            original_content="requests==2.28.0\n",
+            proposed_content="requests==2.32.3\n",
+            unified_diff="",
+            integrity=PatchIntegrityResult(
+                is_valid=True,
+                can_apply=True,
+                can_reverse=True,
+                syntax_valid=True,
+                target_versions_match=True,
+                unrelated_dependencies_unchanged=True,
+                original_unchanged=True,
+            ),
+            status=ProposalStatus.READY_FOR_REVIEW,
+        )
+
+    avail_id = reg.store(_make_prop())
+    consumed_id = reg.store(_make_prop())
+    abandoned_id = reg.store(_make_prop())
+
+    # Transition states
+    reg.claim_for_application(consumed_id)
+    reg.complete_application(consumed_id)
+
+    reg.claim_for_application(abandoned_id)
+    reg.fail_application(abandoned_id, reason="test failure")
+
+    # Set created_at into the past for all three
+    now = time.time()
+    reg._store[avail_id].created_at = now - 100.0
+    reg._store[consumed_id].created_at = now - 100.0
+    reg._store[abandoned_id].created_at = now - 100.0
+
+    # Claiming available should find it expired and delete it
+    claim_avail = reg.claim_for_application(avail_id)
+    assert claim_avail.success is False
+    assert claim_avail.status == "PROPOSAL_NOT_FOUND"
+
+    # Eviction should purge consumed and abandoned once inactive and expired
+    with reg._lock:
+        reg._evict_expired()
+
+    assert reg.get(avail_id) is None
+    assert reg.get(consumed_id) is None
+    assert reg.get(abandoned_id) is None
+
+
+def test_pre_replacement_read_exception_releases_claim(planner: UpgradePlannerService, tmp_path: Path):
+    """Test D: An unexpected exception during pre-replacement file reading releases claim to AVAILABLE."""
+    target_file = tmp_path / "requirements.txt"
+    target_file.write_text("requests==2.28.0\n", encoding="utf-8")
+
+    rec = _make_python_recommendation()
+    proposal = planner.create_upgrade_proposal(
+        UpgradePlanRequest(
+            manifest_type="requirements.txt",
+            original_content="requests==2.28.0\n",
+            recommendations=[rec],
+            file_path="requirements.txt",
+        )
+    )
+
+    # Mock Path.read_text to raise an unexpected OSError during pre-replacement freshness check
+    with patch.object(Path, "read_text", side_effect=OSError("Disk read I/O error on pre-replacement read")):
+        resp = planner.apply_workspace_mutation(
+            WorkspaceApplyRequest(
+                proposal_id=proposal.proposal_id,
+                approved=True,
+                target_path="requirements.txt",
+            )
+        )
+        assert resp.success is False
+        assert resp.status == "MUTATION_ERROR"
+
+    # Destination was NOT touched
+    assert target_file.read_text(encoding="utf-8") == "requests==2.28.0\n"
+
+    # Proposal must have been safely released to AVAILABLE
+    stored = planner.proposal_registry.get(proposal.proposal_id)
+    assert stored is not None
+    assert stored.state == ProposalLifecycleState.AVAILABLE
+
+    # Subsequent retry succeeds
+    resp2 = planner.apply_workspace_mutation(
+        WorkspaceApplyRequest(
+            proposal_id=proposal.proposal_id,
+            approved=True,
+            target_path="requirements.txt",
+        )
+    )
+    assert resp2.success is True
+    assert resp2.status == "APPLIED"
+    assert target_file.read_text(encoding="utf-8") == "requests==2.32.3\n"
+
+
+def test_pre_replacement_validation_exception_releases_claim(planner: UpgradePlannerService, tmp_path: Path):
+    """Test E: An unexpected exception during PatchValidator.validate_patch releases claim to AVAILABLE."""
+    target_file = tmp_path / "requirements.txt"
+    target_file.write_text("requests==2.28.0\n", encoding="utf-8")
+
+    rec = _make_python_recommendation()
+    proposal = planner.create_upgrade_proposal(
+        UpgradePlanRequest(
+            manifest_type="requirements.txt",
+            original_content="requests==2.28.0\n",
+            recommendations=[rec],
+            file_path="requirements.txt",
+        )
+    )
+
+    with patch("src.services.patch_validator.PatchValidator.validate_patch", side_effect=RuntimeError("Unexpected AST parser crash")):
+        resp = planner.apply_workspace_mutation(
+            WorkspaceApplyRequest(
+                proposal_id=proposal.proposal_id,
+                approved=True,
+                target_path="requirements.txt",
+            )
+        )
+        assert resp.success is False
+        assert resp.status == "MUTATION_ERROR"
+
+    # Target file unmodified
+    assert target_file.read_text(encoding="utf-8") == "requests==2.28.0\n"
+
+    # Claim released to AVAILABLE
     stored = planner.proposal_registry.get(proposal.proposal_id)
     assert stored is not None
     assert stored.state == ProposalLifecycleState.AVAILABLE

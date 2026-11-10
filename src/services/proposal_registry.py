@@ -165,6 +165,16 @@ class ProposalRegistry:
                     stored=None,
                 )
 
+            # 1. Active claim protection: APPLYING proposals NEVER expire by TTL while in-flight
+            if stored.state == ProposalLifecycleState.APPLYING:
+                return ProposalClaimResult(
+                    success=False,
+                    status="PROPOSAL_ALREADY_IN_PROGRESS",
+                    message=f"Proposal '{proposal_id}' is currently being applied by another operation.",
+                    stored=stored,
+                )
+
+            # 2. Check TTL expiration for inactive proposals (AVAILABLE, CONSUMED, ABANDONED)
             now = time.time()
             if (now - stored.created_at) > self.ttl_seconds:
                 del self._store[proposal_id]
@@ -175,19 +185,12 @@ class ProposalRegistry:
                     stored=None,
                 )
 
-            if stored.state == ProposalLifecycleState.CONSUMED or stored.state == ProposalLifecycleState.ABANDONED:
+            # 3. Check for non-claimable terminal states
+            if stored.state in (ProposalLifecycleState.CONSUMED, ProposalLifecycleState.ABANDONED):
                 return ProposalClaimResult(
                     success=False,
                     status="PROPOSAL_ALREADY_CONSUMED",
                     message=f"Proposal '{proposal_id}' has already been applied and consumed.",
-                    stored=stored,
-                )
-
-            if stored.state == ProposalLifecycleState.APPLYING:
-                return ProposalClaimResult(
-                    success=False,
-                    status="PROPOSAL_ALREADY_IN_PROGRESS",
-                    message=f"Proposal '{proposal_id}' is currently being applied by another operation.",
                     stored=stored,
                 )
 
@@ -248,6 +251,9 @@ class ProposalRegistry:
         with self._lock:
             stored = self._store.get(proposal_id)
             if stored is None:
+                return False
+            if stored.state == ProposalLifecycleState.CONSUMED:
+                logger.warning(f"Cannot fail proposal '{proposal_id}': proposal is already CONSUMED.")
                 return False
             stored.state = ProposalLifecycleState.ABANDONED
             stored.failure_reason = reason
