@@ -4,6 +4,7 @@ Enforces:
 - Fixed official endpoints with strict redirect destination validation (anti-SSRF).
 - Bounded streaming response limits (MAX_RESPONSE_BYTES enforced before JSON decoding).
 - Thread-safe in-memory TTL caching.
+- Thread-local requests.Session management for safe concurrent lookups.
 - Categorized status reporting (SUCCESS, NOT_FOUND, RATE_LIMITED, NETWORK_ERROR).
 """
 from __future__ import annotations
@@ -14,7 +15,7 @@ import threading
 import time
 import urllib.parse
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import requests
 
@@ -46,49 +47,82 @@ class _CacheEntry:
     data: RegistryPackageMetadata
 
 
-def _read_bounded_body(resp: requests.Response, max_bytes: int) -> Tuple[bytes, Optional[str]]:
-    """Read response body up to max_bytes.
+class ThreadLocalSessionFactory:
+    """Thread-local session manager that provisions an isolated requests.Session per thread.
     
-    Returns (body_bytes, error_message_if_exceeded).
+    Preserves connection reuse within each worker thread while preventing unsafe concurrent
+    mutations of shared session state across threads.
     """
-    cl = resp.headers.get("Content-Length") if hasattr(resp, "headers") else None
-    if cl:
-        try:
-            if int(cl) > max_bytes:
-                if hasattr(resp, "close"):
-                    resp.close()
-                return b"", f"Response Content-Length ({cl} bytes) exceeds maximum limit of {max_bytes} bytes"
-        except ValueError:
-            pass
 
-    chunks: List[bytes] = []
-    total = 0
+    def __init__(
+        self,
+        session_factory: Optional[Callable[[], requests.Session]] = None,
+        session: Optional[requests.Session] = None,
+    ) -> None:
+        self._local = threading.local()
+        self._factory = session_factory or requests.Session
+        self._injected_session = session
 
-    if hasattr(resp, "iter_content"):
-        try:
-            for chunk in resp.iter_content(chunk_size=16384):
-                if not chunk:
-                    continue
-                total += len(chunk)
-                if total > max_bytes:
+    def get_session(self) -> requests.Session:
+        if self._injected_session is not None:
+            return self._injected_session
+        if not hasattr(self._local, "session"):
+            self._local.session = self._factory()
+        return self._local.session
+
+
+def _read_bounded_body(resp: requests.Response, max_bytes: int) -> Tuple[Optional[bytes], Optional[str]]:
+    """Stream and read response body strictly within max_bytes.
+    
+    Returns:
+        (body_bytes, None) on success, or (None, error_message) on failure/exceeded size.
+    Always closes the response on error or stream completion.
+    Never falls back to unmetered .content or .json() access.
+    """
+    try:
+        # Pre-check Content-Length header if provided
+        cl_header = resp.headers.get("Content-Length") if hasattr(resp, "headers") and resp.headers else None
+        if cl_header is not None:
+            try:
+                cl_val = int(str(cl_header).strip())
+                if cl_val > max_bytes:
                     if hasattr(resp, "close"):
                         resp.close()
-                    return b"", f"Response payload exceeded maximum allowed size of {max_bytes} bytes"
-                chunks.append(chunk)
-        except Exception as e:
-            # If iter_content is a mock that fails or is empty, fallback to content if available
-            pass
+                    return None, f"Response Content-Length ({cl_val} bytes) exceeds maximum limit of {max_bytes} bytes"
+            except (ValueError, TypeError):
+                # Malformed or misleading Content-Length header is ignored; stream reading will enforce limit
+                pass
 
-    if chunks:
-        return b"".join(chunks), None
+        chunks: List[bytes] = []
+        total = 0
 
-    raw = getattr(resp, "content", b"")
-    if isinstance(raw, (bytes, bytearray)):
-        if len(raw) > max_bytes:
-            return b"", f"Response payload exceeded maximum allowed size of {max_bytes} bytes"
-        return bytes(raw), None
+        if not hasattr(resp, "iter_content"):
+            if hasattr(resp, "close"):
+                resp.close()
+            return None, "Response object does not support streamed iter_content reading"
 
-    return b"", None
+        for chunk in resp.iter_content(chunk_size=16384):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                if hasattr(resp, "close"):
+                    resp.close()
+                return None, f"Response payload exceeded maximum allowed size of {max_bytes} bytes"
+            chunks.append(chunk)
+
+        body = b"".join(chunks)
+        return body, None
+
+    except Exception as err:
+        # Any stream reading failure (connection closed, mid-stream disconnect, iterator exception)
+        # must abort and return an error; never treat partial chunks as a valid complete response
+        if hasattr(resp, "close"):
+            resp.close()
+        return None, f"Streaming read failure: {err}"
+    finally:
+        if hasattr(resp, "close"):
+            resp.close()
 
 
 def _safe_fetch_json(
@@ -110,11 +144,14 @@ def _safe_fetch_json(
         if parsed.scheme != "https" or parsed.netloc.lower() not in allowed_hosts:
             return 400, None, f"Untrusted registry URL or redirect target: '{current_url}' (SSRF protection)"
 
-        resp = session.get(current_url, timeout=timeout, stream=True, allow_redirects=False)
+        try:
+            resp = session.get(current_url, timeout=timeout, stream=True, allow_redirects=False)
+        except Exception as err:
+            return 500, None, f"Network error connecting to registry: {err}"
 
         # Handle redirects
         if resp.status_code in (301, 302, 303, 307, 308):
-            location = resp.headers.get("Location") if hasattr(resp, "headers") else None
+            location = resp.headers.get("Location") if hasattr(resp, "headers") and resp.headers else None
             if hasattr(resp, "close"):
                 resp.close()
             if not location:
@@ -122,26 +159,30 @@ def _safe_fetch_json(
             current_url = urllib.parse.urljoin(current_url, location)
             continue
 
-        # Check bounded size
+        # If non-200 status code (404, 429, 500, etc.)
+        if resp.status_code != 200:
+            status_code = resp.status_code
+            if hasattr(resp, "close"):
+                resp.close()
+            return status_code, None, None
+
+        # Status 200: Stream bounded body strictly without fallback bypass
         body, err = _read_bounded_body(resp, max_bytes)
-        if err:
-            return 413, None, err
+        if err is not None:
+            if "exceed" in err.lower():
+                return 413, None, err
+            return 502, None, err
 
-        if resp.status_code == 200:
-            if body:
-                try:
-                    data = json.loads(body.decode("utf-8"))
-                    return 200, data, None
-                except Exception as jerr:
-                    return 502, None, f"Invalid JSON received from registry: {jerr}"
-            # Fallback for mocked response objects in test fixtures
-            if hasattr(resp, "json") and callable(resp.json):
-                try:
-                    return 200, resp.json(), None
-                except Exception as jerr:
-                    return 502, None, f"Invalid JSON received from registry: {jerr}"
+        if body is None or len(body) == 0:
+            return 502, None, "Empty response body received from registry"
 
-        return resp.status_code, None, None
+        try:
+            data = json.loads(body.decode("utf-8"))
+            if not isinstance(data, dict):
+                return 502, None, "Registry response must be a JSON object"
+            return 200, data, None
+        except Exception as jerr:
+            return 502, None, f"Invalid JSON received from registry: {jerr}"
 
     return 400, None, "Too many redirects"
 
@@ -155,17 +196,22 @@ class PyPIRegistryClient:
     def __init__(
         self,
         session: Optional[requests.Session] = None,
+        session_factory: Optional[Callable[[], requests.Session]] = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         cache_ttl: float = DEFAULT_CACHE_TTL_SECONDS,
         max_response_bytes: int = MAX_RESPONSE_BYTES,
     ) -> None:
-        self._session = session or requests.Session()
+        self._session_manager = ThreadLocalSessionFactory(session_factory=session_factory, session=session)
         self.timeout = timeout
         self.cache_ttl = cache_ttl
         self.max_response_bytes = max_response_bytes
         self._cache: Dict[str, _CacheEntry] = {}
         self._lock = threading.Lock()
         self._local_catalog = load_catalog()
+
+    @property
+    def _session(self) -> requests.Session:
+        return self._session_manager.get_session()
 
     def get_package_metadata(self, package_name: str) -> RegistryPackageMetadata:
         """Fetch package metadata from PyPI, using cache when valid."""
@@ -290,16 +336,21 @@ class NpmRegistryClient:
     def __init__(
         self,
         session: Optional[requests.Session] = None,
+        session_factory: Optional[Callable[[], requests.Session]] = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         cache_ttl: float = DEFAULT_CACHE_TTL_SECONDS,
         max_response_bytes: int = MAX_RESPONSE_BYTES,
     ) -> None:
-        self._session = session or requests.Session()
+        self._session_manager = ThreadLocalSessionFactory(session_factory=session_factory, session=session)
         self.timeout = timeout
         self.cache_ttl = cache_ttl
         self.max_response_bytes = max_response_bytes
         self._cache: Dict[str, _CacheEntry] = {}
         self._lock = threading.Lock()
+
+    @property
+    def _session(self) -> requests.Session:
+        return self._session_manager.get_session()
 
     def get_package_metadata(self, package_name: str) -> RegistryPackageMetadata:
         """Fetch package metadata from npm registry, using cache when valid."""

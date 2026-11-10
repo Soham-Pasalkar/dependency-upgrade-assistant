@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-10T15:33:55Z",
+  "updated": "2026-11-10T15:48:06Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -173,7 +173,7 @@
         {
           "text": "PyPI and npm registry clients query available versions with caching",
           "verified": true,
-          "proof": "Verified by tests/test_registry_clients.py (14 tests passing) confirming official PyPI JSON and npm registry queries, thread-safe in-memory TTL caching, bounded streaming response capping (MAX_RESPONSE_BYTES), Content-Length enforcement, untrusted redirect SSRF protection, and local catalog fallback."
+          "proof": "Verified by tests/test_registry_clients.py (20 tests passing) confirming official PyPI JSON and npm registry queries, thread-safe in-memory TTL caching, strict streamed reading without .content/.json fallback bypass, stream failure containment, Content-Length checks, redirect controls, SSRF rejection, and thread-local session isolation."
         },
         {
           "text": "Outdated packages classified into Up-to-Date, Upgrade Available, or Preserved",
@@ -284,12 +284,68 @@
           "result": "320 passed, 6 warnings in 4.80s across 24 test modules (100% green, 0 regressions)",
           "file": null,
           "sha256": null
+        },
+        {
+          "at": "2026-11-10T15:46:07Z",
+          "cmd": ".venv/bin/pytest tests/test_manifest_api.py -k 'test_analyze_raw_requirements_txt or test_analyze_raw_package_json or test_upload_requirements_file_multipart or test_upload_package_json_file_multipart'",
+          "result": "4 passed in 0.22s verifying multipart and raw ingestion for requirements.txt and package.json with versioned /api/v1 parity",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T15:46:17Z",
+          "cmd": ".venv/bin/pytest tests/test_manifest_parser.py",
+          "result": "12 passed in 0.07s verifying safe zero-execution parsing including PEP 508 direct references (@ url) and unsupported npm specifiers (workspace:, file:, etc.)",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T15:46:30Z",
+          "cmd": ".venv/bin/pytest tests/test_registry_clients.py",
+          "result": "20 passed in 0.14s verifying PyPI/npm queries, thread-safe TTL caching, strict streamed reading without .content/.json fallback bypass, stream failure handling, Content-Length checks, redirect controls, SSRF rejection, and thread-local session isolation",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T15:46:42Z",
+          "cmd": ".venv/bin/pytest tests/test_manifest_service.py tests/test_semver_evaluator.py",
+          "result": "27 passed in 0.16s verifying fail-closed SemVer evaluation, bounded concurrency (ThreadPoolExecutor), stable result ordering, and deterministic classification into UP_TO_DATE, UPGRADE_AVAILABLE, and PRESERVED",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T15:47:01Z",
+          "cmd": ".venv/bin/pytest tests/test_manifest_api.py -k 'test_analyze_empty_content_fails or test_analyze_malformed_json_fails_gracefully or test_upload_unsupported_file_fails or test_upload_empty_file_fails or test_upload_oversized_file_fails or test_analyze_raw_content_oversized_rejected_with_413 or test_analyze_raw_content_exact_boundary_1mb_accepted'",
+          "result": "7 passed in 0.21s verifying graceful handling of empty content, malformed JSON, unsupported file types, and consistent 1MB caps on both raw and multipart paths",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T15:47:15Z",
+          "cmd": ".venv/bin/pytest --tb=no",
+          "result": "326 passed, 6 warnings in 7.41s across 24 test modules (100% green, 0 regressions)",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T15:47:20Z",
+          "cmd": "cd frontend && npm run test",
+          "result": "11 passed in 0.85s across 3 test files (App.test.tsx, BackendStatus.test.tsx, ManifestAnalyzer.test.tsx)",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T15:47:27Z",
+          "cmd": ".venv/bin/python3 .agents/skills/ai-dlc-engineering/scripts/scan_secrets.py .",
+          "result": "Exit code 1 (FAIL: 4 finding(s) all located in tests/test_code_inspector.py: lines 26, 29, 32, 74 for pre-existing brownfield test fixtures); 0 findings in new M2 files",
+          "file": null,
+          "sha256": null
         }
       ],
       "approval": null,
-      "rework": 1,
+      "rework": 2,
       "started": "2026-11-10T15:02:54Z",
-      "note": "Review rework: Fix PEP 508 direct references, fail-closed SemVer evaluation, enforce registry response limits & redirect controls, implement bounded concurrency for independent package lookups, and apply 1MB size limit to raw manifest analysis."
+      "note": "Security rework: Remove unbounded response fallbacks in registry clients, enforce streaming reads without bypass, implement thread-local requests.Session for safe bounded concurrency, and reconcile secret scanner evidence."
     },
     {
       "id": "M3",
@@ -516,5 +572,5 @@
       "at": "2026-11-09T13:32:28Z"
     }
   ],
-  "head": "d10b81c4c3edb409aa2b1db7aaf25f2d1ab44173376487acca7d6bbc7db6d39c"
+  "head": "40c09500167631e40140652a657f4c822d79e32a52e5db0e3cb5936b7ddffffa"
 }
