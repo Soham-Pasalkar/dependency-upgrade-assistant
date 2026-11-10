@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-10T06:34:12Z",
+  "updated": "2026-11-10T13:27:16Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -19,15 +19,15 @@
     },
     "G2": {
       "name": "Architecture and threat model",
-      "status": "presented",
-      "note": "Target architecture and STRIDE threat model for Dependency Upgrade Assistant 2.0",
-      "at": "2026-11-09T11:42:46Z"
+      "status": "approved",
+      "note": "User authorized progression beyond G2 in G3 prompt: The user has authorized progression beyond G2.",
+      "at": "2026-11-10T13:21:52Z"
     },
     "G3": {
       "name": "Milestone plan",
-      "status": "pending",
-      "note": null,
-      "at": null
+      "status": "presented",
+      "note": "Gate G3 implementation plan and construction roadmap for Dependency Upgrade Assistant 2.0",
+      "at": "2026-11-10T13:27:16Z"
     },
     "G5": {
       "name": "Release",
@@ -36,7 +36,296 @@
       "at": null
     }
   },
-  "milestones": [],
+  "milestones": [
+    {
+      "id": "M1",
+      "title": "Application foundation",
+      "depends_on": [],
+      "status": "planned",
+      "criteria": [
+        {
+          "text": "FastAPI backend initialized with configuration, CORS, and health endpoint",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "React frontend scaffolded with Vite",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "SQLite persistence foundation initialized",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Backend test suite passes",
+          "verified": false,
+          "proof": null
+        }
+      ],
+      "evidence": [],
+      "approval": null,
+      "rework": 0,
+      "started": null,
+      "note": null
+    },
+    {
+      "id": "M2",
+      "title": "Manifest ingestion and dependency analysis",
+      "depends_on": [
+        "M1"
+      ],
+      "status": "planned",
+      "criteria": [
+        {
+          "text": "Multipart and raw manifest upload endpoints accept requirements.txt and package.json",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Dependencies safely parsed without code execution",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "PyPI and npm registry clients query available versions with caching",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Outdated packages classified into Up-to-Date, Upgrade Available, or Preserved",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Malformed manifests fail gracefully with diagnostic error responses",
+          "verified": false,
+          "proof": null
+        }
+      ],
+      "evidence": [],
+      "approval": null,
+      "rework": 0,
+      "started": null,
+      "note": null
+    },
+    {
+      "id": "M3",
+      "title": "Upgrade recommendations and AI provider",
+      "depends_on": [
+        "M2"
+      ],
+      "status": "planned",
+      "criteria": [
+        {
+          "text": "Provider-independent AI interface defined",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Ollama service implemented with dynamic model discovery",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Structured recommendation output generated",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "AI versions validated against registry ground truth",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Deterministic fallback operates when Ollama is offline",
+          "verified": false,
+          "proof": null
+        }
+      ],
+      "evidence": [],
+      "approval": null,
+      "rework": 0,
+      "started": null,
+      "note": null
+    },
+    {
+      "id": "M4",
+      "title": "Upgrade planning and patch generation",
+      "depends_on": [
+        "M3"
+      ],
+      "status": "planned",
+      "criteria": [
+        {
+          "text": "Upgrade plan endpoint accepts selected candidate packages",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Manifest modifier applies changes preserving formatting and comments",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Unified diff generator produces standard diffs",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Human approval gate enforced prior to workspace mutation",
+          "verified": false,
+          "proof": null
+        }
+      ],
+      "evidence": [],
+      "approval": null,
+      "rework": 0,
+      "started": null,
+      "note": null
+    },
+    {
+      "id": "M5",
+      "title": "Sandboxed validation",
+      "depends_on": [
+        "M4"
+      ],
+      "status": "planned",
+      "criteria": [
+        {
+          "text": "Docker runner executes test commands inside container with --network none and resource caps",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Execution logs and exit codes captured",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Truthful reporting of PASS, FAIL, and NOT_RUNNABLE when Docker is unavailable",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Fail-closed container cleanup on success, failure, timeout, and interruption",
+          "verified": false,
+          "proof": null
+        }
+      ],
+      "evidence": [],
+      "approval": null,
+      "rework": 0,
+      "started": null,
+      "note": null
+    },
+    {
+      "id": "M6",
+      "title": "Artifact export",
+      "depends_on": [
+        "M5"
+      ],
+      "status": "planned",
+      "criteria": [
+        {
+          "text": "Export service bundles changes into downloadable .patch files and JSON execution summaries",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Complete execution logs and SHA-256 checksums generated",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Secret sanitization scanner verifies zero credential leakage",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Download endpoints serve patch files and summaries",
+          "verified": false,
+          "proof": null
+        }
+      ],
+      "evidence": [],
+      "approval": null,
+      "rework": 0,
+      "started": null,
+      "note": null
+    },
+    {
+      "id": "M7",
+      "title": "Frontend integration and end-to-end demonstration",
+      "depends_on": [
+        "M6"
+      ],
+      "status": "planned",
+      "criteria": [
+        {
+          "text": "React UI connects to FastAPI across complete workflow",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Displays dependency findings, badges, and diffs",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Displays test logs and truthful status badges",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Implements responsive loading, empty, and actionable error states",
+          "verified": false,
+          "proof": null
+        }
+      ],
+      "evidence": [],
+      "approval": null,
+      "rework": 0,
+      "started": null,
+      "note": null
+    },
+    {
+      "id": "M8",
+      "title": "Final verification",
+      "depends_on": [
+        "M7"
+      ],
+      "status": "planned",
+      "criteria": [
+        {
+          "text": "Full test suite passes 100% green with zero regressions",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "End-to-end workflow verified against Python and Node.js fixtures",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Secret scanning and artifact validation pass with 0 errors",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Setup and demonstration guide documented",
+          "verified": false,
+          "proof": null
+        }
+      ],
+      "evidence": [],
+      "approval": null,
+      "rework": 0,
+      "started": null,
+      "note": null
+    }
+  ],
   "notes": [
     {
       "id": "N1",
@@ -46,5 +335,5 @@
       "at": "2026-11-09T13:32:28Z"
     }
   ],
-  "head": "a83c3904b0ae053e9030774e3968c183d3bf4e3fabe1ba7fc7773589250071c0"
+  "head": "36b4697c09008ec46f42dbf4c6e9c567ef9d846a8fe2092ba063e79819681d76"
 }
