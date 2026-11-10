@@ -461,12 +461,15 @@ Long-running analysis and validation tasks must execute reliably regardless of f
           AND lease_expires_at >= CURRENT_TIMESTAMP;
         ```
         The transaction is immediately committed. If `rowcount == 0` (e.g. lease expired during rename), the worker aborts deletion.
-     4. **Step 4 (Pre-Deletion Fencing Check & Fail-Closed Recursive Deletion):**
+     4. **Step 4 (Pre-Deletion Fencing Check & Fail-Closed Recursive Deletion with Lease Heartbeat):**
         * **Pre-Deletion Fencing Check:** Immediately before executing recursive directory deletion, the worker verifies that its lease remains valid and unexpired with status `quarantined`.
-        * **Fail-Closed Recursive Deletion:** The worker executes `secure_rmtree(quarantine_path)`.
+        * **Fail-Closed Recursive Deletion with Lease Heartbeat:** The worker executes `secure_rmtree(quarantine_path)`.
           - *Symlink Traversal Prevention:* `secure_rmtree` traverses with `followlinks=False` to unlink symlinks directly rather than descending into external targets. (Note: `followlinks=False` prevents traversal into symlinks, but does not provide atomic descriptor-relative `openat(..., O_NOFOLLOW)` protection against concurrent TOCTOU symlink replacement races during directory traversal).
+          - *Lease Renewal Heartbeat:* During directory traversal, `secure_rmtree` periodically executes an atomic lease renewal heartbeat callback `renew_cleanup_lease(...)` (which validates `status IN ('in_progress', 'quarantine_intent', 'quarantined')` and unexpired lease). If the heartbeat fails, deletion halts immediately, raising `DeletionException` to prevent stale workers from performing unmetered destructive actions.
           - *Fail Closed:* All unlink and rmdir operations are checked. If any file cannot be unlinked or any directory cannot be removed, `secure_rmtree` raises `DeletionException`. The cleanup worker does not report completion, leaving the directory for retry or recovery.
-     5. **Step 5 (Commit Completion):**
+     5. **Step 5 (Post-Deletion Parent Directory Fsync & Commit Completion):**
+        * **Post-Deletion Directory Fsync Durability:** Following recursive deletion, `fsync_directory` flushes parent directory unlinking metadata to disk. Any fsync failure raises `FsyncException` and fails closed: the worker does NOT commit `status = 'completed'` in SQLite, leaving the status as `quarantined`. When recovery subsequently executes, it detects that the quarantine directory is already unlinked on disk (`q_exists == False`), retries parent directory fsync to ensure durability across power loss, and advances to `completed` only if fsync succeeds.
+        * **Commit Completion:** Once fsync succeeds, the worker commits completion in SQLite:
         ```sql
         UPDATE pending_cleanups
         SET status = 'completed',
@@ -489,8 +492,8 @@ Long-running analysis and validation tasks must execute reliably regardless of f
        - *Case 3 (Both exist):* Incomplete quarantine anomaly. Recovery verifies ownership, removes the orphaned quarantine artifact `quarantine_dir`, preserves the intact `workspace_dir`, and resets `status = 'pending'` with `quarantine_dir = NULL`.
        - *Case 4 (Neither exists):* Workspace already gone. Recovery marks `status = 'completed'`.
      * **`quarantined` Recovery:**
-       - If `quarantine_dir` exists, verify ownership, delete via `secure_rmtree`, and mark `status = 'completed'`.
-       - If `quarantine_dir` is already absent, mark `status = 'completed'`.
+       - If `quarantine_dir` exists, verify ownership, delete via `secure_rmtree` with lease heartbeat, issue post-deletion `fsync_directory`, and mark `status = 'completed'` only on fsync success.
+       - If `quarantine_dir` is already absent (e.g. unlinked before a power loss or crash), retry parent directory fsync to guarantee unlinking durability and mark `status = 'completed'` only if fsync succeeds.
      * **Canonical Path Containment Validation:** Before any recovery deletion, recovery validates that `quarantine_dir` is non-empty, matches `{ws_basename}.quarantine_{lease_token}`, and is canonically contained within the authorized workspace base directory (`os.path.commonpath`), strictly rejecting path-prefix sibling attacks and symlink escapes.
    - **Deletion-Phase Ownership, Short Transactions & Stale-Worker Fencing:**
      * **Short-Transaction Recovery Claim:** To prevent SQLite write lock starvation and concurrency bottlenecks, recovery workers claim stale records using short atomic `BEGIN IMMEDIATE` transactions via `claim_stale_cleanup_for_recovery`:
@@ -504,8 +507,10 @@ Long-running analysis and validation tasks must execute reliably regardless of f
          AND (lease_expires_at IS NULL OR lease_expires_at < CURRENT_TIMESTAMP);
        ```
        The database write lock is immediately released once the claim commits; slow recursive filesystem deletions are never performed while holding a database write transaction.
-     * **Dual-Layer Fencing & Lock Yield Coherence:**
-       - If a recovery worker claims a stale record in SQLite but fails to acquire `WorkspaceFileLock` (because an active process is still executing filesystem operations), recovery **immediately releases its DB claim** (`lease_expires_at = datetime('now', '-1 second')`) and yields, ensuring the record does not remain locked in the database for 120 seconds.
+     * **Dual-Layer Fencing & Lock-First Protocol:**
+       - Recovery workers adhere to a strict **Lock-First Protocol**: before attempting to claim or alter database records for destructive operations, recovery attempts to acquire `WorkspaceFileLock` on the filesystem.
+       - If an active worker is currently executing filesystem operations under the OS lock, `lock.acquire()` returns `False`. Recovery yields immediately without touching SQLite, avoiding race windows or database claim invalidation while the worker is active.
+       - Only once `WorkspaceFileLock` is secured does recovery claim the expired record in a short atomic transaction (`claim_stale_cleanup_for_recovery`).
        - If a worker's lease expires during recursive deletion, the worker's Step 5 completion update matches 0 rows and is rejected. The recovery worker subsequently acquires the lock, verifies the directory is deleted (or finishes deletion), and commits completion.
      * Stale workers cannot overwrite newer cleanup state or interfere with recovery operations.
    - **Crash Recovery & Startup Reclamation of Stale Claims:**

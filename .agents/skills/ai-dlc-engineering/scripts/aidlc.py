@@ -611,28 +611,44 @@ def cmd_note(args):
     return 0
 
 
+ALLOWED_CONFIG_KEYS = {"strict_approvals", "hook_enforcement"}
+
+
 def cmd_config(args):
     root = require_root(args)
     state = load_state(root)
     act = args.action
+    param = args.param
+    if param not in ALLOWED_CONFIG_KEYS:
+        raise AidlcError(f"unknown configuration parameter '{param}'; allowed: {sorted(ALLOWED_CONFIG_KEYS)}")
+
     if act == "get":
-        param = args.param
         val = state.get("config", {}).get(param)
         print(f"{param}: {val}")
         return 0
     elif act == "set":
-        param = args.param
+        if args.value is None:
+            raise AidlcError(f"value is required for 'config set {param}'")
         raw_val = args.value.strip().lower() if isinstance(args.value, str) else str(args.value).lower()
         if raw_val in ("true", "1", "yes", "on"):
             val = True
         elif raw_val in ("false", "0", "no", "off"):
             val = False
         else:
-            val = args.value
+            raise AidlcError(f"parameter '{param}' requires a boolean value (true/false)")
 
         old_val = state.get("config", {}).get(param)
         if not args.reason:
             raise AidlcError("--reason is required for configuration changes")
+
+        actor = default_actor()
+        if param == "strict_approvals" and old_val is True and val is False:
+            if not is_interactive():
+                raise AidlcError("strict approvals can only be disabled by a human in an interactive terminal")
+            confirm = input("Type 'disable-strict' to disable strict approvals: ").strip().lower()
+            if confirm != "disable-strict":
+                raise AidlcError("confirmation failed: strict approvals was not disabled")
+            actor = "human-tty"
 
         state.setdefault("config", {})[param] = val
         data = {
@@ -641,7 +657,6 @@ def cmd_config(args):
             "new": val,
             "reason": args.reason,
         }
-        actor = default_actor()
         commit(root, state, "config.update", data, actor=actor)
         print(f"config updated: {param} = {val} (was {old_val})")
         return 0
@@ -702,8 +717,14 @@ def derived_config(events: list) -> dict:
                 cfg["hook_enforcement"] = not bool(d.get("no_hook", False))
         elif t == "config.update":
             param = d.get("param")
+            old_val = d.get("old")
             val = d.get("new")
             if param is not None:
+                if old_val is not None and old_val != cfg.get(param):
+                    raise AidlcError(
+                        f"event {e.get('seq')}: config.update 'old' value mismatch for '{param}': "
+                        f"event recorded {old_val!r} but preceding state was {cfg.get(param)!r}"
+                    )
                 cfg[param] = val
     return cfg
 
@@ -720,7 +741,11 @@ def verify(root: Path, state: dict):
     errs += chain_errs
     if events and state.get("head") != head:
         errs.append("state.json head does not match the last event (state or log was edited)")
-    d_cfg = derived_config(events)
+    try:
+        d_cfg = derived_config(events)
+    except AidlcError as e:
+        errs.append(str(e))
+        d_cfg = {}
     s_cfg = state.get("config", {})
     for k, v in d_cfg.items():
         if s_cfg.get(k) != v:
