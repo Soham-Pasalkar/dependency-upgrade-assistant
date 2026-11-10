@@ -1,6 +1,6 @@
 # ADR-004: Provider-Independent AI Abstraction and Privacy Opt-In
 
-- Status: accepted
+- Status: proposed (submitted for Gate G2 review)
 - Date: 2026-11-09
 
 ## Context

@@ -1,15 +1,188 @@
-"""Verification tests for persistent Docker cleanup recovery, durable state transitions,
-lease fencing tokens, atomic quarantine protocol (eliminating TOCTOU races), crash reclamation,
-persistent retry scheduling (next_attempt_at), non-cascading FK preservation, and idempotency.
+"""Architecture Reference Model Verification:
+These tests verify the target architecture and state-transition model for persistent Docker cleanup recovery,
+lease fencing tokens, OS-level filesystem locks (fcntl.flock), path containment validation, parent-directory fsync durability,
+crash consistency, and multi-threaded concurrency with separate SQLite connections in WAL mode.
+
+DISCLAIMER: These tests verify the architectural reference model and design contracts.
+They do NOT represent a completed production implementation in src/ (scheduled for Phase 2 Construction),
+nor do they claim real-daemon Docker runtime verification.
 """
 
+import fcntl
 import os
 import secrets
 import shutil
 import sqlite3
 import tempfile
+import threading
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import pytest
+
+
+class SecurityException(Exception):
+    """Raised when a workspace path violates root containment or symlink policies."""
+    pass
+
+
+def validate_workspace_path(path: str, authorized_root: str) -> str:
+    """Validates that a workspace path is strictly contained within authorized_root.
+    
+    Security invariants:
+    - Path must not be empty.
+    - Path must not be a direct symlink.
+    - Canonical path (os.path.realpath) must be strictly contained within authorized_root.
+    - Sibling directory attacks (e.g. /root_evil vs /root) must be rejected.
+    - Must not equal authorized_root itself.
+    """
+    if not path or not authorized_root:
+        raise ValueError("Path and authorized_root must be non-empty strings")
+    
+    if os.path.islink(path):
+        raise SecurityException(f"Path is a direct symlink: {path}")
+
+    real_root = os.path.realpath(authorized_root)
+    real_path = os.path.realpath(path)
+
+    if real_path == real_root:
+        raise SecurityException(f"Path cannot be the authorized root directory: {path}")
+
+    try:
+        common = os.path.commonpath([real_root, real_path])
+    except ValueError:
+        raise SecurityException(f"Path is on a different drive from authorized root: {path}")
+
+    if common != real_root:
+        raise SecurityException(f"Path escapes authorized root ({real_root}): {path}")
+
+    root_parts = os.path.normpath(real_root).split(os.sep)
+    path_parts = os.path.normpath(real_path).split(os.sep)
+    if len(path_parts) <= len(root_parts) or path_parts[:len(root_parts)] != root_parts:
+        raise SecurityException(f"Path is not a strict child of authorized root: {path}")
+
+    return real_path
+
+
+def validate_quarantine_path(ws_path: str, q_path: str, lease_token: str, authorized_root: str) -> Tuple[str, str]:
+    """Validates both workspace and quarantine paths and verifies exact quarantine naming structure.
+    
+    Security invariants:
+    - Both paths must pass validate_workspace_path.
+    - Quarantine directory must reside in the exact same parent directory as workspace.
+    - Quarantine basename must be strictly '{ws_basename}.quarantine_{lease_token}'.
+    - Reject any generic directory containing '.quarantine_' if naming contract does not match.
+    """
+    real_ws = validate_workspace_path(ws_path, authorized_root)
+    real_q = validate_workspace_path(q_path, authorized_root)
+
+    ws_parent = os.path.dirname(real_ws)
+    q_parent = os.path.dirname(real_q)
+    if ws_parent != q_parent:
+        raise SecurityException("Quarantine directory parent does not match workspace parent")
+
+    ws_basename = os.path.basename(real_ws)
+    expected_q_basename = f"{ws_basename}.quarantine_{lease_token}"
+    if os.path.basename(real_q) != expected_q_basename:
+        raise SecurityException(
+            f"Quarantine name mismatch: expected '{expected_q_basename}', got '{os.path.basename(real_q)}'"
+        )
+
+    return real_ws, real_q
+
+
+class WorkspaceFileLock:
+    """POSIX fcntl.flock advisory kernel lock.
+    
+    Guarantees:
+    - Exactly one process can hold LOCK_EX on the cleanup lockfile at any instant.
+    - If a process terminates, crashes, or is killed via SIGKILL, the kernel automatically
+      and synchronously closes the open file descriptor and releases the lock.
+    - On host reboot, all file descriptors and kernel locks are completely wiped.
+    - Non-blocking (LOCK_NB) acquisition immediately detects whether another live worker
+      is actively executing filesystem operations, avoiding concurrent rmtree races.
+    """
+    def __init__(self, lock_dir: str, cleanup_id: str):
+        self.lock_path = os.path.join(lock_dir, f".cleanup_{cleanup_id}.lock")
+        self.fd: Optional[int] = None
+
+    def acquire(self) -> bool:
+        try:
+            self.fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except (BlockingIOError, OSError):
+            if self.fd is not None:
+                try:
+                    os.close(self.fd)
+                except OSError:
+                    pass
+                self.fd = None
+            return False
+
+    def release(self):
+        if self.fd is not None:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
+
+    def unlink(self):
+        self.release()
+        try:
+            if os.path.exists(self.lock_path):
+                os.unlink(self.lock_path)
+        except OSError:
+            pass
+
+
+def fsync_directory(dir_path: str):
+    """Guarantees directory metadata durability across sudden power loss."""
+    if not dir_path or not os.path.exists(dir_path):
+        return
+    try:
+        dir_fd = os.open(dir_path, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
+
+
+def secure_rmtree(path: str, authorized_root: str):
+    """Recursively deletes a directory without following symlinks."""
+    validate_workspace_path(path, authorized_root)
+    if not os.path.exists(path):
+        return
+
+    for root, dirs, files in os.walk(path, topdown=False, followlinks=False):
+        for name in files:
+            file_path = os.path.join(root, name)
+            try:
+                os.unlink(file_path)
+            except OSError:
+                pass
+        for name in dirs:
+            dir_path = os.path.join(root, name)
+            if os.path.islink(dir_path):
+                try:
+                    os.unlink(dir_path)
+                except OSError:
+                    pass
+            else:
+                try:
+                    os.rmdir(dir_path)
+                except OSError:
+                    pass
+    if os.path.islink(path):
+        os.unlink(path)
+    elif os.path.exists(path):
+        os.rmdir(path)
 
 
 class MockDockerContainer:
@@ -270,174 +443,259 @@ def quarantine_and_delete_workspace(
     cleanup_id: str,
     worker_id: str,
     lease_token: str,
-    ws_dir: str
+    ws_dir: str,
+    authorized_root: Optional[str] = None
 ) -> bool:
-    """Durable crash-safe quarantine protocol:
-    1. Persist quarantine intent to SQLite (status = 'quarantine_intent', quarantine_dir recorded).
-    2. Atomic filesystem rename: os.replace(ws_dir, quarantine_dir).
-    3. Confirm quarantine in SQLite (status = 'quarantined').
-    4. Destructive deletion: shutil.rmtree(quarantine_dir).
-    5. Commit completion in SQLite (status = 'completed').
+    """Durable crash-safe quarantine protocol with OS locking & parent fsync:
+    1. Acquire OS-level exclusive WorkspaceFileLock.
+    2. Validate path containment within authorized_root.
+    3. Persist quarantine intent to SQLite (status = 'quarantine_intent', quarantine_dir recorded).
+    4. Atomic filesystem rename: os.replace(ws_dir, quarantine_dir).
+    5. Fsync parent directory to ensure rename durability across power loss.
+    6. Confirm quarantine in SQLite (status = 'quarantined').
+    7. Destructive deletion: secure_rmtree(quarantine_dir).
+    8. Commit completion in SQLite (status = 'completed').
+    9. Release lock.
     """
-    # Step 1: Persist intent
-    ok, quarantine_path = record_quarantine_intent(conn, cleanup_id, worker_id, lease_token, ws_dir)
-    if not ok or not quarantine_path:
-        return False
+    lock_dir = os.path.dirname(ws_dir) if ws_dir else tempfile.gettempdir()
+    lock = WorkspaceFileLock(lock_dir, cleanup_id)
+    if not lock.acquire():
+        return False  # Another worker holds OS lock
 
-    # Step 2: Atomic rename
-    if ws_dir and os.path.exists(ws_dir):
-        os.replace(ws_dir, quarantine_path)
+    try:
+        if authorized_root and ws_dir:
+            ws_dir = validate_workspace_path(ws_dir, authorized_root)
 
-    # Step 3: Confirm quarantine
-    if not confirm_quarantine(conn, cleanup_id, worker_id, lease_token):
-        return False
+        # Step 1: Persist intent
+        ok, quarantine_path = record_quarantine_intent(conn, cleanup_id, worker_id, lease_token, ws_dir)
+        if not ok or not quarantine_path:
+            return False
 
-    # Step 4: Destructive deletion
-    if quarantine_path and os.path.exists(quarantine_path):
-        shutil.rmtree(quarantine_path)
+        if authorized_root:
+            validate_quarantine_path(ws_dir, quarantine_path, lease_token, authorized_root)
 
-    # Step 5: Complete
-    return complete_quarantine_cleanup(conn, cleanup_id, worker_id, lease_token)
+        # Step 2: Atomic rename
+        if ws_dir and os.path.exists(ws_dir):
+            os.replace(ws_dir, quarantine_path)
+            fsync_directory(os.path.dirname(ws_dir))
+
+        # Step 3: Confirm quarantine
+        if not confirm_quarantine(conn, cleanup_id, worker_id, lease_token):
+            return False
+
+        # Step 4: Destructive deletion
+        if quarantine_path and os.path.exists(quarantine_path):
+            if authorized_root:
+                secure_rmtree(quarantine_path, authorized_root)
+            else:
+                shutil.rmtree(quarantine_path)
+            fsync_directory(os.path.dirname(quarantine_path))
+
+        # Step 5: Complete
+        return complete_quarantine_cleanup(conn, cleanup_id, worker_id, lease_token)
+    finally:
+        lock.unlink()
 
 
-def reclaim_stale_in_progress_cleanups(conn: sqlite3.Connection, allowed_base_dir: Optional[str] = None) -> int:
-    """Reclaims stale in_progress and quarantine_intent records, and recovers orphaned quarantined directories.
+def claim_stale_cleanup_for_recovery(
+    conn: sqlite3.Connection,
+    clean_id: str,
+    recovery_worker_id: str = "recovery_worker",
+    lease_seconds: int = 120
+) -> Tuple[bool, Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Atomically claims an expired cleanup record for recovery in a short transaction.
     
-    Crash consistency matrix:
-    - status = 'quarantined':
-        - If q_dir exists: deletes q_dir, marks status = 'completed'.
-        - If q_dir does not exist: marks status = 'completed'.
-    - status = 'quarantine_intent':
-        - If orig_dir exists and q_dir does not: rename never happened before crash.
-          Resets status = 'pending', quarantine_dir = NULL so next worker can retry cleanly.
-        - If orig_dir does not exist and q_dir exists: rename completed before crash.
-          Deletes q_dir, marks status = 'completed'.
-        - If both orig_dir and q_dir exist: q_dir is an incomplete quarantine artifact.
-          Deletes q_dir, preserves orig_dir, resets status = 'pending', quarantine_dir = NULL.
-        - If neither exists: directory already removed. Marks status = 'completed'.
-    - status = 'in_progress':
-        - Resets status = 'pending' if lease expired.
+    Returns: (claimed, recovery_token, status, workspace_dir, quarantine_dir)
     """
+    recovery_token = secrets.token_hex(16)
+    modifier = f"+{lease_seconds} seconds" if lease_seconds >= 0 else f"{lease_seconds} seconds"
     cursor = conn.cursor()
-    reclaimed_count = 0
-
-    # 1. Recover orphaned quarantined records
+    cursor.execute("BEGIN IMMEDIATE;")
     cursor.execute(
         """
-        SELECT id, workspace_dir, quarantine_dir 
-        FROM pending_cleanups 
-        WHERE status = 'quarantined'
+        SELECT status, workspace_dir, quarantine_dir
+        FROM pending_cleanups
+        WHERE id = ? 
           AND (lease_expires_at IS NULL OR lease_expires_at < CURRENT_TIMESTAMP);
-        """
+        """,
+        (clean_id,)
     )
-    quarantined = cursor.fetchall()
-    for clean_id, ws_dir, q_dir in quarantined:
-        if q_dir:
-            # Validate path safety
-            if allowed_base_dir and not os.path.abspath(q_dir).startswith(os.path.abspath(allowed_base_dir)):
-                continue
-            if ".quarantine_" in q_dir and os.path.exists(q_dir):
-                shutil.rmtree(q_dir)
-        cursor.execute(
-            """
-            UPDATE pending_cleanups
-            SET status = 'completed', quarantine_dir = NULL, worker_id = NULL, lease_token = NULL,
-                lease_expires_at = NULL, next_attempt_at = NULL, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?;
-            """,
-            (clean_id,)
-        )
-        reclaimed_count += 1
-
-    # 2. Recover orphaned quarantine_intent records
-    cursor.execute(
-        """
-        SELECT id, workspace_dir, quarantine_dir 
-        FROM pending_cleanups 
-        WHERE status = 'quarantine_intent'
-          AND (lease_expires_at IS NULL OR lease_expires_at < CURRENT_TIMESTAMP);
-        """
-    )
-    intent_records = cursor.fetchall()
-    for clean_id, ws_dir, q_dir in intent_records:
-        ws_exists = bool(ws_dir and os.path.exists(ws_dir))
-        q_exists = bool(q_dir and os.path.exists(q_dir))
-
-        if q_dir and allowed_base_dir and not os.path.abspath(q_dir).startswith(os.path.abspath(allowed_base_dir)):
-            continue
-
-        if ws_exists and not q_exists:
-            # Case 1: Rename never happened before crash. Reset to pending.
-            cursor.execute(
-                """
-                UPDATE pending_cleanups
-                SET status = 'pending', quarantine_dir = NULL, worker_id = NULL, lease_token = NULL,
-                    lease_expires_at = NULL, next_attempt_at = CURRENT_TIMESTAMP,
-                    last_error = 'Quarantine intent rolled back: workspace directory never renamed',
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?;
-                """,
-                (clean_id,)
-            )
-        elif not ws_exists and q_exists:
-            # Case 2: Rename succeeded before crash. Finish deletion of q_dir and mark completed.
-            if ".quarantine_" in q_dir and os.path.exists(q_dir):
-                shutil.rmtree(q_dir)
-            cursor.execute(
-                """
-                UPDATE pending_cleanups
-                SET status = 'completed', quarantine_dir = NULL, worker_id = NULL, lease_token = NULL,
-                    lease_expires_at = NULL, next_attempt_at = NULL,
-                    last_error = 'Quarantine completed by recovery worker after rename crash',
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?;
-                """,
-                (clean_id,)
-            )
-        elif ws_exists and q_exists:
-            # Case 3: Both exist. Safely remove orphaned quarantine artifact, keep orig_dir, reset to pending.
-            if ".quarantine_" in q_dir and os.path.exists(q_dir):
-                shutil.rmtree(q_dir)
-            cursor.execute(
-                """
-                UPDATE pending_cleanups
-                SET status = 'pending', quarantine_dir = NULL, worker_id = NULL, lease_token = NULL,
-                    lease_expires_at = NULL, next_attempt_at = CURRENT_TIMESTAMP,
-                    last_error = 'Quarantine artifact cleared; workspace preserved for retry',
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?;
-                """,
-                (clean_id,)
-            )
-        else:
-            # Case 4: Neither exists. Already removed.
-            cursor.execute(
-                """
-                UPDATE pending_cleanups
-                SET status = 'completed', quarantine_dir = NULL, worker_id = NULL, lease_token = NULL,
-                    lease_expires_at = NULL, next_attempt_at = NULL, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?;
-                """,
-                (clean_id,)
-            )
-        reclaimed_count += 1
-
-    # 3. Reclaim expired in_progress records back to pending
+    row = cursor.fetchone()
+    if not row:
+        conn.rollback()
+        return False, None, None, None, None
+    
+    current_status, ws_dir, q_dir = row
     cursor.execute(
         """
         UPDATE pending_cleanups
-        SET status = 'pending',
-            worker_id = NULL,
-            lease_token = NULL,
-            lease_expires_at = NULL,
-            next_attempt_at = CURRENT_TIMESTAMP,
-            last_error = 'Reclaimed after application restart (lease expired or worker terminated)',
+        SET worker_id = ?,
+            lease_token = ?,
+            lease_expires_at = datetime('now', ?),
             updated_at = CURRENT_TIMESTAMP
-        WHERE status = 'in_progress' AND (lease_expires_at IS NULL OR lease_expires_at < CURRENT_TIMESTAMP);
+        WHERE id = ? 
+          AND (lease_expires_at IS NULL OR lease_expires_at < CURRENT_TIMESTAMP);
+        """,
+        (recovery_worker_id, recovery_token, modifier, clean_id)
+    )
+    if cursor.rowcount == 1:
+        conn.commit()
+        return True, recovery_token, current_status, ws_dir, q_dir
+    conn.rollback()
+    return False, None, None, None, None
+
+
+def reclaim_stale_in_progress_cleanups(
+    conn: sqlite3.Connection,
+    allowed_base_dir: Optional[str] = None,
+    recovery_worker_id: str = "recovery_daemon"
+) -> int:
+    """Atomic recovery protocol with OS file locking, canonical path validation, and parent fsync."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, status, workspace_dir, quarantine_dir
+        FROM pending_cleanups
+        WHERE (lease_expires_at IS NULL OR lease_expires_at < CURRENT_TIMESTAMP)
+          AND status IN ('in_progress', 'quarantine_intent', 'quarantined');
         """
     )
-    reclaimed_count += cursor.rowcount
-    conn.commit()
+    stale_records = cursor.fetchall()
+    reclaimed_count = 0
+
+    for clean_id, orig_status, raw_ws, raw_q in stale_records:
+        claimed, rec_token, cur_status, cur_ws, cur_q = claim_stale_cleanup_for_recovery(
+            conn, clean_id, recovery_worker_id=recovery_worker_id
+        )
+        if not claimed:
+            continue
+
+        lock_dir = os.path.dirname(cur_ws) if cur_ws else tempfile.gettempdir()
+        lock = WorkspaceFileLock(lock_dir, clean_id)
+        if not lock.acquire():
+            # Live process holds OS lock; yield without interfering
+            cursor.execute(
+                """
+                UPDATE pending_cleanups
+                SET lease_expires_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND worker_id = ? AND lease_token = ?;
+                """,
+                (clean_id, recovery_worker_id, rec_token)
+            )
+            conn.commit()
+            continue
+
+        try:
+            if allowed_base_dir and cur_ws:
+                cur_ws = validate_workspace_path(cur_ws, allowed_base_dir)
+            if allowed_base_dir and cur_q:
+                cur_q = validate_workspace_path(cur_q, allowed_base_dir)
+
+            ws_exists = bool(cur_ws and os.path.exists(cur_ws))
+            q_exists = bool(cur_q and os.path.exists(cur_q))
+
+            if cur_status == "quarantined":
+                if q_exists:
+                    if allowed_base_dir:
+                        secure_rmtree(cur_q, allowed_base_dir)
+                    else:
+                        shutil.rmtree(cur_q)
+                    fsync_directory(os.path.dirname(cur_q))
+                cursor.execute(
+                    """
+                    UPDATE pending_cleanups
+                    SET status = 'completed', quarantine_dir = NULL, worker_id = NULL, lease_token = NULL,
+                        lease_expires_at = NULL, next_attempt_at = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND worker_id = ? AND lease_token = ?;
+                    """,
+                    (clean_id, recovery_worker_id, rec_token)
+                )
+                conn.commit()
+                reclaimed_count += 1
+
+            elif cur_status == "quarantine_intent":
+                if ws_exists and not q_exists:
+                    cursor.execute(
+                        """
+                        UPDATE pending_cleanups
+                        SET status = 'pending', quarantine_dir = NULL, worker_id = NULL, lease_token = NULL,
+                            lease_expires_at = NULL, next_attempt_at = CURRENT_TIMESTAMP,
+                            last_error = 'Quarantine intent rolled back: workspace directory never renamed',
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ? AND worker_id = ? AND lease_token = ?;
+                        """,
+                        (clean_id, recovery_worker_id, rec_token)
+                    )
+                    conn.commit()
+                    reclaimed_count += 1
+                elif not ws_exists and q_exists:
+                    if allowed_base_dir:
+                        secure_rmtree(cur_q, allowed_base_dir)
+                    else:
+                        shutil.rmtree(cur_q)
+                    fsync_directory(os.path.dirname(cur_q))
+                    cursor.execute(
+                        """
+                        UPDATE pending_cleanups
+                        SET status = 'completed', quarantine_dir = NULL, worker_id = NULL, lease_token = NULL,
+                            lease_expires_at = NULL, next_attempt_at = NULL,
+                            last_error = 'Quarantine completed by recovery worker after rename crash',
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ? AND worker_id = ? AND lease_token = ?;
+                        """,
+                        (clean_id, recovery_worker_id, rec_token)
+                    )
+                    conn.commit()
+                    reclaimed_count += 1
+                elif ws_exists and q_exists:
+                    if allowed_base_dir:
+                        secure_rmtree(cur_q, allowed_base_dir)
+                    else:
+                        shutil.rmtree(cur_q)
+                    fsync_directory(os.path.dirname(cur_q))
+                    cursor.execute(
+                        """
+                        UPDATE pending_cleanups
+                        SET status = 'pending', quarantine_dir = NULL, worker_id = NULL, lease_token = NULL,
+                            lease_expires_at = NULL, next_attempt_at = CURRENT_TIMESTAMP,
+                            last_error = 'Quarantine artifact cleared; workspace preserved for retry',
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ? AND worker_id = ? AND lease_token = ?;
+                        """,
+                        (clean_id, recovery_worker_id, rec_token)
+                    )
+                    conn.commit()
+                    reclaimed_count += 1
+                else:
+                    cursor.execute(
+                        """
+                        UPDATE pending_cleanups
+                        SET status = 'completed', quarantine_dir = NULL, worker_id = NULL, lease_token = NULL,
+                            lease_expires_at = NULL, next_attempt_at = NULL, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ? AND worker_id = ? AND lease_token = ?;
+                        """,
+                        (clean_id, recovery_worker_id, rec_token)
+                    )
+                    conn.commit()
+                    reclaimed_count += 1
+
+            elif cur_status == "in_progress":
+                cursor.execute(
+                    """
+                    UPDATE pending_cleanups
+                    SET status = 'pending', worker_id = NULL, lease_token = NULL,
+                        lease_expires_at = NULL, next_attempt_at = CURRENT_TIMESTAMP,
+                        last_error = 'Reclaimed after application restart (lease expired or worker terminated)',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND worker_id = ? AND lease_token = ?;
+                    """,
+                    (clean_id, recovery_worker_id, rec_token)
+                )
+                conn.commit()
+                reclaimed_count += 1
+        finally:
+            lock.unlink()
+
     return reclaimed_count
 
 
@@ -1557,3 +1815,345 @@ def test_workspace_permission_isolation_forbids_world_writable():
         os.makedirs(ws_readable, mode=0o755)
         os.chmod(ws_readable, 0o755)
         assert validate_workspace_permissions(ws_readable) is False
+
+
+def test_concurrent_lease_expires_after_intent_persistence_before_rename():
+    """Verify recovery when lease expires after intent persistence across separate SQLite connections in WAL mode."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test_wal.db")
+        conn_init = sqlite3.connect(db_path)
+        conn_init.execute("PRAGMA journal_mode=WAL;")
+        init_cleanup_db(conn_init)
+        conn_init.execute("INSERT INTO repositories VALUES ('repo_1', 'my-repo');")
+        conn_init.execute("INSERT INTO analysis_runs VALUES ('run_1', 'repo_1', 'running', '/tmp/ws_1');")
+        conn_init.commit()
+        conn_init.close()
+
+        ws_path = os.path.join(tmpdir, "ws_concurrent_intent")
+        os.makedirs(ws_path)
+        with open(os.path.join(ws_path, "file.py"), "w") as f:
+            f.write("code")
+
+        # Connection 1: Worker 1
+        conn1 = sqlite3.connect(db_path)
+        conn1.execute("PRAGMA journal_mode=WAL;")
+        enqueue_interrupted_run_cleanup(conn1, "run_1", ws_path, container_id="c_1")
+        claimed, token1 = claim_cleanup_record(conn1, "clean_run_1", worker_id="worker_1", lease_seconds=120)
+        assert claimed is True
+
+        ok, q_path = record_quarantine_intent(conn1, "clean_run_1", "worker_1", token1, ws_path)
+        assert ok is True
+
+        # Simulate lease expiration
+        conn1.execute("UPDATE pending_cleanups SET lease_expires_at = datetime('now', '-5 seconds') WHERE id = 'clean_run_1';")
+        conn1.commit()
+
+        # Connection 2: Recovery Worker on separate connection
+        conn_rec = sqlite3.connect(db_path)
+        conn_rec.execute("PRAGMA journal_mode=WAL;")
+        reclaimed = reclaim_stale_in_progress_cleanups(conn_rec, allowed_base_dir=tmpdir)
+        assert reclaimed == 1
+
+        # State check: reset to pending, workspace preserved
+        row = conn_rec.execute("SELECT status, quarantine_dir, worker_id FROM pending_cleanups WHERE id = 'clean_run_1';").fetchone()
+        assert row[0] == "pending"
+        assert row[1] is None
+        assert row[2] is None
+        assert os.path.exists(ws_path)
+
+        conn1.close()
+        conn_rec.close()
+
+
+def test_concurrent_stale_worker_resumes_after_recovery_worker_obtains_ownership():
+    """Verify that a stale worker resuming after recovery reclamation is strictly barred from confirming state."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test_wal_stale.db")
+        conn_init = sqlite3.connect(db_path)
+        conn_init.execute("PRAGMA journal_mode=WAL;")
+        init_cleanup_db(conn_init)
+        conn_init.execute("INSERT INTO repositories VALUES ('repo_1', 'my-repo');")
+        conn_init.execute("INSERT INTO analysis_runs VALUES ('run_1', 'repo_1', 'running', '/tmp/ws_1');")
+        conn_init.commit()
+        conn_init.close()
+
+        ws_path = os.path.join(tmpdir, "ws_stale_compete")
+        os.makedirs(ws_path)
+
+        # Worker 1 connection
+        conn1 = sqlite3.connect(db_path)
+        conn1.execute("PRAGMA journal_mode=WAL;")
+        enqueue_interrupted_run_cleanup(conn1, "run_1", ws_path, container_id="c_1")
+        claimed, token1 = claim_cleanup_record(conn1, "clean_run_1", worker_id="worker_1", lease_seconds=120)
+        assert claimed is True
+        ok, q_path = record_quarantine_intent(conn1, "clean_run_1", "worker_1", token1, ws_path)
+        assert ok is True
+
+        # Expire lease
+        conn1.execute("UPDATE pending_cleanups SET lease_expires_at = datetime('now', '-5 seconds') WHERE id = 'clean_run_1';")
+        conn1.commit()
+
+        barrier = threading.Barrier(2)
+        results = {}
+
+        def recovery_thread():
+            conn_rec = sqlite3.connect(db_path, timeout=10)
+            conn_rec.execute("PRAGMA journal_mode=WAL;")
+            barrier.wait()
+            # Claim recovery and complete
+            reclaimed = reclaim_stale_in_progress_cleanups(conn_rec, allowed_base_dir=tmpdir, recovery_worker_id="rec_daemon")
+            results["reclaimed"] = reclaimed
+            conn_rec.close()
+
+        def stale_worker_thread():
+            conn_w = sqlite3.connect(db_path, timeout=10)
+            conn_w.execute("PRAGMA journal_mode=WAL;")
+            barrier.wait()
+            # Stale worker attempts to confirm quarantine using expired token1
+            confirmed = confirm_quarantine(conn_w, "clean_run_1", "worker_1", token1)
+            results["stale_confirmed"] = confirmed
+            conn_w.close()
+
+        t1 = threading.Thread(target=recovery_thread)
+        t2 = threading.Thread(target=stale_worker_thread)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # The stale worker must have failed confirmation
+        assert results["stale_confirmed"] is False
+        conn1.close()
+
+
+def test_concurrent_lease_expires_during_recursive_deletion():
+    """Verify that a worker whose lease expires during deletion is rejected upon completion attempt."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test_wal_del_exp.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        init_cleanup_db(conn)
+        conn.execute("INSERT INTO repositories VALUES ('repo_1', 'my-repo');")
+        conn.execute("INSERT INTO analysis_runs VALUES ('run_1', 'repo_1', 'running', '/tmp/ws_1');")
+        conn.commit()
+
+        ws_path = os.path.join(tmpdir, "ws_del_exp")
+        os.makedirs(ws_path)
+
+        enqueue_interrupted_run_cleanup(conn, "run_1", ws_path, container_id="c_1")
+        claimed, token = claim_cleanup_record(conn, "clean_run_1", worker_id="worker_1", lease_seconds=120)
+        ok, q_path = record_quarantine_intent(conn, "clean_run_1", "worker_1", token, ws_path)
+        os.replace(ws_path, q_path)
+        confirm_quarantine(conn, "clean_run_1", "worker_1", token)
+
+        # Expire lease during deletion
+        conn.execute("UPDATE pending_cleanups SET lease_expires_at = datetime('now', '-5 seconds') WHERE id = 'clean_run_1';")
+        conn.commit()
+
+        # Worker attempts to complete cleanup
+        completed = complete_quarantine_cleanup(conn, "clean_run_1", "worker_1", token)
+        assert completed is False  # Must be rejected
+
+        # Recovery worker takes over
+        conn_rec = sqlite3.connect(db_path)
+        reclaimed = reclaim_stale_in_progress_cleanups(conn_rec, allowed_base_dir=tmpdir)
+        assert reclaimed == 1
+        row = conn_rec.execute("SELECT status FROM pending_cleanups WHERE id = 'clean_run_1';").fetchone()
+        assert row[0] == "completed"
+
+        conn.close()
+        conn_rec.close()
+
+
+def test_two_recovery_workers_simultaneously_attempt_reclaim():
+    """Verify that two recovery workers competing simultaneously for the same stale record are serialized atomically."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test_wal_compete.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        init_cleanup_db(conn)
+        conn.execute("INSERT INTO repositories VALUES ('repo_1', 'my-repo');")
+        conn.execute("INSERT INTO analysis_runs VALUES ('run_1', 'repo_1', 'running', '/tmp/ws_1');")
+        conn.commit()
+
+        ws_path = os.path.join(tmpdir, "ws_compete")
+        os.makedirs(ws_path)
+        enqueue_interrupted_run_cleanup(conn, "run_1", ws_path, container_id="c_1")
+        claim_cleanup_record(conn, "clean_run_1", worker_id="worker_dead", lease_seconds=-5)
+        conn.close()
+
+        barrier = threading.Barrier(2)
+        claims = {}
+
+        def worker_task(worker_id):
+            c = sqlite3.connect(db_path, timeout=10)
+            c.execute("PRAGMA journal_mode=WAL;")
+            barrier.wait()
+            claimed, token, _, _, _ = claim_stale_cleanup_for_recovery(c, "clean_run_1", recovery_worker_id=worker_id)
+            claims[worker_id] = claimed
+            c.close()
+
+        t1 = threading.Thread(target=worker_task, args=("worker_A",))
+        t2 = threading.Thread(target=worker_task, args=("worker_B",))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # Exactly one worker must succeed in acquiring the claim
+        assert list(claims.values()).count(True) == 1
+        assert list(claims.values()).count(False) == 1
+
+
+def test_recovery_competes_with_active_deletion_os_lock():
+    """Verify that recovery worker safely yields when a live worker holds the exclusive OS file lock."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test_wal_lock.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        init_cleanup_db(conn)
+        conn.execute("INSERT INTO repositories VALUES ('repo_1', 'my-repo');")
+        conn.execute("INSERT INTO analysis_runs VALUES ('run_1', 'repo_1', 'running', '/tmp/ws_1');")
+        conn.commit()
+
+        ws_path = os.path.join(tmpdir, "ws_locked")
+        os.makedirs(ws_path)
+        enqueue_interrupted_run_cleanup(conn, "run_1", ws_path, container_id="c_1")
+        claim_cleanup_record(conn, "clean_run_1", worker_id="worker_active", lease_seconds=-5)
+
+        # Worker 1 holds OS lock
+        lock = WorkspaceFileLock(tmpdir, "clean_run_1")
+        assert lock.acquire() is True
+
+        # Recovery attempts sweep
+        reclaimed = reclaim_stale_in_progress_cleanups(conn, allowed_base_dir=tmpdir)
+        # Recovery must yield without touching files because OS lock is held
+        assert reclaimed == 0
+        assert os.path.exists(ws_path)
+
+        lock.release()
+        conn.close()
+
+
+def test_stale_worker_attempts_update_on_reclaimed_record():
+    """Verify that all state transitions fail when attempted by a stale worker with an obsolete token."""
+    conn = sqlite3.connect(":memory:")
+    init_cleanup_db(conn)
+    conn.execute("INSERT INTO repositories VALUES ('repo_1', 'my-repo');")
+    conn.execute("INSERT INTO analysis_runs VALUES ('run_1', 'repo_1', 'running', '/tmp/ws_1');")
+    conn.commit()
+
+    enqueue_interrupted_run_cleanup(conn, "run_1", "/tmp/ws_1", container_id="c_1")
+    _, token1 = claim_cleanup_record(conn, "clean_run_1", worker_id="worker_1", lease_seconds=-5)
+    _, token2 = claim_cleanup_record(conn, "clean_run_1", worker_id="worker_2", lease_seconds=120)
+
+    # Worker 1 attempts intent, confirm, complete with stale token1
+    ok_intent, _ = record_quarantine_intent(conn, "clean_run_1", "worker_1", token1, "/tmp/ws_1")
+    assert ok_intent is False
+
+    ok_confirm = confirm_quarantine(conn, "clean_run_1", "worker_1", token1)
+    assert ok_confirm is False
+
+    ok_complete = complete_quarantine_cleanup(conn, "clean_run_1", "worker_1", token1)
+    assert ok_complete is False
+
+    conn.close()
+
+
+def test_path_prefix_sibling_directory_attack_rejected():
+    """Verify that path validation strictly rejects sibling directory attacks (e.g. /ws_evil vs /ws)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root_dir = os.path.join(tmpdir, "authorized_root")
+        os.makedirs(root_dir)
+
+        sibling_dir = os.path.join(tmpdir, "authorized_root_evil", "escape")
+        os.makedirs(sibling_dir)
+
+        # Sibling directory attack must raise SecurityException
+        with pytest.raises(SecurityException):
+            validate_workspace_path(sibling_dir, root_dir)
+
+
+def test_symlink_based_path_escape_rejected():
+    """Verify that path validation rejects direct symlinks and symlink-based path escapes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root_dir = os.path.join(tmpdir, "workspaces")
+        os.makedirs(root_dir)
+
+        outside_dir = os.path.join(tmpdir, "outside_target")
+        os.makedirs(outside_dir)
+
+        symlink_path = os.path.join(root_dir, "symlink_escape")
+        os.symlink(outside_dir, symlink_path)
+
+        with pytest.raises(SecurityException):
+            validate_workspace_path(symlink_path, root_dir)
+
+
+def test_crash_after_filesystem_rename_durability():
+    """Verify that parent directory fsync and quarantine confirmation safely recover if crash follows rename."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conn = sqlite3.connect(":memory:")
+        init_cleanup_db(conn)
+        conn.execute("INSERT INTO repositories VALUES ('repo_1', 'my-repo');")
+        conn.execute("INSERT INTO analysis_runs VALUES ('run_1', 'repo_1', 'running', '/tmp/ws_1');")
+        conn.commit()
+
+        ws_path = os.path.join(tmpdir, "ws_durability")
+        os.makedirs(ws_path)
+        with open(os.path.join(ws_path, "data.bin"), "wb") as f:
+            f.write(b"data")
+
+        enqueue_interrupted_run_cleanup(conn, "run_1", ws_path, container_id="c_1")
+        claimed, token = claim_cleanup_record(conn, "clean_run_1", worker_id="worker_1", lease_seconds=120)
+
+        ok, q_path = record_quarantine_intent(conn, "clean_run_1", "worker_1", token, ws_path)
+        os.replace(ws_path, q_path)
+        fsync_directory(os.path.dirname(ws_path))
+
+        # Crash occurs before confirm_quarantine. Status is 'quarantine_intent'.
+        conn.execute("UPDATE pending_cleanups SET lease_expires_at = datetime('now', '-5 seconds') WHERE id = 'clean_run_1';")
+        conn.commit()
+
+        # Recovery sweeps
+        reclaimed = reclaim_stale_in_progress_cleanups(conn, allowed_base_dir=tmpdir)
+        assert reclaimed == 1
+        assert not os.path.exists(q_path)
+        row = conn.execute("SELECT status FROM pending_cleanups WHERE id = 'clean_run_1';").fetchone()
+        assert row[0] == "completed"
+
+        conn.close()
+
+
+def test_repeated_recovery_after_interrupted_deletion():
+    """Verify recovery idempotency when a previous recovery worker crashes mid-deletion."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conn = sqlite3.connect(":memory:")
+        init_cleanup_db(conn)
+        conn.execute("INSERT INTO repositories VALUES ('repo_1', 'my-repo');")
+        conn.execute("INSERT INTO analysis_runs VALUES ('run_1', 'repo_1', 'running', '/tmp/ws_1');")
+        conn.commit()
+
+        ws_path = os.path.join(tmpdir, "ws_interrupted")
+        os.makedirs(os.path.join(ws_path, "part1"))
+        os.makedirs(os.path.join(ws_path, "part2"))
+
+        enqueue_interrupted_run_cleanup(conn, "run_1", ws_path, container_id="c_1")
+        claimed, token = claim_cleanup_record(conn, "clean_run_1", worker_id="worker_1", lease_seconds=120)
+        ok, q_path = record_quarantine_intent(conn, "clean_run_1", "worker_1", token, ws_path)
+        os.replace(ws_path, q_path)
+        confirm_quarantine(conn, "clean_run_1", "worker_1", token)
+
+        # Worker 1 deletes part1, then crashes
+        shutil.rmtree(os.path.join(q_path, "part1"))
+        conn.execute("UPDATE pending_cleanups SET lease_expires_at = datetime('now', '-5 seconds') WHERE id = 'clean_run_1';")
+        conn.commit()
+
+        # Recovery pass 1 finishes deletion and marks completed
+        assert reclaim_stale_in_progress_cleanups(conn, allowed_base_dir=tmpdir, recovery_worker_id="rec_1") == 1
+        assert not os.path.exists(q_path)
+
+        # Repeated pass 2 finds zero work
+        assert reclaim_stale_in_progress_cleanups(conn, allowed_base_dir=tmpdir, recovery_worker_id="rec_2") == 0
+
+        conn.close()

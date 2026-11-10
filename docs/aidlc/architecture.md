@@ -249,6 +249,10 @@ If `DUA_GIT_TOKEN` is present in Git's environment, `git-remote-https`, global c
 
 Furthermore, passing an authorization nonce (`DUA_AUTH_NONCE`) via environment variables does not protect against same-UID inspection on Linux, where `/proc/<pid>/environ` is readable by other processes of the same user. Therefore, kernel peer credential verification and complete process-ancestry validation are mandatory.
 
+> [!NOTE]
+> **Brownfield Baseline vs. Target Architecture Note:**
+> The existing codebase contains a functional prototype in `src/services/git_service.py` (which writes temporary askpass scripts). The hardened UNIX domain socket IPC architecture with peer credentials, PID ancestry walks, and nonce validation specified in [ADR-003](file:///Users/soham/Github/Dependency Upgrade Assistant/docs/aidlc/adr/ADR-003-in-memory-credential-delivery-via-ephemeral-git-as.md) is the **Target Architecture Specification** for Dependency Upgrade Assistant 2.0 to be constructed in Phase 2 Construction. Architectural contracts are verified via `tests/test_git_peer_auth.py`.
+
 **Hardened Ephemeral Socket Delivery with Peer and Nonce Verification ([ADR-003](file:///Users/soham/Github/Dependency Upgrade Assistant/docs/aidlc/adr/ADR-003-in-memory-credential-delivery-via-ephemeral-git-as.md)):**
 To eliminate environment-variable credential exposure and defend against same-UID socket race conditions:
 1. **No Token in Process Environment:** The token string is **never** placed into the environment dictionary of `git` or any child process.
@@ -324,6 +328,10 @@ docker run --rm \
 - **Pre-Baked Toolchain & Fail-Closed Guard:** The container image (`dua-sandbox-python:3.11`) comes pre-installed with `pytest`, `ruff`, and `py_compile`. If a tool is missing, execution terminates with status `NOT_RUNNABLE` (Reason: `TOOL_MISSING`), **never falling back to host execution**.
 - **Deterministic Container Labeling & Orphan Recovery:** All validation containers are spawned with labels `--label dev.dua.managed=true`, `--label dev.dua.run_id=<run_id>`, and `--label dev.dua.created_at=<timestamp>`. On application startup, the recovery engine inspects Docker containers by label, verifies ownership, and stops/removes orphaned containers before deleting workspace directories on the host. If Docker daemon is unavailable, workspace deletion is deferred (fails closed).
 - **Residual Risk:** Docker isolates userland processes but shares the host operating system kernel. Unpatched zero-day vulnerabilities in the host Linux kernel reachable via permitted syscalls represent a shared-kernel residual risk.
+
+> [!NOTE]
+> **Brownfield Baseline vs. Target Architecture Note:**
+> The existing codebase contains a prototype runner in `src/validation/sandbox_manager.py`. The complete Docker sandbox containment, tmpfs `noexec` isolation, OS-level filesystem locks (`WorkspaceFileLock`), and durable cleanup recovery engine specified in [ADR-002](file:///Users/soham/Github/Dependency Upgrade Assistant/docs/aidlc/adr/ADR-002-docker-sandbox-containment-and-filesystem-security.md) constitute the **Target Architecture Specification** for Dependency Upgrade Assistant 2.0 to be constructed in Phase 2 Construction. Architectural contracts are verified via `tests/test_docker_orphan_recovery.py`.
 
 ### 3. Background Pipeline Lifecycle, Concurrency & Startup Recovery
 Long-running analysis and validation tasks must execute reliably regardless of frontend connection status:
@@ -416,9 +424,11 @@ Long-running analysis and validation tasks must execute reliably regardless of f
        If `rowcount == 0`, renewal failed (the lease expired or another worker reclaimed the record). The worker detects this immediately, aborts, and executes no further destructive operations.
      * **Worker Crash Handling During Renewal:** If a worker crashes or encounters a database error during lease renewal, the lease expires naturally after 120 seconds, allowing safe reclamation by another worker without deadlocking.
    - **Durable Quarantine-Intent Protocol (SQLite/Filesystem Crash Consistency):**
-     Performing filesystem renames inside an uncommitted database transaction risks leaving orphaned directories on disk if the process crashes before `COMMIT`. The system implements a durable 5-step intent logging protocol:
-     1. **Step 1 (Persist Intent to SQLite):**
-        Before touching the filesystem, the worker persists quarantine intent and the unique target path (`quarantine_dir = f"{workspace_dir}.quarantine_{lease_token}"`):
+     Performing filesystem renames inside an uncommitted database transaction risks leaving orphaned directories on disk if the process crashes before `COMMIT`. Furthermore, database transactions alone cannot revoke in-flight filesystem operations of a stalled process. The architecture combines database intent logging, POSIX kernel file locking, canonical path containment validation, and directory metadata fsync into a durable 5-step quarantine protocol:
+     1. **Step 1 (Path Validation, POSIX Kernel Lock & Persist Intent to SQLite):**
+        * **Canonical Path Containment:** Before touching the filesystem, the worker resolves `realpath` on both the workspace directory and base directory, asserting `os.path.commonpath([real_root, real_path]) == real_root` and `real_path != real_root`. It verifies `os.path.islink(path)` is false to prevent directory symlink escapes or sibling directory prefix attacks (e.g., `/tmp/ws_evil` matching prefix `/tmp/ws`).
+        * **OS Advisory Kernel File Lock (`WorkspaceFileLock`):** The worker acquires a non-blocking POSIX advisory kernel lock `fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)` on `.cleanup_<id>.lock` in the parent directory. Because the lock is managed by the OS kernel, it ensures strict mutual exclusion across all processes on the host. If a worker process terminates, crashes, or is killed via `SIGKILL`, the kernel synchronously closes file descriptors and releases the lock immediately.
+        * **Persist Intent to SQLite:** The worker persists quarantine intent and the unique target path (`quarantine_dir = f"{workspace_dir}.quarantine_{lease_token}"`):
         ```sql
         UPDATE pending_cleanups
         SET status = 'quarantine_intent',
@@ -431,10 +441,11 @@ Long-running analysis and validation tasks must execute reliably regardless of f
           AND lease_expires_at >= CURRENT_TIMESTAMP;
         ```
         The transaction is immediately committed. If `rowcount == 0`, lease ownership was lost; abort immediately.
-     2. **Step 2 (Atomic Filesystem Rename):**
+     2. **Step 2 (Atomic Filesystem Rename & Parent Directory Fsync):**
         The worker performs `os.replace(workspace_dir, quarantine_path)`. In POSIX kernels, `rename(2)` atomically unlinks the source path and links the destination in a single operation.
+        * **Power-Loss Durability vs. Process Crash:** While a standard process crash (`SIGKILL`) preserves directory entries in the kernel's virtual filesystem (VFS) page cache, sudden hardware power loss can revert unflushed directory metadata blocks. To achieve true crash-consistency across power loss, the worker executes `os.fsync(dir_fd)` on a file descriptor opened with `os.O_RDONLY` to the parent directory immediately following `os.replace`, guaranteeing that the rename transaction is committed to non-volatile disk storage before updating the database.
      3. **Step 3 (Confirm Quarantine in SQLite):**
-        Once the rename succeeds, the worker confirms the quarantine state in the database:
+        Once the rename and directory fsync succeed, the worker confirms the quarantine state in the database:
         ```sql
         UPDATE pending_cleanups
         SET status = 'quarantined',
@@ -447,7 +458,8 @@ Long-running analysis and validation tasks must execute reliably regardless of f
         ```
         The transaction is immediately committed. If `rowcount == 0` (e.g. lease expired during rename), the worker aborts deletion.
      4. **Step 4 (Destructive Deletion of Quarantine Directory):**
-        The worker verifies lease ownership and deletes the quarantined directory: `shutil.rmtree(quarantine_path)`.
+        The worker verifies lease ownership and executes safe recursive deletion: `secure_rmtree(quarantine_path)`.
+        * **Symlink Traversal Prevention:** `secure_rmtree` traverses the directory tree with `followlinks=False`, unlinking symlinks directly rather than following them (`O_NOFOLLOW` semantics), preventing arbitrary filesystem destruction via malicious symlinks embedded in untrusted repositories.
      5. **Step 5 (Commit Completion):**
         ```sql
         UPDATE pending_cleanups
@@ -467,16 +479,28 @@ Long-running analysis and validation tasks must execute reliably regardless of f
      When startup recovery or periodic sweeps inspect records with expired leases or interrupted transitions:
      * **`quarantine_intent` Recovery:**
        - *Case 1 (Original exists, quarantine absent):* The process crashed before `os.replace`. The rename never occurred. Recovery resets `status = 'pending'`, clears `quarantine_dir = NULL`, preserving the workspace for clean retry.
-       - *Case 2 (Original absent, quarantine exists):* The process crashed after `os.replace`. The rename succeeded. Recovery safely deletes `quarantine_dir` via `shutil.rmtree` and marks `status = 'completed'`.
+       - *Case 2 (Original absent, quarantine exists):* The process crashed after `os.replace`. The rename succeeded. Recovery safely deletes `quarantine_dir` via `secure_rmtree` and marks `status = 'completed'`.
        - *Case 3 (Both exist):* Incomplete quarantine anomaly. Recovery removes the orphaned quarantine artifact `quarantine_dir`, preserves the intact `workspace_dir`, and resets `status = 'pending'` with `quarantine_dir = NULL`.
        - *Case 4 (Neither exists):* Workspace already gone. Recovery marks `status = 'completed'`.
      * **`quarantined` Recovery:**
-       - If `quarantine_dir` exists, delete via `shutil.rmtree` and mark `status = 'completed'`.
+       - If `quarantine_dir` exists, delete via `secure_rmtree` and mark `status = 'completed'`.
        - If `quarantine_dir` is already absent, mark `status = 'completed'`.
-     * **Safe Path Validation:** Before any deletion, recovery validates that `quarantine_dir` is non-empty, contains `.quarantine_`, and is contained within the authorized workspace base directory, preventing arbitrary path deletion.
-   - **Deletion-Phase Ownership & Stale-Worker Fencing:**
-     * If a worker's lease expires while in `quarantine_intent` or `quarantined`, a new worker reclaims the record by generating a new `lease_token`.
-     * Because all database updates require matching `lease_token` and `lease_expires_at >= CURRENT_TIMESTAMP`, the stale worker's subsequent completion update matches 0 rows and is rejected.
+     * **Canonical Path Containment Validation:** Before any recovery deletion, recovery validates that `quarantine_dir` is non-empty, matches `{ws_basename}.quarantine_{lease_token}`, and is canonically contained within the authorized workspace base directory (`os.path.commonpath`), strictly rejecting path-prefix sibling attacks and symlink escapes.
+   - **Deletion-Phase Ownership, Short Transactions & Stale-Worker Fencing:**
+     * **Short-Transaction Recovery Claim:** To prevent SQLite write lock starvation and concurrency bottlenecks, recovery workers claim stale records using short atomic `BEGIN IMMEDIATE` transactions via `claim_stale_cleanup_for_recovery`:
+       ```sql
+       UPDATE pending_cleanups
+       SET worker_id = :new_worker_id,
+           lease_token = :new_lease_token,
+           lease_expires_at = datetime('now', '+120 seconds'),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = :id
+         AND (lease_expires_at IS NULL OR lease_expires_at < CURRENT_TIMESTAMP);
+       ```
+       The database write lock is immediately released once the claim commits; slow recursive filesystem deletions are never performed while holding a database write transaction.
+     * **Dual-Layer Fencing (Kernel Lock + DB Token):** If a worker's lease expires while in `quarantine_intent` or `quarantined`, a new recovery worker claims the record with a fresh `lease_token` and acquires the OS `WorkspaceFileLock`.
+       - If the original worker was descheduled or slow, the recovery worker's non-blocking `fcntl.flock` fails if the original process is still running, preventing concurrent destructive deletion.
+       - If the original worker attempts to resume and write back to the database after losing its lease, its SQL update matches 0 rows (because `lease_token` and `lease_expires_at` have changed) and is rejected.
      * Stale workers cannot overwrite newer cleanup state or interfere with recovery operations.
    - **Crash Recovery & Startup Reclamation of Stale Claims:**
      On application startup (or during periodic sweeps), the lifespan handler reclaims any stale `in_progress` records left behind by a crash or SIGKILL:

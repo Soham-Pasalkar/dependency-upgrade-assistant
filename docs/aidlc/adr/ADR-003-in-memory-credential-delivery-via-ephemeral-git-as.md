@@ -1,9 +1,11 @@
 # ADR-003: In-Memory Credential Delivery via Ephemeral Authenticated UNIX Domain Socket IPC and Git Hardening
 
-- Status: accepted
+- Status: proposed (submitted for Gate G2 review)
 - Date: 2026-11-09
 
 ## Context
+> **Baseline Prototype Note:** The existing brownfield prototype (`src/services/git_service.py`) dynamically creates a temporary Python script (`dua_askpass_*.py`) in `/tmp` containing `os.environ.get('DUA_GIT_TOKEN')` and marks it executable (`0o700`). This ADR specifies the target production architecture utilizing authenticated UNIX domain socket IPC, kernel peer credentials, and full process-tree ancestry verification, which will be constructed during Phase 2.
+
 When cloning private repositories or authenticating with GitHub over HTTPS, the platform must supply a Personal Access Token (PAT). In the initial prototype, `src/services/git_service.py` dynamically generated a temporary Python script (`dua_askpass_*.py`) in `/tmp` containing `os.environ.get('DUA_GIT_TOKEN')` and marked it executable (`0o700`).
 
 Detailed architectural evaluation identified critical security liabilities:

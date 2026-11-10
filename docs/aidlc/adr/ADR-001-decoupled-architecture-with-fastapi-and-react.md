@@ -1,6 +1,6 @@
 # ADR-001: Decoupled Architecture with FastAPI and React
 
-- Status: accepted
+- Status: proposed (submitted for Gate G2 review)
 - Date: 2026-11-09
 
 ## Context
