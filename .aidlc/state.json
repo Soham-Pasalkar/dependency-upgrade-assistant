@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-10T14:45:16Z",
+  "updated": "2026-11-10T14:57:24Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -56,7 +56,7 @@
         {
           "text": "SQLite persistence foundation initialized",
           "verified": true,
-          "proof": "SQLite persistence module in src/api/database.py initialized with individual connection lifecycle management and WAL mode; verified by deterministic failure test test_database_connectivity_failure_handled asserting ok is False on mocked OperationalError"
+          "proof": "SQLite persistence module in src/api/database.py verified by test_database_init_and_connectivity (repositories, analysis_runs, and pending_cleanups tables, WAL mode, foreign key enforcement, and successful connectivity) and test_database_connectivity_failure_handled (deterministic failure handling using a mocked OperationalError)"
         },
         {
           "text": "Backend test suite passes",
@@ -120,12 +120,33 @@
           "result": "2 passed in 0.13s: verified init and deterministic failure assertion (ok is False) via connection mock",
           "file": null,
           "sha256": null
+        },
+        {
+          "at": "2026-11-10T14:56:44Z",
+          "cmd": ".venv/bin/pytest -ra",
+          "result": "254 passed, 1 warning in 4.05s: full regression suite 100% green post-correction",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T14:56:49Z",
+          "cmd": "cd frontend && npm test",
+          "result": "2 test files passed, 5 tests passed in 780ms: App.test.tsx and BackendStatus.test.tsx post-correction",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-10T14:56:54Z",
+          "cmd": "cd frontend && npm run build",
+          "result": "tsc -b && vite build succeeded in 66ms: 0 errors, output generated in dist/ post-correction",
+          "file": null,
+          "sha256": null
         }
       ],
       "approval": null,
-      "rework": 1,
+      "rework": 2,
       "started": "2026-11-10T14:19:43Z",
-      "note": "Rework requested: correct database failure test in test_api_health.py and clarify SQLite connection lifecycle terminology in M1 report"
+      "note": "Evidence reconciliation: record post-correction verification evidence and update criterion 3 proof"
     },
     {
       "id": "M2",
@@ -392,5 +413,5 @@
       "at": "2026-11-09T13:32:28Z"
     }
   ],
-  "head": "aa10ae1555a07b6768c7c9b6aabd9adc00020334e354c8facdf9e06ebecc75a0"
+  "head": "b37d1ceb123d375727205d4b6330235e07f4244e136e51f3e0dbac4d0b12dcdb"
 }
