@@ -524,17 +524,13 @@ Long-running analysis and validation tasks must execute reliably regardless of f
          6. *Heartbeat Failure Handling:* If lease heartbeat renewal fails during recursive deletion (`secure_rmtree`), deletion halts immediately, raising `DeletionException` (failing closed). The worker aborts without completing and releases the lock, allowing recovery to reconcile the state.
      * Stale workers cannot overwrite newer cleanup state or interfere with recovery operations.
    - **Crash Recovery & Startup Reclamation of Stale Claims:**
-     On application startup (or during periodic sweeps), the lifespan handler reclaims any stale `in_progress` records left behind by a crash or SIGKILL:
-     ```sql
-     UPDATE pending_cleanups
-     SET status = 'pending',
-         worker_id = NULL,
-         lease_token = NULL,
-         lease_expires_at = NULL,
-         last_error = 'Reclaimed after application restart (lease expired or worker terminated)',
-         updated_at = CURRENT_TIMESTAMP
-     WHERE status = 'in_progress' AND (lease_expires_at IS NULL OR lease_expires_at < CURRENT_TIMESTAMP);
-     ```
+     On application startup (or during periodic sweeps), the lifespan handler reclaims stale records left behind by an application crash or process termination using the Lock-First Recovery protocol:
+     1. *Discover Potentially Stale Cleanup Records:* Queries for candidate records in recoverable statuses (`in_progress`, `quarantine_intent`, `quarantined`) whose `lease_expires_at` is expired or NULL and whose `next_attempt_at` is eligible.
+     2. *Acquire Corresponding `WorkspaceFileLock`:* Before claiming or altering database state, attempts non-blocking exclusive acquisition of `WorkspaceFileLock` on the workspace directory.
+     3. *Yield on Contention:* If an active worker is currently executing under the lock, `lock.acquire()` returns `False`. Recovery yields immediately without database mutation, guaranteeing that slow active workers are never superseded.
+     4. *Claim Record in Short Atomic Transaction:* Once the lock is held, transitions ownership in a short `BEGIN IMMEDIATE` transaction using `claim_stale_cleanup_for_recovery()`, enforcing expected-status and expired-lease checks with a new 256-bit recovery token.
+     5. *Reconcile Filesystem State:* Reconciles filesystem state (rolling back unrenamed workspaces to `pending`, completing quarantined deletions, or purging orphaned artifacts) while continuously holding `WorkspaceFileLock`.
+     6. *Release Lock on Every Exit Path:* The held lock is released exactly once in a `finally` block upon completion, retry reset, or error.
    - **Persistent Retry Scheduling (`next_attempt_at`) & Error Classification:**
      * **Retry Deadline Calculation:** Retries use exponential backoff:
        $$\text{delay} = \min(300, 10 \times 2^{\text{retry\_count}})\text{ seconds}$$

@@ -516,14 +516,14 @@ def claim_cleanup_record(
             return CleanupOwnership(False, None, None, False)
         owns_lock = True
 
-    # LOCK IS HELD CONTINUOUSLY FROM HERE ACROSS SQLITE CLAIM
-    if pre_claim_hook is not None:
-        pre_claim_hook()
-
-    token = forced_token or secrets.token_hex(32)
-    modifier = f"+{lease_seconds} seconds" if lease_seconds >= 0 else f"{lease_seconds} seconds"
-    
     try:
+        # LOCK IS HELD CONTINUOUSLY FROM HERE ACROSS SQLITE CLAIM
+        if pre_claim_hook is not None:
+            pre_claim_hook()
+
+        token = forced_token or secrets.token_hex(32)
+        modifier = f"+{lease_seconds} seconds" if lease_seconds >= 0 else f"{lease_seconds} seconds"
+        
         cursor.execute("BEGIN IMMEDIATE;")
         cursor.execute(
             """
@@ -559,8 +559,13 @@ def claim_cleanup_record(
                 lock.release()
             return CleanupOwnership(False, None, None, False)
     except Exception:
-        conn.rollback()
-        if owns_lock:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        if (cleanup_id, worker_id) in _ACTIVE_CLAIM_LOCKS:
+            _ACTIVE_CLAIM_LOCKS.pop((cleanup_id, worker_id), None)
+        if owns_lock and lock is not None:
             lock.release()
         raise
 
@@ -3815,6 +3820,70 @@ def test_claim_existing_lock_validation_mismatches_rejected():
         row = conn.execute("SELECT status, worker_id FROM pending_cleanups WHERE id = 'clean_run_1';").fetchone()
         assert row[0] == "pending"
         assert row[1] is None
+
+        conn.close()
+
+
+def test_claim_pre_claim_hook_exception_releases_owned_lock():
+    """Verifies exception safety in claim_cleanup_record():
+    1. If pre_claim_hook raises, the internally acquired WorkspaceFileLock is released.
+    2. The original exception propagates to the caller.
+    3. The cleanup record in the database remains unchanged ('pending', worker_id IS NULL).
+    4. _ACTIVE_CLAIM_LOCKS has no stale entry for this cleanup.
+    5. A new WorkspaceFileLock can immediately acquire the same lock path.
+    6. If caller supplied existing_lock, caller's lock is NOT released if the hook raises.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conn = sqlite3.connect(":memory:")
+        init_cleanup_db(conn)
+        conn.execute("INSERT INTO repositories VALUES ('repo_1', 'my-repo');")
+        conn.execute("INSERT INTO analysis_runs VALUES ('run_1', 'repo_1', 'running', '/tmp/ws_1');")
+        conn.commit()
+
+        ws_path = os.path.join(tmpdir, "ws_hook_exc")
+        os.makedirs(ws_path)
+        enqueue_interrupted_run_cleanup(conn, "run_1", ws_path)
+
+        class DeliberateHookException(RuntimeError):
+            pass
+
+        def exploding_hook():
+            raise DeliberateHookException("Simulated hook failure before SQLite claim")
+
+        # Part 1: Internally acquired lock (existing_lock is None)
+        with pytest.raises(DeliberateHookException, match="Simulated hook failure before SQLite claim"):
+            claim_cleanup_record(conn, "clean_run_1", "worker_err", lease_seconds=120, pre_claim_hook=exploding_hook)
+
+        # Assert DB record remains unchanged and not claimed
+        row = conn.execute("SELECT status, worker_id, lease_token FROM pending_cleanups WHERE id = 'clean_run_1';").fetchone()
+        assert row[0] == "pending"
+        assert row[1] is None
+        assert row[2] is None
+
+        # Assert _ACTIVE_CLAIM_LOCKS has no stale entry
+        assert ("clean_run_1", "worker_err") not in _ACTIVE_CLAIM_LOCKS
+
+        # Assert a new WorkspaceFileLock can immediately acquire the same lock (lock was not leaked)
+        new_lock = WorkspaceFileLock(tmpdir, "clean_run_1")
+        assert new_lock.acquire() is True
+        new_lock.release()
+
+        # Part 2: Caller-supplied existing_lock must NOT be released if hook raises
+        caller_lock = WorkspaceFileLock(tmpdir, "clean_run_1")
+        assert caller_lock.acquire() is True
+        try:
+            with pytest.raises(DeliberateHookException):
+                claim_cleanup_record(
+                    conn, "clean_run_1", "worker_err2", lease_seconds=120,
+                    existing_lock=caller_lock, pre_claim_hook=exploding_hook
+                )
+            # Verify caller's lock remained held and open
+            assert caller_lock.fd is not None
+            # Verify another lock cannot acquire while caller still holds it
+            contender_lock = WorkspaceFileLock(tmpdir, "clean_run_1")
+            assert contender_lock.acquire() is False
+        finally:
+            caller_lock.release()
 
         conn.close()
 
