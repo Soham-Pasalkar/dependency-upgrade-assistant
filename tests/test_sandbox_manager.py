@@ -299,7 +299,7 @@ def test_legacy_sandbox_manager_interruption_cleans_up_in_finally(
 def test_legacy_sandbox_manager_terminate_method(mock_run: MagicMock):
     """Verify manager.terminate forcefully terminates given container name."""
     mock_run.return_value = MagicMock(returncode=0)
-    manager = DockerSandboxManager()
+    manager = DockerSandboxManager(docker_binary="docker")
     assert manager.terminate("dua-legacy-target-123") is True
     called_cmd = mock_run.call_args_list[0][0][0]
     assert called_cmd == ["docker", "rm", "-f", "dua-legacy-target-123"]
