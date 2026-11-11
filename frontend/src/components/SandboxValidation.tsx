@@ -9,6 +9,7 @@ import {
   executeValidation,
   getSandboxStatus,
 } from '../api/client';
+import { ExportManager } from './ExportManager';
 
 interface SandboxValidationProps {
   proposal?: UpgradeProposalResponse | null;
@@ -290,6 +291,13 @@ export const SandboxValidation: React.FC<SandboxValidationProps> = ({
           )}
         </div>
       )}
+
+      {/* Deliverables Export Subsystem */}
+      <ExportManager
+        proposalId={proposal?.proposal_id}
+        executionId={validationReport?.execution_id}
+        validationStatus={validationReport?.status || (proposal ? 'NOT_PERFORMED' : null)}
+      />
     </div>
   );
 };

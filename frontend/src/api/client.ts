@@ -710,3 +710,112 @@ export async function cancelValidationExecution(
     throw new ApiError(`Failed to cancel validation: ${message}`);
   }
 }
+
+// ============================================================================
+// M6: Deliverables Export Types & API Client
+// ============================================================================
+
+export type ArtifactType =
+  | 'patch'
+  | 'summary_json'
+  | 'execution_log'
+  | 'checksums'
+  | 'bundle_zip';
+
+export interface ExportItemMetadata {
+  artifact_type: ArtifactType;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  sha256: string;
+  download_url: string;
+}
+
+export interface ExportRequest {
+  proposal_id?: string;
+  execution_id?: string;
+  run_id?: string;
+  include_logs?: boolean;
+  custom_notes?: string;
+}
+
+export interface ExportMetadataResponse {
+  export_id: string;
+  proposal_id?: string;
+  execution_id?: string;
+  run_id?: string;
+  created_at: number;
+  sanitized: boolean;
+  secret_scan_passed: boolean;
+  validation_status?: string;
+  items: ExportItemMetadata[];
+  summary: Record<string, any>;
+}
+
+/**
+ * Generate verified deliverables for a proposal and validation execution.
+ */
+export async function createExport(request: ExportRequest): Promise<ExportMetadataResponse> {
+  const url = `${config.apiBaseUrl}/api/export`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => null);
+      const detail = errorData?.detail || `HTTP ${response.status}`;
+      throw new ApiError(`Export generation failed: ${detail}`, response.status);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    throw new ApiError(`Failed to create export: ${message}`);
+  }
+}
+
+/**
+ * Retrieve metadata and checksums for an existing export bundle.
+ */
+export async function getExportMetadata(exportId: string): Promise<ExportMetadataResponse> {
+  const url = `${config.apiBaseUrl}/api/export/${encodeURIComponent(exportId)}`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      throw new ApiError(`Failed to retrieve export metadata (${response.status})`, response.status);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    throw new ApiError(`Failed to get export metadata: ${message}`);
+  }
+}
+
+/**
+ * Construct download URL for an export artifact.
+ */
+export function getArtifactDownloadUrl(exportId: string, artifactType: ArtifactType | string): string {
+  return `${config.apiBaseUrl}/api/export/${encodeURIComponent(exportId)}/download/${encodeURIComponent(artifactType)}`;
+}
+

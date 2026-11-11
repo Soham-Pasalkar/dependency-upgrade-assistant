@@ -14,12 +14,17 @@ from __future__ import annotations
 
 import datetime
 import difflib
+import hashlib
+import json
 import logging
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
+import uuid
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +34,18 @@ from src.analysis.code_improver import ProposedImprovement
 from src.analysis.code_inspector import ExcludedFile, InspectionReport
 from src.analysis.dependency_analyzer import RepositoryDependencyReport
 from src.analysis.manifest_scanner import is_safe_relative_path
+from src.models.export import (
+    ArtifactType,
+    ExportItemMetadata,
+    ExportMetadataResponse,
+)
+from src.models.plan import UpgradeProposalResponse
+from src.models.sandbox import ValidationReportResponse
+from src.services.secret_scanner import (
+    SecretLeakageError,
+    redact_secrets,
+    verify_zero_secrets,
+)
 from src.validation.validator import ValidationReport, ValidationStatus
 
 logger = logging.getLogger(__name__)
@@ -681,15 +698,97 @@ def generate_markdown_report(
 
 
 # ---------------------------------------------------------------------------
+# Cryptographic Checksums & Export Structures
+# ---------------------------------------------------------------------------
+
+def compute_sha256_bytes(data: bytes) -> str:
+    """Compute hex-encoded SHA-256 digest for bytes."""
+    return hashlib.sha256(data).hexdigest()
+
+
+def compute_sha256_file(file_path: Path) -> str:
+    """Compute hex-encoded SHA-256 digest for a file on disk."""
+    h = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(65536):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+@dataclass(frozen=True)
+class ExportArtifactRecord:
+    """Record of an individual exported deliverable file."""
+    artifact_type: ArtifactType
+    file_path: Path
+    filename: str
+    mime_type: str
+    size_bytes: int
+    sha256: str
+
+
+@dataclass
+class ExportBundle:
+    """Represents a validated bundle of deliverables stored server-side."""
+    export_id: str
+    created_at: float
+    export_dir: Path
+    artifacts: Dict[ArtifactType, ExportArtifactRecord]
+    proposal_id: Optional[str] = None
+    execution_id: Optional[str] = None
+    run_id: Optional[str] = None
+    sanitized: bool = True
+    secret_scan_passed: bool = True
+    validation_status: str = "NOT_PERFORMED"
+    summary: Dict[str, Any] = field(default_factory=dict)
+
+    def to_response(self, base_url: str = "/api/export") -> ExportMetadataResponse:
+        items = [
+            ExportItemMetadata(
+                artifact_type=art.artifact_type,
+                filename=art.filename,
+                mime_type=art.mime_type,
+                size_bytes=art.size_bytes,
+                sha256=art.sha256,
+                download_url=f"{base_url}/{self.export_id}/download/{art.artifact_type.value}",
+            )
+            for art in self.artifacts.values()
+        ]
+        return ExportMetadataResponse(
+            export_id=self.export_id,
+            proposal_id=self.proposal_id,
+            execution_id=self.execution_id,
+            run_id=self.run_id,
+            created_at=self.created_at,
+            sanitized=self.sanitized,
+            secret_scan_passed=self.secret_scan_passed,
+            validation_status=self.validation_status,
+            items=items,
+            summary=self.summary,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Exporter Coordinator
 # ---------------------------------------------------------------------------
 
 class ArtifactExporter:
-    """Coordinates generation and pre-validation of all pipeline deliverables."""
+    """Coordinates generation, pre-validation, secret scanning, and export of deliverables."""
 
-    def __init__(self, output_dir: Optional[Path | str] = None) -> None:
+    def __init__(
+        self,
+        output_dir: Optional[Path | str] = None,
+        export_store_dir: Optional[Path | str] = None,
+    ) -> None:
         self.output_dir = Path(output_dir) if output_dir else Path(tempfile.gettempdir()) / "dua_artifacts"
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.export_store_dir = Path(export_store_dir) if export_store_dir else Path(tempfile.gettempdir()) / "dua_exports"
+        self.export_store_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(self.export_store_dir, 0o700)
+        except (PermissionError, OSError):
+            pass
+        self._exports: Dict[str, ExportBundle] = {}
+        self._lock = threading.Lock()
 
     def export_all(
         self,
@@ -736,3 +835,402 @@ class ArtifactExporter:
             zip_result=zip_result,
             report_markdown=report_md,
         )
+
+    def export_proposal(
+        self,
+        proposal: UpgradeProposalResponse,
+        validation_report: Optional[ValidationReportResponse] = None,
+        run_id: Optional[str] = None,
+        custom_notes: Optional[str] = None,
+    ) -> ExportBundle:
+        """Bundle proposal changes, execution summaries, logs, and checksums into verified deliverables.
+        
+        Guarantees:
+        - Git-compatible .patch file with header metadata and unified diff.
+        - Structured JSON execution summary detailing proposal, dependencies, and validation status.
+        - Sanitized execution console logs.
+        - Strict pre-export secret verification (zero credentials leaked; fails closed).
+        - Authoritative server-calculated SHA-256 checksums for each artifact.
+        - Verifiably intact ZIP bundle (path-traversal safe, testzip CRC verified).
+        - Atomic file staging and fail-closed cleanup on error.
+        """
+        export_id = f"exp_{uuid.uuid4().hex}"
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        now_ts = now_dt.timestamp()
+        now_iso = now_dt.isoformat()
+
+        stage_dir = self.export_store_dir / f"tmp_{export_id}"
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(stage_dir, 0o700)
+        except (PermissionError, OSError):
+            pass
+
+        try:
+            # 1. Target file naming
+            manifest_name = Path(proposal.file_path).name or "manifest"
+            clean_name = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", manifest_name)
+            patch_filename = f"{clean_name}-upgrade.patch"
+            log_filename = "execution.log"
+            summary_filename = "summary.json"
+            checksums_filename = "checksums.sha256"
+            zip_filename = f"{clean_name}-upgrade-bundle.zip"
+
+            # 2. Synthesize Git-compatible Unified Patch
+            patch_header = (
+                f"# Dependency Upgrade Assistant 2.0 Export Patch\n"
+                f"# Proposal ID: {proposal.proposal_id}\n"
+                f"# Target Manifest: {proposal.file_path}\n"
+                f"# Ecosystem: {proposal.ecosystem.value if hasattr(proposal.ecosystem, 'value') else str(proposal.ecosystem)}\n"
+                f"# Generated UTC: {now_iso}\n"
+                f"# Checksum Standard: SHA-256\n"
+                f"#\n"
+            )
+            full_patch_text = patch_header + (proposal.unified_diff or "")
+            if not full_patch_text.endswith("\n"):
+                full_patch_text += "\n"
+
+            verify_zero_secrets(full_patch_text, source_name=patch_filename)
+            patch_path = stage_dir / patch_filename
+            patch_path.write_text(full_patch_text, encoding="utf-8")
+            patch_sha256 = compute_sha256_file(patch_path)
+            patch_size = patch_path.stat().st_size
+
+            # 3. Synthesize Execution Logs
+            if validation_report:
+                raw_logs = validation_report.logs or ""
+                if not raw_logs and validation_report.commands:
+                    raw_logs = "\n\n".join(
+                        f"=== [{cmd.command_name}] (status: {cmd.status.value if hasattr(cmd.status, 'value') else cmd.status}, exit: {cmd.exit_code}) ===\n"
+                        f"{cmd.stdout}\n{cmd.stderr}".strip()
+                        for cmd in validation_report.commands
+                    )
+                sanitized_logs = redact_secrets(raw_logs)
+                val_status_str = (
+                    validation_report.status.value
+                    if hasattr(validation_report.status, "value")
+                    else str(validation_report.status)
+                )
+            else:
+                sanitized_logs = (
+                    "[VALIDATION_STATUS: NOT_PERFORMED]\n"
+                    "No sandboxed container validation was executed for this proposal.\n"
+                    "To empirically verify these dependencies, execute container validation before production merge.\n"
+                )
+                val_status_str = "NOT_PERFORMED"
+
+            verify_zero_secrets(sanitized_logs, source_name=log_filename)
+            log_path = stage_dir / log_filename
+            log_path.write_text(sanitized_logs, encoding="utf-8")
+            log_sha256 = compute_sha256_file(log_path)
+            log_size = log_path.stat().st_size
+
+            # 4. Synthesize JSON Execution Summary
+            summary_dict: Dict[str, Any] = {
+                "dua_version": "2.0.0",
+                "export_id": export_id,
+                "proposal_id": proposal.proposal_id,
+                "created_at": now_iso,
+                "manifest_path": proposal.file_path,
+                "manifest_type": proposal.manifest_type,
+                "ecosystem": proposal.ecosystem.value if hasattr(proposal.ecosystem, "value") else str(proposal.ecosystem),
+                "total_planned": proposal.total_planned,
+                "total_unchanged": proposal.total_unchanged,
+                "total_conflicts": proposal.total_conflicts,
+                "planned_upgrades": [
+                    {
+                        "package_name": item.package_name,
+                        "current_version": item.current_version,
+                        "target_version": item.target_version,
+                        "declared_specifier": item.declared_specifier,
+                        "proposed_specifier": item.proposed_specifier,
+                        "action": item.action.value if hasattr(item.action, "value") else str(item.action),
+                        "rationale": item.rationale,
+                        "line_number": item.line_number,
+                        "dependency_type": item.dependency_type.value if hasattr(item.dependency_type, "value") else str(item.dependency_type),
+                    }
+                    for item in proposal.plan_items
+                ],
+                "patch_integrity": {
+                    "is_valid": proposal.integrity.is_valid,
+                    "can_apply": proposal.integrity.can_apply,
+                    "can_reverse": proposal.integrity.can_reverse,
+                    "syntax_valid": proposal.integrity.syntax_valid,
+                    "errors": proposal.integrity.errors,
+                    "warnings": proposal.integrity.warnings,
+                },
+                "validation": (
+                    {
+                        "status": val_status_str,
+                        "execution_id": validation_report.execution_id,
+                        "is_runnable": validation_report.is_runnable,
+                        "summary": validation_report.summary,
+                        "total_duration_seconds": validation_report.total_duration_seconds,
+                        "image_used": validation_report.image_used,
+                        "image_digest": validation_report.image_digest,
+                        "network_enabled": False,
+                        "commands": [
+                            {
+                                "command_name": cmd.command_name,
+                                "command_args": cmd.command_args,
+                                "status": cmd.status.value if hasattr(cmd.status, "value") else str(cmd.status),
+                                "exit_code": cmd.exit_code,
+                                "duration_seconds": cmd.duration_seconds,
+                            }
+                            for cmd in validation_report.commands
+                        ],
+                    }
+                    if validation_report
+                    else {
+                        "status": "NOT_PERFORMED",
+                        "summary": "No sandboxed container validation was executed for this proposal.",
+                    }
+                ),
+                "checksums": {
+                    patch_filename: patch_sha256,
+                    log_filename: log_sha256,
+                },
+                "security_audit": {
+                    "zero_secrets_verified": True,
+                    "sanitization_engine": "DUA 2.0 Pre-Export Secret Sanitizer",
+                },
+                "custom_notes": custom_notes,
+            }
+
+            summary_text = json.dumps(summary_dict, indent=2) + "\n"
+            verify_zero_secrets(summary_text, source_name=summary_filename)
+            summary_path = stage_dir / summary_filename
+            summary_path.write_text(summary_text, encoding="utf-8")
+            summary_sha256 = compute_sha256_file(summary_path)
+            summary_size = summary_path.stat().st_size
+
+            # 5. Synthesize SHA-256 Checksums Manifest
+            checksums_content = (
+                f"{patch_sha256}  {patch_filename}\n"
+                f"{summary_sha256}  {summary_filename}\n"
+                f"{log_sha256}  {log_filename}\n"
+            )
+            checksums_path = stage_dir / checksums_filename
+            checksums_path.write_text(checksums_content, encoding="utf-8")
+            checksums_sha256 = compute_sha256_file(checksums_path)
+            checksums_size = checksums_path.stat().st_size
+
+            # 6. Synthesize and Verify ZIP Archive Bundle
+            zip_path = stage_dir / zip_filename
+            with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.write(patch_path, arcname=patch_filename)
+                zf.write(summary_path, arcname=summary_filename)
+                zf.write(log_path, arcname=log_filename)
+                zf.write(checksums_path, arcname=checksums_filename)
+
+            # Test zip integrity
+            with zipfile.ZipFile(zip_path, mode="r") as zf:
+                corrupt = zf.testzip()
+                if corrupt is not None:
+                    raise ValueError(f"ZIP package corrupted at entry '{corrupt}'.")
+
+            # Test extraction in isolated sandbox
+            temp_extract = Path(tempfile.mkdtemp(prefix="dua_export_test_"))
+            try:
+                with zipfile.ZipFile(zip_path, mode="r") as zf:
+                    zf.extractall(temp_extract)
+            finally:
+                shutil.rmtree(temp_extract, ignore_errors=True)
+
+            zip_sha256 = compute_sha256_file(zip_path)
+            zip_size = zip_path.stat().st_size
+
+            # 7. Atomic Commit to Permanent Export Store
+            final_dir = self.export_store_dir / export_id
+            if final_dir.exists():
+                shutil.rmtree(final_dir, ignore_errors=True)
+            stage_dir.rename(final_dir)
+
+            # Update paths to final directory
+            artifacts_map: Dict[ArtifactType, ExportArtifactRecord] = {
+                ArtifactType.PATCH: ExportArtifactRecord(
+                    artifact_type=ArtifactType.PATCH,
+                    file_path=final_dir / patch_filename,
+                    filename=patch_filename,
+                    mime_type="text/x-diff; charset=utf-8",
+                    size_bytes=patch_size,
+                    sha256=patch_sha256,
+                ),
+                ArtifactType.SUMMARY_JSON: ExportArtifactRecord(
+                    artifact_type=ArtifactType.SUMMARY_JSON,
+                    file_path=final_dir / summary_filename,
+                    filename=summary_filename,
+                    mime_type="application/json",
+                    size_bytes=summary_size,
+                    sha256=summary_sha256,
+                ),
+                ArtifactType.EXECUTION_LOG: ExportArtifactRecord(
+                    artifact_type=ArtifactType.EXECUTION_LOG,
+                    file_path=final_dir / log_filename,
+                    filename=log_filename,
+                    mime_type="text/plain; charset=utf-8",
+                    size_bytes=log_size,
+                    sha256=log_sha256,
+                ),
+                ArtifactType.CHECKSUMS: ExportArtifactRecord(
+                    artifact_type=ArtifactType.CHECKSUMS,
+                    file_path=final_dir / checksums_filename,
+                    filename=checksums_filename,
+                    mime_type="text/plain; charset=utf-8",
+                    size_bytes=checksums_size,
+                    sha256=checksums_sha256,
+                ),
+                ArtifactType.BUNDLE_ZIP: ExportArtifactRecord(
+                    artifact_type=ArtifactType.BUNDLE_ZIP,
+                    file_path=final_dir / zip_filename,
+                    filename=zip_filename,
+                    mime_type="application/zip",
+                    size_bytes=zip_size,
+                    sha256=zip_sha256,
+                ),
+            }
+
+            bundle = ExportBundle(
+                export_id=export_id,
+                created_at=now_ts,
+                export_dir=final_dir,
+                artifacts=artifacts_map,
+                proposal_id=proposal.proposal_id,
+                execution_id=validation_report.execution_id if validation_report else None,
+                run_id=run_id,
+                sanitized=True,
+                secret_scan_passed=True,
+                validation_status=val_status_str,
+                summary={
+                    "patch_filename": patch_filename,
+                    "bundle_filename": zip_filename,
+                    "target_manifest": proposal.file_path,
+                    "total_upgrades": proposal.total_planned,
+                    "validation_status": val_status_str,
+                    "sha256_bundle": zip_sha256,
+                },
+            )
+
+            with self._lock:
+                self._exports[export_id] = bundle
+
+            logger.info(f"Successfully generated export bundle '{export_id}' for proposal '{proposal.proposal_id}'")
+            return bundle
+
+        except Exception:
+            # Fail closed: scrub temporary staging directory completely
+            if stage_dir.exists():
+                shutil.rmtree(stage_dir, ignore_errors=True)
+            raise
+
+    def get_export(self, export_id: str) -> Optional[ExportBundle]:
+        """Retrieve an export bundle by ID if it exists (thread-safe, validates identifier)."""
+        if not export_id or not re.match(r"^[a-zA-Z0-9_\-]+$", export_id):
+            return None
+
+        with self._lock:
+            if export_id in self._exports:
+                return self._exports[export_id]
+
+        # Resilience: inspect filesystem store if memory entry missing (e.g. after server restart)
+        target_dir = self.export_store_dir / export_id
+        if not target_dir.is_dir() or not is_safe_relative_path(self.export_store_dir, target_dir):
+            return None
+
+        summary_file = target_dir / "summary.json"
+        if not summary_file.is_file():
+            return None
+
+        try:
+            summary_data = json.loads(summary_file.read_text(encoding="utf-8"))
+            artifacts_map: Dict[ArtifactType, ExportArtifactRecord] = {}
+
+            # Find matching files
+            for p in target_dir.iterdir():
+                if not p.is_file():
+                    continue
+                sha = compute_sha256_file(p)
+                size = p.stat().st_size
+                if p.name.endswith(".patch"):
+                    artifacts_map[ArtifactType.PATCH] = ExportArtifactRecord(
+                        ArtifactType.PATCH, p, p.name, "text/x-diff; charset=utf-8", size, sha
+                    )
+                elif p.name == "summary.json":
+                    artifacts_map[ArtifactType.SUMMARY_JSON] = ExportArtifactRecord(
+                        ArtifactType.SUMMARY_JSON, p, p.name, "application/json", size, sha
+                    )
+                elif p.name == "execution.log":
+                    artifacts_map[ArtifactType.EXECUTION_LOG] = ExportArtifactRecord(
+                        ArtifactType.EXECUTION_LOG, p, p.name, "text/plain; charset=utf-8", size, sha
+                    )
+                elif p.name == "checksums.sha256":
+                    artifacts_map[ArtifactType.CHECKSUMS] = ExportArtifactRecord(
+                        ArtifactType.CHECKSUMS, p, p.name, "text/plain; charset=utf-8", size, sha
+                    )
+                elif p.name.endswith(".zip"):
+                    artifacts_map[ArtifactType.BUNDLE_ZIP] = ExportArtifactRecord(
+                        ArtifactType.BUNDLE_ZIP, p, p.name, "application/zip", size, sha
+                    )
+
+            bundle = ExportBundle(
+                export_id=export_id,
+                created_at=target_dir.stat().st_mtime,
+                export_dir=target_dir,
+                artifacts=artifacts_map,
+                proposal_id=summary_data.get("proposal_id"),
+                validation_status=summary_data.get("validation", {}).get("status", "NOT_PERFORMED"),
+                summary=summary_data,
+            )
+            with self._lock:
+                self._exports[export_id] = bundle
+            return bundle
+        except Exception as exc:
+            logger.warning(f"Failed to recover export bundle '{export_id}' from disk: {exc}")
+            return None
+
+    def get_artifact_file(
+        self,
+        export_id: str,
+        artifact_type: ArtifactType | str,
+    ) -> Tuple[Path, str, str, str]:
+        """Locate an artifact file for download.
+        
+        Returns:
+            Tuple of (file_path, filename, mime_type, sha256)
+        Raises:
+            FileNotFoundError if export or artifact not found.
+            ValueError if export_id or artifact_type is invalid.
+        """
+        bundle = self.get_export(export_id)
+        if not bundle:
+            raise FileNotFoundError(f"Export bundle '{export_id}' not found.")
+
+        try:
+            art_type = ArtifactType(artifact_type)
+        except ValueError:
+            raise ValueError(f"Invalid artifact type: '{artifact_type}'.")
+
+        if art_type not in bundle.artifacts:
+            raise FileNotFoundError(f"Artifact '{art_type.value}' not found in export bundle '{export_id}'.")
+
+        rec = bundle.artifacts[art_type]
+        if not is_safe_relative_path(self.export_store_dir, rec.file_path):
+            raise ValueError(f"Unsafe path detected for artifact '{art_type.value}'.")
+
+        if not rec.file_path.is_file():
+            raise FileNotFoundError(f"Artifact file '{rec.filename}' is missing from disk.")
+
+        return rec.file_path, rec.filename, rec.mime_type, rec.sha256
+
+
+# Global singleton instance for export service
+_exporter_instance: Optional[ArtifactExporter] = None
+
+
+def get_artifact_exporter() -> ArtifactExporter:
+    """Retrieve or initialize the global ArtifactExporter singleton."""
+    global _exporter_instance
+    if _exporter_instance is None:
+        _exporter_instance = ArtifactExporter()
+    return _exporter_instance
+

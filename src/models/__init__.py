@@ -38,6 +38,12 @@ from src.models.sandbox import (
     ValidationCommandResult,
     ValidationReportResponse,
 )
+from src.models.export import (
+    ArtifactType,
+    ExportItemMetadata,
+    ExportMetadataResponse,
+    ExportRequest,
+)
 
 __all__ = [
     "AnalyzedDependency",
@@ -71,4 +77,8 @@ __all__ = [
     "SandboxValidationStatus",
     "ValidationCommandResult",
     "ValidationReportResponse",
+    "ArtifactType",
+    "ExportItemMetadata",
+    "ExportMetadataResponse",
+    "ExportRequest",
 ]
