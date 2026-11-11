@@ -3,13 +3,13 @@
   "project": "Dependency Upgrade Assistant 2.0",
   "tier": 3,
   "mode": "brownfield",
-  "phase": "construction",
+  "phase": "operations",
   "config": {
     "strict_approvals": true,
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-11T06:26:19Z",
+  "updated": "2026-11-11T08:30:22Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -31,9 +31,9 @@
     },
     "G5": {
       "name": "Release",
-      "status": "pending",
-      "note": null,
-      "at": null
+      "status": "changes_requested",
+      "note": "Owner rejected v2.0 as a production-ready release; retained as engineering baseline",
+      "at": "2026-11-11T08:30:22Z"
     }
   },
   "milestones": [
@@ -879,7 +879,7 @@
       "depends_on": [
         "M7"
       ],
-      "status": "awaiting_approval",
+      "status": "done",
       "criteria": [
         {
           "text": "Full test suite passes 100% green with zero regressions",
@@ -939,7 +939,11 @@
           "sha256": null
         }
       ],
-      "approval": null,
+      "approval": {
+        "at": "2026-11-11T06:42:12Z",
+        "note": "Human approval: M8 final verification and product readiness reviewed",
+        "actor": "human-tty"
+      },
       "rework": 0,
       "started": "2026-11-11T06:17:46Z",
       "note": null
@@ -966,7 +970,21 @@
       "text": "M5 post-acceptance security remediation completed: workspace boundary validation, server-enforced network isolation, pinned image digests, bounded streaming log capture, explicit test discovery, and live CI container runner.",
       "status": "open",
       "at": "2026-11-10T19:26:28Z"
+    },
+    {
+      "id": "N4",
+      "kind": "deviation",
+      "text": "G1-approved MUST requirements not delivered by the 2.0 stack and neither scheduled nor deferred in the G3 plan: FR-1 (repository acquisition; legacy Streamlit only, no API/UI), FR-2 (recursive multi-manifest discovery; legacy only), FR-5 (AST inspection; legacy only), FR-7 (Monaco hunk review; unified diff only), FR-12 (SSE progress; absent), FR-13 (persistent history; tables unused). NFR-1 Host-header validation not implemented. NFR-7 test count (146) stale; current baseline 564 passed / 6 skipped. Requirements 'out of scope: npm' contradicts delivered npm support. Identified in engineering takeover 2026-11-11; to be resolved in Inception round 2.",
+      "status": "open",
+      "at": "2026-11-11T08:11:38Z"
+    },
+    {
+      "id": "N5",
+      "kind": "risk",
+      "text": "Trust-boundary defects in the 2.0 baseline: client-supplied validation_status accepted by upgrade_planner (TRUSTED_VALIDATION_STATUSES); approval is a client-side boolean (isApproved) and /plan/apply is never called by the UI; export is not gated on approval; validation route does not pass source_workspace so sandbox validation is syntax-only; dependency_staging is a stub returning NOT_REQUIRED; registry_client 2 MB response cap fails large packages (e.g. numpy). Owner decision: baseline is not production-ready.",
+      "status": "open",
+      "at": "2026-11-11T08:11:38Z"
     }
   ],
-  "head": "a2bbfa8a7aecfcd9e7465607a13447a37225bdc5d777f21db9201117b024b7d7"
+  "head": "f64ba39f15c8f73be2cb7b225a52e110716cf53ed18b0c8dfef00db84759db35"
 }
