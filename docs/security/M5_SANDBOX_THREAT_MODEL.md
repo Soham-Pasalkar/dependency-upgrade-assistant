@@ -32,7 +32,7 @@ The primary objective is to execute untrusted third-party code (dependencies, up
 ### 3.1 Arbitrary Code Execution via Package Installation / Tests
 - **Attack Vector:** An updated package or test harness attempts to execute shell commands, install rootkits, or spawn reverse shells.
 - **Mitigation:**
-  - Mandatory container execution as an unprivileged user (`--user 1000:1000`).
+  - Mandatory container execution as an unprivileged non-root user matching the host execution identity (`--user $(id -u):$(id -g)` on non-root POSIX systems, falling back to `1000:1000` when running as root). Root execution inside the container is strictly forbidden.
   - Total capability dropping (`--cap-drop=ALL`).
   - Strict prohibition of privilege escalation (`--security-opt=no-new-privileges:true`).
   - Root filesystem mounted read-only (`--read-only`), preventing writing to system binaries or libraries.
@@ -42,7 +42,7 @@ The primary objective is to execute untrusted third-party code (dependencies, up
 - **Mitigation:**
   - Container spawned strictly with `--network none` during test execution.
   - Server-enforced policy: `network_enabled` field is completely removed from the public API schema; Pydantic request validator rejects any attempt to supply `network_enabled` with HTTP 422.
-  - Decoupled staging (Stage A): when package staging is performed, `is_safe_registry_url()` strictly verifies registry endpoints, rejecting non-HTTPS URLs, loopback (`127.0.0.1`, `localhost`), RFC 1918 private IP subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), and link-local cloud metadata addresses (`169.254.169.254`).
+  - Decoupled staging (Stage A): in M5, package staging operates strictly offline (`status: NOT_REQUIRED`), with dynamic network-based acquisition of 3rd-party wheels deferred to Phase 3. Registry validation logic (`is_safe_registry_url()`) enforces SSRF protection rejecting non-HTTPS URLs, loopback (`127.0.0.1`, `localhost`), RFC 1918 private IP subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), and link-local cloud metadata addresses (`169.254.169.254`).
   - Zero outbound or inbound socket connections permitted during test execution (Stage B).
   - Explicit prohibition of `--net=host` or `network_mode="host"`.
 
@@ -61,7 +61,7 @@ The primary objective is to execute untrusted third-party code (dependencies, up
     - `workspace_path` parameter removed from public `SandboxExecutionRequest`; only relative subpaths validated against `settings.resolved_workspace_root` are permitted.
     - Path traversal sequences (`../`, `..\`), root paths (`/`), and Windows drive letters (`C:`) are rejected.
     - Sibling prefix confusion is eliminated by enforcing directory containment with explicit trailing separator checks (`os.path.commonpath`).
-  - Workspace snapshot isolation: files are replicated into an ephemeral directory under `tempfile.TemporaryDirectory()`.
+  - Workspace snapshot isolation: files are replicated into an ephemeral directory under `tempfile.TemporaryDirectory()`. Snapshot root and subdirectories are strictly configured with mode `0700` (`rwx------`), forbidding world-writable (`0777`) permissions (`mode & 0o002 == 0`) and denying access to all other host users (`mode & 0o007 == 0`). Copied files strip group and world-write bits.
   - Symlinks in the source workspace are evaluated via `os.path.realpath`. Any symlink whose target escapes the workspace boundary is rejected with `SecurityException`.
   - Special files (FIFOs, named pipes, Unix domain sockets) are rejected via `stat.S_ISFIFO` and `stat.S_ISSOCK`, failing closed with `SnapshotCreationError` to prevent hanging copy routines.
   - Sensitive files (`.env`, `.env.*`, `.git`, `.pem`, `.key`, `id_rsa`, `.aws`, `.gcp`, `.azure`, `.kube`, `.docker`, `.npmrc`, `.pypirc`) are scrubbed during snapshot creation.
@@ -141,7 +141,9 @@ Mitigations against sub-millisecond local symlink-swap race conditions (TOCTOU) 
 
 | Vulnerability Category | Mitigation Mechanism | Verification Test |
 |:---|:---|:---|
-| Privilege Escalation | `--user 1000:1000`, `--cap-drop=ALL`, `no-new-privileges` | `test_container_config_enforces_all_mandatory_security_flags` |
+| Privilege Escalation | Non-root `--user`, `--cap-drop=ALL`, `no-new-privileges` | `test_container_config_enforces_all_mandatory_security_flags` |
+| Root User Prohibited | Explicit rejection of UID 0 / root container execution | `test_container_config_rejects_root_user_execution` |
+| World-Writable Permissions | `0700` snapshot permissions, forbidding world-writable `0777` | `test_snapshot_directories_forbid_world_writable_and_other_permissions` |
 | Network Override Denial | `--network none` enforced, `network_enabled` rejected in request | `test_sandbox_execution_request_rejects_network_enabled` |
 | SSRF in Staging | Registry URLs restricted to public HTTPS endpoints | `test_staging_manager_safe_registry_urls` |
 | Arbitrary Host Path / Root | Rejection of `/`, `/etc`, Windows `C:`, traversals | `test_workspace_boundary_rejects_root_and_etc_traversal` |

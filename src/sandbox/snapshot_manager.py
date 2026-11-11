@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import List, Optional, Set
 
 from src.models.plan import UpgradeProposalResponse
+from src.sandbox.container_config import DEFAULT_NON_ROOT_USER
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,27 @@ class SnapshotManifest:
     overlay_target: Optional[str] = None
 
 
+def validate_snapshot_permissions(path: Path | str) -> bool:
+    """Verify that a snapshot directory enforces strict isolation:
+    - Mode is NOT world-writable (st_mode & 0o002 == 0).
+    - Permissions for 'others' (world) are 0 (st_mode & 0o007 == 0).
+    - Mode is owner-accessible (0o700).
+    """
+    target = Path(path).resolve()
+    if not target.exists():
+        return False
+    try:
+        st = target.stat()
+        mode = st.st_mode
+        if (mode & 0o002) != 0:
+            return False
+        if (mode & 0o007) != 0:
+            return False
+        return (mode & 0o700) == 0o700
+    except OSError:
+        return False
+
+
 class IsolatedSnapshot:
     """Represents an isolated, ephemeral workspace snapshot directory."""
 
@@ -121,6 +143,19 @@ class IsolatedSnapshot:
         """Safely remove the ephemeral snapshot directory and all contents."""
         if not self._cleaned and self.path.exists():
             try:
+                # Restore owner permissions on all subdirectories and files to prevent
+                # read-only test artifacts from blocking deletion
+                for root, dirs, files in os.walk(self.path):
+                    for d in dirs:
+                        try:
+                            os.chmod(os.path.join(root, d), stat.S_IRWXU)
+                        except Exception:
+                            pass
+                    for f in files:
+                        try:
+                            os.chmod(os.path.join(root, f), stat.S_IRUSR | stat.S_IWUSR)
+                        except Exception:
+                            pass
                 shutil.rmtree(self.path, ignore_errors=True)
             except Exception as exc:
                 logger.warning(f"Error cleaning up snapshot directory {self.path}: {exc}")
@@ -226,7 +261,10 @@ def copy_sanitized_workspace(
         dest_dir = target_dir / rel_root
         dest_dir.mkdir(parents=True, exist_ok=True)
         try:
-            os.chmod(dest_dir, 0o777)
+            os.chmod(dest_dir, 0o700)
+            if hasattr(os, "getuid") and os.getuid() == 0:
+                parts = DEFAULT_NON_ROOT_USER.split(":")
+                os.chown(dest_dir, int(parts[0]), int(parts[1]))
         except Exception:
             pass
 
@@ -268,6 +306,16 @@ def copy_sanitized_workspace(
             # 4. Copy regular file safely (Fail-Closed)
             try:
                 shutil.copy2(src_file, dest_file)
+                # Harden file permissions: owner read/write, remove world/group write
+                try:
+                    current_mode = dest_file.stat().st_mode
+                    secure_mode = (current_mode | stat.S_IRUSR | stat.S_IWUSR) & ~(stat.S_IWGRP | stat.S_IWOTH)
+                    os.chmod(dest_file, secure_mode)
+                    if hasattr(os, "getuid") and os.getuid() == 0:
+                        parts = DEFAULT_NON_ROOT_USER.split(":")
+                        os.chown(dest_file, int(parts[0]), int(parts[1]))
+                except Exception:
+                    pass
                 manifest.included_files_count += 1
                 rel_path = str((rel_root / filename)).replace("\\", "/")
                 manifest.included_relative_paths.append(rel_path)
@@ -301,7 +349,10 @@ class SnapshotManager:
         temp_dir = tempfile.mkdtemp(prefix="dua_sandbox_")
         target_path = Path(temp_dir).resolve()
         try:
-            os.chmod(target_path, 0o777)
+            os.chmod(target_path, 0o700)
+            if hasattr(os, "getuid") and os.getuid() == 0:
+                parts = DEFAULT_NON_ROOT_USER.split(":")
+                os.chown(target_path, int(parts[0]), int(parts[1]))
         except Exception:
             pass
         manifest = SnapshotManifest()

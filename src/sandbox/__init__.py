@@ -11,7 +11,9 @@ from src.sandbox.container_config import (
     SERVER_MAX_PIDS,
     SERVER_MAX_TIMEOUT_SECONDS,
     SandboxSecurityConfig,
+    get_platform_execution_user,
     sanitize_resource_limits,
+    validate_and_resolve_user,
 )
 from src.sandbox.dependency_staging import (
     DependencyStagingManager,
@@ -46,6 +48,7 @@ from src.sandbox.snapshot_manager import (
     SnapshotManifest,
     copy_sanitized_workspace,
     is_sensitive_entry,
+    validate_snapshot_permissions,
 )
 from src.sandbox.streaming_capture import (
     BoundedStreamCapture,
@@ -74,7 +77,9 @@ __all__ = [
     "SERVER_MAX_PIDS",
     "SERVER_MAX_TIMEOUT_SECONDS",
     "SandboxSecurityConfig",
+    "get_platform_execution_user",
     "sanitize_resource_limits",
+    "validate_and_resolve_user",
     "DependencyStagingManager",
     "StagingResult",
     "is_safe_registry_url",
@@ -101,6 +106,7 @@ __all__ = [
     "SnapshotManifest",
     "copy_sanitized_workspace",
     "is_sensitive_entry",
+    "validate_snapshot_permissions",
     "BoundedStreamCapture",
     "strip_ansi_sequences",
     "TestDiscoveryManager",

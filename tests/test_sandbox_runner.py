@@ -277,10 +277,10 @@ def test_live_docker_execution_success():
     temp_dir = tempfile.mkdtemp(prefix="dua_live_work_")
     work_dir = Path(temp_dir).resolve()
     try:
-        os.chmod(work_dir, 0o777)
+        os.chmod(work_dir, 0o700)
         sample_file = work_dir / "sample.py"
         sample_file.write_text("x = 10 + 20\n")
-        os.chmod(sample_file, 0o666)
+        os.chmod(sample_file, 0o600)
 
         res = runner.run_command(
             command_args=["python", "-m", "compileall", "-q", "."],
@@ -311,7 +311,7 @@ def test_live_docker_execution_failure_exit_code():
     temp_dir = tempfile.mkdtemp(prefix="dua_live_fail_")
     work_dir = Path(temp_dir).resolve()
     try:
-        os.chmod(work_dir, 0o777)
+        os.chmod(work_dir, 0o700)
         res = runner.run_command(
             command_args=[
                 "python",
@@ -336,7 +336,7 @@ def test_live_docker_execution_timeout_and_cleanup():
     temp_dir = tempfile.mkdtemp(prefix="dua_live_timeout_")
     work_dir = Path(temp_dir).resolve()
     try:
-        os.chmod(work_dir, 0o777)
+        os.chmod(work_dir, 0o700)
         res = runner.run_command(
             command_args=["python", "-c", "import time; time.sleep(15)"],
             working_dir=work_dir,
@@ -364,11 +364,14 @@ def test_live_docker_security_invariants():
     temp_dir = tempfile.mkdtemp(prefix="dua_live_sec_")
     work_dir = Path(temp_dir).resolve()
     try:
-        os.chmod(work_dir, 0o777)
-        # 1. Non-root user (must be 1000)
+        os.chmod(work_dir, 0o700)
+        # 1. Non-root user execution
         user_res = runner.run_command(command_args=["id", "-u"], working_dir=work_dir)
         assert user_res.exit_code == 0
-        assert user_res.stdout.strip() == "1000"
+        container_uid = user_res.stdout.strip()
+        expected_uid = runner.config.user.split(":")[0]
+        assert container_uid == expected_uid
+        assert int(container_uid) != 0
 
         # 2. Network isolation (network=none should fail connecting)
         net_res = runner.run_command(
@@ -393,5 +396,42 @@ def test_live_docker_security_invariants():
         )
         assert ro_res.exit_code != 0
         assert "Read-only file system" in ro_res.stderr
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def test_live_docker_creates_test_artifacts_in_secure_snapshot():
+    """Verify container can create subdirectories and files in a 0700 working dir."""
+    runner = _get_live_docker_runner_or_skip()
+    temp_dir = tempfile.mkdtemp(prefix="dua_live_artifacts_")
+    work_dir = Path(temp_dir).resolve()
+    try:
+        os.chmod(work_dir, 0o700)
+        assert (work_dir.stat().st_mode & 0o007) == 0
+
+        res = runner.run_command(
+            command_args=[
+                "python",
+                "-c",
+                (
+                    "import os; "
+                    "os.makedirs('cache/sub', mode=0o700); "
+                    "open('cache/sub/test_artifact.txt', 'w').write('validated_artifact_content')"
+                ),
+            ],
+            working_dir=work_dir,
+        )
+
+        assert res.is_runnable is True
+        assert res.is_success is True
+        assert res.exit_code == 0
+
+        artifact = work_dir / "cache" / "sub" / "test_artifact.txt"
+        assert artifact.exists()
+        assert artifact.read_text() == "validated_artifact_content"
+
+        # Confirm artifact directory is not world-writable
+        cache_dir = work_dir / "cache"
+        assert (cache_dir.stat().st_mode & 0o002) == 0
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)

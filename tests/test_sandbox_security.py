@@ -12,7 +12,10 @@ from src.sandbox.container_config import (
     SERVER_MAX_MEMORY_MB,
     SERVER_MAX_PIDS,
     SERVER_MAX_TIMEOUT_SECONDS,
+    get_platform_execution_user,
+    is_root_user,
     sanitize_resource_limits,
+    validate_and_resolve_user,
 )
 from src.sandbox.image_catalog import (
     ALL_ALLOWLISTED_IMAGES,
@@ -31,6 +34,7 @@ from src.sandbox.snapshot_manager import (
     SnapshotCreationError,
     SnapshotManager,
     is_sensitive_entry,
+    validate_snapshot_permissions,
 )
 from src.sandbox.test_discovery import (
     TestDiscoveryManager,
@@ -457,3 +461,123 @@ def test_test_discovery_node_default_npm_placeholder_rejected(tmp_path: Path):
     res = TestDiscoveryManager.discover_tests(repo_dir, ecosystem="npm")
     assert res.status == TestDiscoveryStatus.NO_TESTS_FOUND
     assert res.has_runnable_tests is False
+
+
+# ----------------------------------------------------------------------
+# Section 10: Snapshot Filesystem Permissions & User Isolation Tests
+# ----------------------------------------------------------------------
+
+def test_snapshot_directories_forbid_world_writable_and_other_permissions(tmp_path: Path):
+    """CRITICAL SECURITY TEST: Ensure snapshot directories are strictly 0700 and never world-writable (0777)."""
+    src_dir = tmp_path / "src_for_perm_check"
+    src_dir.mkdir()
+    sub_dir = src_dir / "pkg" / "nested"
+    sub_dir.mkdir(parents=True)
+    (src_dir / "setup.py").write_text("# dummy")
+    (sub_dir / "module.py").write_text("x = 1")
+
+    snapshot = SnapshotManager.create_snapshot(source_workspace=src_dir)
+    try:
+        snap_path = snapshot.path
+        assert snap_path.exists()
+
+        # 1. Root snapshot directory permissions
+        root_stat = snap_path.stat()
+        root_mode = root_stat.st_mode
+        assert (root_mode & 0o002) == 0, "Snapshot root directory must NOT be world-writable!"
+        assert (root_mode & 0o007) == 0, "Snapshot root directory must have zero permissions for 'others'!"
+        assert (root_mode & 0o700) == 0o700, "Snapshot root directory must have rwx for owner!"
+        assert validate_snapshot_permissions(snap_path) is True
+
+        # 2. All nested subdirectories and files
+        for root, dirs, files in os.walk(snap_path):
+            for d in dirs:
+                dir_path = Path(root) / d
+                d_stat = dir_path.stat()
+                d_mode = d_stat.st_mode
+                assert (d_mode & 0o002) == 0, f"Snapshot subdirectory {dir_path.name} must NOT be world-writable!"
+                assert (d_mode & 0o007) == 0, f"Snapshot subdirectory {dir_path.name} must have zero 'others' permissions!"
+                assert (d_mode & 0o700) == 0o700, f"Snapshot subdirectory {dir_path.name} must have rwx for owner!"
+                assert validate_snapshot_permissions(dir_path) is True
+
+            for f in files:
+                file_path = Path(root) / f
+                f_stat = file_path.stat()
+                f_mode = f_stat.st_mode
+                assert (f_mode & 0o002) == 0, f"Snapshot file {file_path.name} must NOT be world-writable!"
+                assert (f_mode & 0o020) == 0, f"Snapshot file {file_path.name} must NOT be group-writable!"
+                assert (f_mode & 0o400) == 0o400, f"Snapshot file {file_path.name} must be readable by owner!"
+
+        # 3. Test validate_snapshot_permissions rejects world-writable directories
+        insecure_test_dir = tmp_path / "insecure_0777"
+        insecure_test_dir.mkdir()
+        os.chmod(insecure_test_dir, 0o777)
+        assert validate_snapshot_permissions(insecure_test_dir) is False
+
+        # 4. Test validate_snapshot_permissions rejects world-readable directories
+        readable_test_dir = tmp_path / "readable_0755"
+        readable_test_dir.mkdir()
+        os.chmod(readable_test_dir, 0o755)
+        assert validate_snapshot_permissions(readable_test_dir) is False
+    finally:
+        snapshot.cleanup()
+
+
+def test_container_user_resolution_matches_host_non_root_identity():
+    """CRITICAL SECURITY TEST: Ensure default container user matches host identity and is strictly non-root."""
+    resolved_user = get_platform_execution_user()
+    assert resolved_user is not None
+    assert len(resolved_user) > 0
+
+    parts = resolved_user.split(":")
+    uid = int(parts[0])
+    assert uid != 0, "Container user MUST NEVER be root (UID 0)!"
+
+    # Verify SandboxSecurityConfig sets resolved user by default
+    config = SandboxSecurityConfig()
+    assert config.user == resolved_user
+    assert not is_root_user(config.user)
+
+
+def test_container_config_rejects_root_user_execution(tmp_path: Path):
+    """CRITICAL SECURITY TEST: Any attempt to execute as root inside the container must be rejected fail-closed."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    for forbidden_user in ["0", "0:0", "root", "ROOT", "0:1000", "root:0"]:
+        # 1. Direct configuration rejection
+        with pytest.raises(ValueError, match="Root container execution .* is strictly forbidden"):
+            SandboxSecurityConfig(user=forbidden_user)
+
+        # 2. Builder validation rejection
+        with pytest.raises(ValueError, match="Root container execution .* is strictly forbidden"):
+            validate_and_resolve_user(forbidden_user)
+
+
+def test_snapshot_creation_and_cleanup_lifecycle_with_readonly_artifacts(tmp_path: Path):
+    """Verify snapshot creation, modification, and clean removal even with read-only test artifacts."""
+    src_dir = tmp_path / "src_repo_lifecycle"
+    src_dir.mkdir()
+    (src_dir / "app.py").write_text("print('hello')")
+
+    snapshot = SnapshotManager.create_snapshot(source_workspace=src_dir)
+    snap_path = snapshot.path
+    assert snap_path.exists()
+
+    # Simulate locked test artifacts created by a test run
+    locked_dir = snap_path / ".cache"
+    locked_dir.mkdir(mode=0o700)
+    locked_file = locked_dir / "readonly.dat"
+    locked_file.write_text("immutable")
+    os.chmod(locked_file, 0o400)  # read-only file
+
+    # Execute cleanup
+    snapshot.cleanup()
+    assert not snap_path.exists(), "Snapshot cleanup must remove directory even when read-only artifacts exist!"
+
+
+def test_snapshot_creation_failure_fails_closed(tmp_path: Path):
+    """Verify snapshot creation fails closed without leaking directories when source is invalid."""
+    bad_source = tmp_path / "does_not_exist_xyz"
+    with pytest.raises(SnapshotCreationError, match="Source workspace does not exist"):
+        SnapshotManager.create_snapshot(source_workspace=bad_source)

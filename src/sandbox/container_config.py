@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,61 @@ DEFAULT_TIMEOUT_SECONDS = 60
 DEFAULT_NON_ROOT_USER = "1000:1000"
 
 
+def is_root_user(user_spec: str) -> bool:
+    """Check if a container user specification designates root (UID 0 or user 'root')."""
+    cleaned = str(user_spec).strip().lower()
+    if not cleaned:
+        return False
+    parts = cleaned.split(":")
+    user_part = parts[0].strip()
+    if user_part == "root" or user_part == "0":
+        return True
+    try:
+        if int(user_part) == 0:
+            return True
+    except ValueError:
+        pass
+    return False
+
+
+def get_platform_execution_user() -> str:
+    """Determine the secure non-root container execution user, matching host identity if non-root.
+
+    Security Invariants:
+    1. Container execution MUST be non-root (UID != 0).
+    2. If host process is non-root (UID > 0), match host UID:GID so volume-mounted
+       files with owner-only permissions (0o700) are fully accessible to the container
+       without world-writable (0o777) permissions.
+    3. If host process is root (UID == 0), container CANNOT execute as root; fall back
+       to DEFAULT_NON_ROOT_USER ("1000:1000").
+    4. On platforms without os.getuid (e.g. Windows), fall back to DEFAULT_NON_ROOT_USER.
+    """
+    if hasattr(os, "getuid") and hasattr(os, "getgid"):
+        uid = os.getuid()
+        gid = os.getgid()
+        if uid > 0:
+            return f"{uid}:{gid}"
+    return DEFAULT_NON_ROOT_USER
+
+
+def validate_and_resolve_user(user: Optional[str] = None) -> str:
+    """Validate and resolve container execution user.
+
+    Invariants:
+    1. Root execution (UID 0 or 'root') is strictly forbidden.
+    2. If user is explicitly provided and non-root, return it.
+    3. If user is None or empty, return the platform non-root execution identity.
+    """
+    if user is not None and str(user).strip():
+        user_str = str(user).strip()
+        if is_root_user(user_str):
+            raise ValueError(
+                f"Prohibited container user '{user_str}': Root container execution (UID 0) is strictly forbidden."
+            )
+        return user_str
+    return get_platform_execution_user()
+
+
 @dataclass(frozen=True)
 class SandboxSecurityConfig:
     """Server-enforced, immutable security policy for container execution."""
@@ -37,11 +93,15 @@ class SandboxSecurityConfig:
     cpu_limit: float = DEFAULT_CPUS
     pids_limit: int = DEFAULT_PIDS
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
-    user: str = DEFAULT_NON_ROOT_USER
+    user: Optional[str] = None
     read_only_root: bool = True     # Mandatory read-only root fs
     cap_drop_all: bool = True       # Mandatory drop capabilities
     no_new_privileges: bool = True  # Mandatory disable privilege escalation
     use_pinned_digest: bool = True
+
+    def __post_init__(self) -> None:
+        resolved_user = validate_and_resolve_user(self.user)
+        object.__setattr__(self, "user", resolved_user)
 
     # Backwards-compatible properties
     @property
@@ -141,7 +201,8 @@ class ContainerConfigBuilder:
             args.extend(["--name", container_name])
 
         # 1. Non-root user execution (Mandatory)
-        args.append(f"--user={config.user or DEFAULT_NON_ROOT_USER}")
+        exec_user = validate_and_resolve_user(config.user)
+        args.append(f"--user={exec_user}")
 
         # 2. Strict Network Isolation (Mandatory --network=none)
         args.append("--network=none")
