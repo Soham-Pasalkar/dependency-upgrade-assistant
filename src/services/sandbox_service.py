@@ -403,9 +403,18 @@ class SandboxService:
             combined_logs.append(f"[INFRASTRUCTURE ERROR] {err_msg}")
         finally:
             if snapshot:
-                snapshot.cleanup()
+                try:
+                    snapshot.cleanup()
+                except Exception as clean_exc:
+                    logger.error(f"Snapshot cleanup failed: {clean_exc}")
+                    clean_msg = f"Snapshot cleanup failure: {clean_exc}"
+                    diagnostics.append(clean_msg)
+                    combined_logs.append(f"[CLEANUP ERROR] {clean_msg}")
             if staging_result:
-                staging_result.cleanup()
+                try:
+                    staging_result.cleanup()
+                except Exception as stg_clean_exc:
+                    logger.error(f"Staging cleanup failed: {stg_clean_exc}")
 
         # Check if cancelled during execution
         with self._lock:
@@ -434,8 +443,13 @@ class SandboxService:
             overall_status = ValidationStatus.NO_TESTS_FOUND
             summary = "Syntax compilation check passed; zero runnable tests were discovered in repository."
         elif command_results and all(c.status == ValidationStatus.PASSED for c in command_results):
-            overall_status = ValidationStatus.PASSED
-            summary = f"All {len(command_results)} validation checks passed successfully inside isolated sandbox."
+            cleanup_errors = [d for d in diagnostics if "Snapshot cleanup failure" in d]
+            if cleanup_errors:
+                overall_status = ValidationStatus.INFRASTRUCTURE_ERROR
+                summary = f"Validation checks passed, but snapshot cleanup failed: {cleanup_errors[0]}"
+            else:
+                overall_status = ValidationStatus.PASSED
+                summary = f"All {len(command_results)} validation checks passed successfully inside isolated sandbox."
         else:
             overall_status = ValidationStatus.FAILED
             summary = "Validation finished with errors."

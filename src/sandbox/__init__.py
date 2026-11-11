@@ -43,6 +43,7 @@ from src.sandbox.runner import (
 from src.sandbox.snapshot_manager import (
     IsolatedSnapshot,
     SecurityException,
+    SnapshotCleanupError,
     SnapshotCreationError,
     SnapshotManager,
     SnapshotManifest,
@@ -105,6 +106,7 @@ __all__ = [
     "SandboxRunnerInterface",
     "IsolatedSnapshot",
     "SecurityException",
+    "SnapshotCleanupError",
     "SnapshotCreationError",
     "SnapshotManager",
     "SnapshotManifest",

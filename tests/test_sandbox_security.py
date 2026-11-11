@@ -34,10 +34,13 @@ from src.sandbox.image_catalog import (
 from src.sandbox.snapshot_manager import (
     IsolatedSnapshot,
     SecurityException,
+    SnapshotCleanupError,
     SnapshotCreationError,
     SnapshotManager,
     is_sensitive_entry,
+    parse_user_spec,
     validate_snapshot_permissions,
+    verify_snapshot_security_invariants,
 )
 from src.sandbox.test_discovery import (
     TestDiscoveryManager,
@@ -798,3 +801,258 @@ def test_snapshot_ownership_mismatch_raises_and_cleans_up(tmp_path: Path):
 
     assert len(created_dirs) == 1
     assert not Path(created_dirs[0]).exists(), "Mismatched ownership snapshot must be cleaned up!"
+
+
+# ----------------------------------------------------------------------
+# Section 11: Reliable Snapshot Cleanup & Recursive Verification Tests
+# ----------------------------------------------------------------------
+
+def test_snapshot_cleanup_normal(tmp_path: Path):
+    """Verify normal snapshot cleanup removes the directory and sets _cleaned is True."""
+    src_dir = tmp_path / "src_normal"
+    src_dir.mkdir()
+    (src_dir / "file.txt").write_text("hello")
+
+    snapshot = SnapshotManager.create_snapshot(source_workspace=src_dir)
+    snap_path = snapshot.path
+    assert snap_path.exists()
+    assert snapshot._cleaned is False
+
+    snapshot.cleanup()
+    assert not snap_path.exists()
+    assert snapshot._cleaned is True
+
+    # Idempotent cleanup call
+    snapshot.cleanup()
+    assert snapshot._cleaned is True
+
+
+def test_snapshot_cleanup_read_only_artifacts_and_nested_directories(tmp_path: Path):
+    """Verify cleanup reliably removes nested directories and read-only files without world-writable permissions."""
+    src_dir = tmp_path / "src_ro"
+    src_dir.mkdir()
+    (src_dir / "index.py").write_text("code")
+
+    snapshot = SnapshotManager.create_snapshot(source_workspace=src_dir)
+    snap_path = snapshot.path
+
+    # Create nested read-only directory and file
+    nested_dir = snap_path / "nested" / "deep"
+    nested_dir.mkdir(parents=True)
+    ro_file = nested_dir / "locked.log"
+    ro_file.write_text("immutable log data")
+    os.chmod(ro_file, 0o400)
+    os.chmod(nested_dir, 0o500)
+
+    snapshot.cleanup()
+    assert not snap_path.exists(), "Snapshot must be fully removed despite read-only nested artifacts!"
+    assert snapshot._cleaned is True
+
+
+def test_snapshot_cleanup_simulated_root_host_fallback(tmp_path: Path):
+    """SIMULATED ROOT-HOST TEST: Root host cleanly removes container-owned files during cleanup."""
+    src_dir = tmp_path / "src_root_cleanup"
+    src_dir.mkdir()
+    (src_dir / "test.py").write_text("print(1)")
+
+    snapshot = SnapshotManager.create_snapshot(source_workspace=src_dir)
+    snap_path = snapshot.path
+
+    with patch("os.getuid", return_value=0):
+        snapshot.cleanup()
+
+    assert not snap_path.exists()
+    assert snapshot._cleaned is True
+
+
+def test_snapshot_cleanup_fails_closed_on_permission_restoration_failure(tmp_path: Path):
+    """CRITICAL RELIABILITY TEST: Failed permission restoration raises SnapshotCleanupError and preserves retry state."""
+    src_dir = tmp_path / "src_perm_fail"
+    src_dir.mkdir()
+    (src_dir / "a.py").write_text("data")
+
+    snapshot = SnapshotManager.create_snapshot(source_workspace=src_dir)
+    snap_path = snapshot.path
+
+    try:
+        with patch("os.chmod", side_effect=OSError("Operation not permitted")):
+            with pytest.raises(SnapshotCleanupError, match="Failed restoring"):
+                snapshot.cleanup()
+
+        assert snap_path.exists(), "Snapshot directory must still exist when cleanup fails!"
+        assert snapshot._cleaned is False, "Failed cleanup must NOT mark snapshot as cleaned!"
+    finally:
+        # Real cleanup to prevent test artifact leaking
+        snapshot.cleanup()
+
+
+def test_snapshot_cleanup_fails_closed_on_deletion_failure(tmp_path: Path):
+    """CRITICAL RELIABILITY TEST: Failed rmtree raises SnapshotCleanupError and leaves _cleaned as False."""
+    src_dir = tmp_path / "src_del_fail"
+    src_dir.mkdir()
+    (src_dir / "b.py").write_text("data")
+
+    snapshot = SnapshotManager.create_snapshot(source_workspace=src_dir)
+    snap_path = snapshot.path
+
+    try:
+        with patch("shutil.rmtree", side_effect=OSError("Device or resource busy")):
+            with pytest.raises(SnapshotCleanupError, match="Failed deleting snapshot directory"):
+                snapshot.cleanup()
+
+        assert snap_path.exists()
+        assert snapshot._cleaned is False
+    finally:
+        snapshot.cleanup()
+
+
+def test_snapshot_cleanup_retry_after_failure(tmp_path: Path):
+    """Verify that a failed cleanup can be successfully retried once the condition clears."""
+    src_dir = tmp_path / "src_retry"
+    src_dir.mkdir()
+    (src_dir / "c.py").write_text("data")
+
+    snapshot = SnapshotManager.create_snapshot(source_workspace=src_dir)
+    snap_path = snapshot.path
+
+    # First attempt fails
+    with patch("shutil.rmtree", side_effect=OSError("Temporary lock")):
+        with pytest.raises(SnapshotCleanupError):
+            snapshot.cleanup()
+    assert snap_path.exists()
+    assert snapshot._cleaned is False
+
+    # Second attempt succeeds without error
+    snapshot.cleanup()
+    assert not snap_path.exists()
+    assert snapshot._cleaned is True
+
+
+# ----------------------------------------------------------------------
+# Section 12: Recursive Runtime Verification Tests
+# ----------------------------------------------------------------------
+
+def test_recursive_verification_rejects_world_readable_nested_dir(tmp_path: Path):
+    """CRITICAL SECURITY TEST: Recursive verification rejects world-readable nested directories."""
+    snap_dir = tmp_path / "snap_readable_dir"
+    snap_dir.mkdir(mode=0o700)
+    nested = snap_dir / "nested"
+    nested.mkdir(mode=0o755)
+
+    with pytest.raises(SnapshotCreationError, match="violates permissions: directory must be mode 0700"):
+        verify_snapshot_security_invariants(snap_dir)
+
+
+def test_recursive_verification_rejects_world_writable_nested_dir(tmp_path: Path):
+    """CRITICAL SECURITY TEST: Recursive verification rejects world-writable nested directories."""
+    snap_dir = tmp_path / "snap_writable_dir"
+    snap_dir.mkdir(mode=0o700)
+    nested = snap_dir / "insecure"
+    nested.mkdir(mode=0o777)
+
+    with pytest.raises(SnapshotCreationError, match="violates permissions: directory must be mode 0700"):
+        verify_snapshot_security_invariants(snap_dir)
+
+
+def test_recursive_verification_rejects_group_writable_file(tmp_path: Path):
+    """CRITICAL SECURITY TEST: Recursive verification rejects group-writable files."""
+    snap_dir = tmp_path / "snap_gw_file"
+    snap_dir.mkdir(mode=0o700)
+    bad_file = snap_dir / "unsafe.py"
+    bad_file.write_text("x = 1")
+    os.chmod(bad_file, 0o660)
+
+    with pytest.raises(SnapshotCreationError, match="prohibited group or world write permissions"):
+        verify_snapshot_security_invariants(snap_dir)
+
+
+def test_recursive_verification_rejects_mismatched_nested_dir_owner(tmp_path: Path):
+    """CRITICAL SECURITY TEST: Recursive verification rejects mismatched nested directory ownership."""
+    snap_dir = tmp_path / "snap_owner_dir"
+    snap_dir.mkdir(mode=0o700)
+    nested = snap_dir / "sub"
+    nested.mkdir(mode=0o700)
+
+    orig_stat = Path.stat
+    def mock_stat(self_path, *args, **kwargs):
+        st = orig_stat(self_path, *args, **kwargs)
+        if self_path.name == "sub":
+            class MismatchStat:
+                def __init__(self, orig):
+                    self._orig = orig
+                    self.st_mode = orig.st_mode
+                    self.st_uid = 99999
+                    self.st_gid = 99999
+                def __getattr__(self, name):
+                    return getattr(self._orig, name)
+            return MismatchStat(st)
+        return st
+
+    with patch.object(Path, "stat", mock_stat):
+        with pytest.raises(SnapshotCreationError, match="nested directory ownership mismatch"):
+            verify_snapshot_security_invariants(snap_dir)
+
+
+def test_recursive_verification_rejects_mismatched_file_owner(tmp_path: Path):
+    """CRITICAL SECURITY TEST: Recursive verification rejects mismatched file ownership."""
+    snap_dir = tmp_path / "snap_owner_file"
+    snap_dir.mkdir(mode=0o700)
+    file_path = snap_dir / "mod.py"
+    file_path.write_text("x = 1")
+    os.chmod(file_path, 0o600)
+
+    orig_stat = Path.stat
+    def mock_stat(self_path, *args, **kwargs):
+        st = orig_stat(self_path, *args, **kwargs)
+        if self_path.name == "mod.py":
+            class MismatchStat:
+                def __init__(self, orig):
+                    self._orig = orig
+                    self.st_mode = orig.st_mode
+                    self.st_uid = 99999
+                    self.st_gid = 99999
+                def __getattr__(self, name):
+                    return getattr(self._orig, name)
+            return MismatchStat(st)
+        return st
+
+    with patch.object(Path, "stat", mock_stat):
+        with pytest.raises(SnapshotCreationError, match="file ownership mismatch"):
+            verify_snapshot_security_invariants(snap_dir)
+
+
+# ----------------------------------------------------------------------
+# Section 13: Container User Parsing Validation Tests
+# ----------------------------------------------------------------------
+
+def test_parse_user_spec_valid_and_defaults():
+    """Verify parse_user_spec handles valid numerical specs and documented defaults."""
+    # Missing/empty defaults
+    uid_none, gid_none = parse_user_spec(None)
+    assert uid_none > 0
+    assert gid_none > 0
+
+    uid_empty, gid_empty = parse_user_spec("")
+    assert uid_empty == uid_none
+
+    uid_ws, gid_ws = parse_user_spec("   ")
+    assert uid_ws == uid_none
+
+    # Explicit numeric specs
+    assert parse_user_spec("1000:1000") == (1000, 1000)
+    assert parse_user_spec("1001") == (1001, 1001)
+    assert parse_user_spec("501:20") == (501, 20)
+
+
+def test_parse_user_spec_rejects_root_identities():
+    """CRITICAL SECURITY TEST: parse_user_spec must strictly reject root execution (UID 0)."""
+    for root_spec in ["0", "0:0", "root", "ROOT", "0:1000", "root:1000"]:
+        with pytest.raises(ValueError, match="Root container execution .* is strictly forbidden"):
+            parse_user_spec(root_spec)
+
+
+def test_parse_user_spec_rejects_malformed_and_negative():
+    """Verify parse_user_spec fails closed on non-numeric, negative, or malformed specs."""
+    for bad_spec in ["abc", "1000:abc", "-1", "-1000:1000", "1:2:3", "1000:-1", "not_a_number"]:
+        with pytest.raises(ValueError):
+            parse_user_spec(bad_spec)

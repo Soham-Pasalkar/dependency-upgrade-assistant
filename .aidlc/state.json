@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-10T19:26:28Z",
+  "updated": "2026-11-11T04:52:35Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -640,27 +640,27 @@
       "depends_on": [
         "M4"
       ],
-      "status": "done",
+      "status": "awaiting_approval",
       "criteria": [
         {
           "text": "Docker runner executes test commands inside container with --network none and resource caps",
           "verified": true,
-          "proof": "tests/test_sandbox_security.py::test_container_config_enforces_all_mandatory_security_flags verifies --network=none, --user=1000:1000, --cap-drop=ALL, --security-opt=no-new-privileges:true, --memory=512m, --cpus=1.0, --pids-limit=64"
+          "proof": "tests/test_sandbox_security.py::test_container_config_enforces_all_mandatory_security_flags verifies --network=none, dynamic non-root user, --cap-drop=ALL, --security-opt=no-new-privileges:true, --memory=512m, --cpus=1.0, --pids-limit=64. test_container_user_resolution_matches_host_non_root_identity verifies host matching. Live CI verifies non-root UID 1001 on Linux. test_legacy_sandbox_manager_unconditionally_enforces_network_none proves legacy manager cannot enable networking."
         },
         {
           "text": "Execution logs and exit codes captured",
           "verified": true,
-          "proof": "tests/test_sandbox_runner.py::test_runner_captures_stdout_stderr_and_exit_code and test_runner_bounds_log_output verify exit codes 0 and 1, stdout/stderr capture, and 512KB bounded buffer truncation"
+          "proof": "tests/test_sandbox_runner.py::test_runner_captures_stdout_stderr_and_exit_code and test_runner_bounds_log_output verify exit codes 0 and 1, stdout/stderr capture, and 512KB bounded buffer truncation. Live Docker tests verify exit code 0, exit code 7 failure, and timeout exit 124."
         },
         {
           "text": "Truthful reporting of PASS, FAIL, and NOT_RUNNABLE when Docker is unavailable",
           "verified": true,
-          "proof": "tests/test_sandbox_runner.py::test_runner_fails_closed_when_docker_binary_missing and tests/test_validation_api.py::test_validation_execute_when_docker_unavailable verify explicit NOT_RUNNABLE status with diagnostic explanation; zero untrusted code runs on host"
+          "proof": "tests/test_sandbox_runner.py::test_runner_fails_closed_when_docker_binary_missing and tests/test_validation_api.py::test_validation_execute_when_docker_unavailable verify explicit NOT_RUNNABLE status with diagnostic explanation; zero untrusted code runs on host."
         },
         {
           "text": "Fail-closed container cleanup on success, failure, timeout, and interruption",
           "verified": true,
-          "proof": "tests/test_sandbox_runner.py::test_runner_handles_timeout_and_terminates_container and test_runner_fail_closed_cleanup_in_finally verify docker rm -f is executed under timeout (exit 124) and runtime exceptions"
+          "proof": "tests/test_sandbox_runner.py::test_runner_handles_timeout_and_terminates_container and test_runner_fail_closed_cleanup_in_finally verify docker rm -f is executed under timeout (exit 124) and runtime exceptions. Legacy manager timeout and interruption tests verify forced termination of named containers. Reliable snapshot cleanup tests (test_snapshot_cleanup_normal, test_snapshot_cleanup_read_only_artifacts_and_nested_directories, test_snapshot_cleanup_fails_closed_on_permission_restoration_failure, test_snapshot_cleanup_retry_after_failure) verify full removal and SnapshotCleanupError fail-closed handling without overwriting execution status."
         }
       ],
       "evidence": [
@@ -691,17 +691,26 @@
           "result": "PASS: 0 finding(s)",
           "file": null,
           "sha256": null
+        },
+        {
+          "at": "2026-11-11T04:51:58Z",
+          "cmd": ".venv/bin/pytest tests/test_sandbox_security.py tests/test_sandbox_runner.py tests/test_validation_api.py tests/test_sandbox_manager.py",
+          "result": "80 passed, 6 skipped in 0.39s verifying flags, recursive tree verification, reliable cleanup, user parsing, and legacy timeout cleanup",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-11T04:52:03Z",
+          "cmd": "GitHub Actions CI Run 42959775285 (commit 42f649d)",
+          "result": "All 6 jobs succeeded: Docker sandbox job 59 passed, 1 warning (all 6 live Docker tests executed); Python 3.10-3.14 524 passed each",
+          "file": null,
+          "sha256": null
         }
       ],
-      "approval": {
-        "at": "2026-11-10T18:59:48Z",
-        "note": "M5 accepted per Autonomous Engineering Execution Directive. All 4 criteria verified with concrete proof, 484 backend tests and 17 frontend tests green, 0 secret scan findings, artifacts validated.",
-        "actor": "agent",
-        "type": "agent_acceptance"
-      },
+      "approval": null,
       "rework": 0,
       "started": "2026-11-10T18:43:09Z",
-      "note": null
+      "note": "Resolve snapshot cleanup fail-open behavior, recursive runtime verification, user parsing validation, and legacy timeout cleanup"
     },
     {
       "id": "M6",
@@ -832,5 +841,5 @@
       "at": "2026-11-10T19:26:28Z"
     }
   ],
-  "head": "0414659ddeab99ca107c2e4b12bea4a27d8ebc86f43e524ebfeedfe7cb2249f6"
+  "head": "d155ef36b70b7620c9c4014e9626286f099c4e65ec2ae843a8d4ec6c628762c4"
 }

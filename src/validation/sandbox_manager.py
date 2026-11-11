@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -130,6 +131,21 @@ class DockerSandboxManager:
             self._cached_availability = self.check_availability()
         return self._cached_availability.is_available
 
+    def terminate(self, container_name_or_id: str) -> bool:
+        """Forcefully terminate and remove an active container."""
+        try:
+            res = subprocess.run(
+                [self.docker_bin, "rm", "-f", container_name_or_id],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=5.0,
+            )
+            return res.returncode == 0
+        except Exception as exc:
+            logger.warning(f"Error terminating legacy container {container_name_or_id}: {exc}")
+            return False
+
     def run_command(
         self,
         command_args: List[str],
@@ -201,11 +217,13 @@ class DockerSandboxManager:
             no_new_privileges=True,
         )
 
+        container_name = f"dua-legacy-{uuid.uuid4().hex[:12]}"
         run_args = ContainerConfigBuilder.build_run_args(
             config=hardened_config,
             working_dir=work_path,
             reference_dir=reference_dir,
             command_args=command_args,
+            container_name=container_name,
         )
         container_cmd = [self.docker_bin] + run_args
 
@@ -229,6 +247,7 @@ class DockerSandboxManager:
                 is_runnable=True,
             )
         except subprocess.TimeoutExpired as exc:
+            self.terminate(container_name)
             duration = round(time.monotonic() - start_time, 2)
             out = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout.decode("utf-8", errors="replace") if exc.stdout else "")
             err = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr.decode("utf-8", errors="replace") if exc.stderr else "")
@@ -242,6 +261,7 @@ class DockerSandboxManager:
                 error_message=f"Command execution timed out after {effective_timeout}s in sandbox.",
             )
         except Exception as exc:
+            self.terminate(container_name)
             duration = round(time.monotonic() - start_time, 2)
             return SandboxExecutionResult(
                 exit_code=-1,
@@ -251,4 +271,6 @@ class DockerSandboxManager:
                 is_runnable=False,
                 error_message=f"Container execution error: {exc}",
             )
+        finally:
+            self.terminate(container_name)
 

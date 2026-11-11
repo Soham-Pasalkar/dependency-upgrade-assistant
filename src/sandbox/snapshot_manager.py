@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import List, Optional, Set
 
 from src.models.plan import UpgradeProposalResponse
-from src.sandbox.container_config import DEFAULT_NON_ROOT_USER
+from src.sandbox.container_config import (
+    DEFAULT_NON_ROOT_USER,
+    get_platform_execution_user,
+    is_root_user,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +28,11 @@ class SecurityException(Exception):
 
 class SnapshotCreationError(RuntimeError):
     """Raised when snapshot replication or manifest overlay fails."""
+    pass
+
+
+class SnapshotCleanupError(RuntimeError):
+    """Raised when an ephemeral snapshot directory fails to be completely removed from disk."""
     pass
 
 
@@ -107,16 +116,43 @@ class SnapshotManifest:
 def parse_user_spec(user_spec: Optional[str] = None) -> tuple[int, int]:
     """Parse a user specification string into numerical (uid, gid).
 
-    Default fallback is (1000, 1000).
+    Security Invariants:
+    1. If user_spec is None or empty/whitespace, resolves the platform's non-root
+       execution identity (or DEFAULT_NON_ROOT_USER).
+    2. Explicit specifications must be valid non-negative integer 'uid' or 'uid:gid'.
+    3. Root container execution (UID 0 or user 'root') is strictly forbidden and raises ValueError.
+    4. Non-numeric or malformed specifications fail closed with ValueError (never silent default fallback).
     """
-    spec = user_spec or DEFAULT_NON_ROOT_USER
+    if user_spec is None or not str(user_spec).strip():
+        resolved = get_platform_execution_user()
+        parts = resolved.split(":")
+        return int(parts[0]), int(parts[1]) if len(parts) > 1 else int(parts[0])
+
+    spec_str = str(user_spec).strip()
+    if is_root_user(spec_str):
+        raise ValueError(
+            f"Prohibited container user '{spec_str}': Root container execution (UID 0) is strictly forbidden."
+        )
+
+    parts = spec_str.split(":")
+    if len(parts) > 2:
+        raise ValueError(f"Malformed user specification '{spec_str}': expected 'uid' or 'uid:gid'.")
+
     try:
-        parts = str(spec).strip().split(":")
         uid = int(parts[0])
-        gid = int(parts[1]) if len(parts) > 1 else uid
-        return uid, gid
-    except (ValueError, IndexError):
-        return 1000, 1000
+        gid = int(parts[1]) if len(parts) == 2 else uid
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid non-numeric user specification '{spec_str}': UID and GID must be integers."
+        ) from exc
+
+    if uid < 0 or gid < 0:
+        raise ValueError(f"Invalid negative user specification '{spec_str}': UID and GID cannot be negative.")
+
+    if uid == 0 or gid == 0:
+        raise ValueError(f"Prohibited container user '{spec_str}': UID 0 is strictly forbidden.")
+
+    return uid, gid
 
 
 def apply_secure_directory_permissions(
@@ -177,17 +213,30 @@ def verify_snapshot_security_invariants(
     snapshot_dir: Path,
     container_user: Optional[str] = None,
 ) -> None:
-    """Verify that a newly created snapshot satisfies all security invariants:
-    1. Root directory exists and is mode 0700.
-    2. Zero world-writable bits (st_mode & 0o002 == 0) anywhere.
-    3. Zero 'others' permissions (st_mode & 0o007 == 0) on all directories.
-    4. Snapshot ownership matches the expected non-root execution identity (on POSIX).
+    """Recursively verify that a newly created snapshot satisfies all security invariants:
+    1. Root directory exists and is mode 0700 (owner-only permissions).
+    2. All nested directories have mode 0700 (owner-only, zero group/other permissions).
+    3. Zero world-writable or group-writable bits on any file (st_mode & 0o022 == 0).
+    4. All files are readable by their owner.
+    5. All files and directories have expected non-root container ownership (on POSIX).
+    6. Root snapshot directory matches configured container execution identity.
+    7. Symlinks do not escape the snapshot root.
+    8. Prohibited special filesystem objects (FIFOs, sockets, device nodes) raise SnapshotCreationError.
+
+    Raises:
+        SnapshotCreationError: If any directory, file, or descendant violates security invariants.
     """
-    if not validate_snapshot_permissions(snapshot_dir):
+    target_root = Path(snapshot_dir).resolve()
+    if not target_root.exists() or not target_root.is_dir():
+        raise SnapshotCreationError(f"Snapshot directory '{target_root}' does not exist or is not a directory.")
+
+    if not validate_snapshot_permissions(target_root):
         raise SnapshotCreationError(
-            f"Snapshot directory '{snapshot_dir}' failed permission validation: directory must be mode 0700."
+            f"Snapshot root directory '{target_root}' failed permission validation: directory must be mode 0700."
         )
 
+    # Determine expected UID/GID
+    expected_uid: Optional[int] = None
     if hasattr(os, "getuid"):
         if os.getuid() == 0:
             expected_uid, _ = parse_user_spec(container_user)
@@ -195,26 +244,120 @@ def verify_snapshot_security_invariants(
             expected_uid = os.getuid()
 
         try:
-            st = snapshot_dir.stat()
+            st = target_root.stat()
             if st.st_uid != expected_uid:
                 raise SnapshotCreationError(
-                    f"Snapshot directory ownership mismatch on '{snapshot_dir}': "
+                    f"Snapshot directory ownership mismatch on '{target_root}': "
                     f"owned by UID {st.st_uid}, expected non-root container identity UID {expected_uid}."
                 )
         except OSError as exc:
             raise SnapshotCreationError(
-                f"Failed verifying ownership on snapshot directory '{snapshot_dir}': {exc}"
+                f"Failed verifying ownership on snapshot root '{target_root}': {exc}"
             ) from exc
+
+    # Recursively verify all descendants
+    for root, dirs, files in os.walk(target_root):
+        for d in dirs:
+            dir_path = Path(root) / d
+
+            # Symlink check
+            if dir_path.is_symlink():
+                try:
+                    resolved_target = dir_path.resolve()
+                    if resolved_target != target_root and target_root not in resolved_target.parents:
+                        raise SnapshotCreationError(
+                            f"Snapshot directory symlink '{dir_path}' escapes snapshot root: points to '{resolved_target}'."
+                        )
+                except OSError as exc:
+                    raise SnapshotCreationError(
+                        f"Failed inspecting symlink '{dir_path}': {exc}"
+                    ) from exc
+
+            # Directory permissions check (must be mode 0700)
+            if not validate_snapshot_permissions(dir_path):
+                raise SnapshotCreationError(
+                    f"Snapshot nested directory '{dir_path.name}' violates permissions: directory must be mode 0700."
+                )
+
+            # Directory ownership check
+            if expected_uid is not None:
+                try:
+                    d_stat = dir_path.stat()
+                    if d_stat.st_uid != expected_uid:
+                        raise SnapshotCreationError(
+                            f"Snapshot nested directory ownership mismatch on '{dir_path.name}': "
+                            f"owned by UID {d_stat.st_uid}, expected UID {expected_uid}."
+                        )
+                except OSError as exc:
+                    raise SnapshotCreationError(
+                        f"Failed inspecting directory status on '{dir_path}': {exc}"
+                    ) from exc
+
+        for f in files:
+            file_path = Path(root) / f
+
+            # Reject special files (FIFOs, sockets, character/block devices)
+            try:
+                l_stat = os.lstat(file_path)
+                mode = l_stat.st_mode
+                if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
+                    raise SnapshotCreationError(
+                        f"Prohibited special filesystem object detected in snapshot: '{file_path.name}' (mode {oct(mode)})."
+                    )
+            except OSError as exc:
+                raise SnapshotCreationError(
+                    f"Failed inspecting file status on '{file_path}': {exc}"
+                ) from exc
+
+            # Symlink containment check
+            if file_path.is_symlink():
+                try:
+                    resolved_file = file_path.resolve()
+                    if resolved_file != target_root and target_root not in resolved_file.parents:
+                        raise SnapshotCreationError(
+                            f"Snapshot file symlink '{file_path}' escapes snapshot root: points to '{resolved_file}'."
+                        )
+                except OSError as exc:
+                    raise SnapshotCreationError(
+                        f"Failed inspecting symlink target on '{file_path}': {exc}"
+                    ) from exc
+
+            # File permissions check
+            try:
+                f_stat = file_path.stat()
+                # Prohibit group or world write bits
+                if (f_stat.st_mode & 0o022) != 0:
+                    raise SnapshotCreationError(
+                        f"Snapshot file '{file_path.name}' has prohibited group or world write permissions (mode {oct(f_stat.st_mode)})."
+                    )
+                # File must be readable by owner
+                if (f_stat.st_mode & stat.S_IRUSR) == 0:
+                    raise SnapshotCreationError(
+                        f"Snapshot file '{file_path.name}' is not readable by owner (mode {oct(f_stat.st_mode)})."
+                    )
+
+                # File ownership check
+                if expected_uid is not None:
+                    if f_stat.st_uid != expected_uid:
+                        raise SnapshotCreationError(
+                            f"Snapshot file ownership mismatch on '{file_path.name}': "
+                            f"owned by UID {f_stat.st_uid}, expected UID {expected_uid}."
+                        )
+            except OSError as exc:
+                raise SnapshotCreationError(
+                    f"Failed inspecting file status on '{file_path}': {exc}"
+                ) from exc
 
 
 def validate_snapshot_permissions(path: Path | str) -> bool:
     """Verify that a snapshot directory enforces strict isolation:
     - Mode is NOT world-writable (st_mode & 0o002 == 0).
     - Permissions for 'others' (world) are 0 (st_mode & 0o007 == 0).
+    - Permissions for 'group' are 0 (st_mode & 0o070 == 0).
     - Mode is owner-accessible (0o700).
     """
     target = Path(path).resolve()
-    if not target.exists():
+    if not target.exists() or not target.is_dir():
         return False
     try:
         st = target.stat()
@@ -222,6 +365,8 @@ def validate_snapshot_permissions(path: Path | str) -> bool:
         if (mode & 0o002) != 0:
             return False
         if (mode & 0o007) != 0:
+            return False
+        if (mode & 0o070) != 0:
             return False
         return (mode & 0o700) == 0o700
     except OSError:
@@ -243,27 +388,76 @@ class IsolatedSnapshot:
         self._cleaned = False
 
     def cleanup(self) -> None:
-        """Safely remove the ephemeral snapshot directory and all contents."""
-        if not self._cleaned and self.path.exists():
+        """Safely remove the ephemeral snapshot directory and all contents.
+
+        Security and Reliability Invariants:
+        1. Restores owner write and execute permissions on all subdirectories and files
+           before deletion to prevent read-only test artifacts from blocking removal.
+        2. Handles ownership correctly for root-host and non-root execution.
+        3. Never silently suppresses permission or deletion failures.
+        4. Verifies the snapshot directory no longer exists on disk.
+        5. Sets self._cleaned = True ONLY upon verified complete removal.
+        6. On failure, raises SnapshotCleanupError and preserves state for retry.
+        """
+        if self._cleaned:
+            return
+
+        if not self.path.exists():
+            self._cleaned = True
+            return
+
+        # 1. Restore permissions bottom-up
+        try:
+            for root, dirs, files in os.walk(self.path, topdown=False):
+                for f in files:
+                    file_path = os.path.join(root, f)
+                    try:
+                        os.chmod(file_path, stat.S_IRUSR | stat.S_IWUSR)
+                    except OSError as exc:
+                        raise SnapshotCleanupError(
+                            f"Failed restoring file permissions for cleanup on '{file_path}': {exc}"
+                        ) from exc
+
+                for d in dirs:
+                    dir_path = os.path.join(root, d)
+                    try:
+                        os.chmod(dir_path, stat.S_IRWXU)
+                    except OSError as exc:
+                        raise SnapshotCleanupError(
+                            f"Failed restoring directory permissions for cleanup on '{dir_path}': {exc}"
+                        ) from exc
+
+            # Restore root directory permissions
             try:
-                # Restore owner permissions on all subdirectories and files to prevent
-                # read-only test artifacts from blocking deletion
-                for root, dirs, files in os.walk(self.path):
-                    for d in dirs:
-                        try:
-                            os.chmod(os.path.join(root, d), stat.S_IRWXU)
-                        except Exception:
-                            pass
-                    for f in files:
-                        try:
-                            os.chmod(os.path.join(root, f), stat.S_IRUSR | stat.S_IWUSR)
-                        except Exception:
-                            pass
-                shutil.rmtree(self.path, ignore_errors=True)
-            except Exception as exc:
-                logger.warning(f"Error cleaning up snapshot directory {self.path}: {exc}")
-            finally:
-                self._cleaned = True
+                os.chmod(self.path, stat.S_IRWXU)
+            except OSError as exc:
+                raise SnapshotCleanupError(
+                    f"Failed restoring snapshot root permissions for cleanup on '{self.path}': {exc}"
+                ) from exc
+
+        except SnapshotCleanupError:
+            raise
+        except Exception as exc:
+            raise SnapshotCleanupError(
+                f"Unexpected error while preparing snapshot directory '{self.path}' for cleanup: {exc}"
+            ) from exc
+
+        # 2. Perform removal (ignore_errors=False)
+        try:
+            shutil.rmtree(self.path, ignore_errors=False)
+        except Exception as exc:
+            raise SnapshotCleanupError(
+                f"Failed deleting snapshot directory '{self.path}': {exc}"
+            ) from exc
+
+        # 3. Verify directory no longer exists
+        if self.path.exists():
+            raise SnapshotCleanupError(
+                f"Snapshot directory '{self.path}' still exists after deletion attempt."
+            )
+
+        # 4. Only mark complete after verified removal
+        self._cleaned = True
 
     def __enter__(self) -> IsolatedSnapshot:
         return self
@@ -484,5 +678,24 @@ class SnapshotManager:
                 manifest_path=manifest_file,
             )
         except Exception:
-            shutil.rmtree(target_path, ignore_errors=True)
+            try:
+                if target_path.exists():
+                    for root, dirs, files in os.walk(target_path, topdown=False):
+                        for f in files:
+                            try:
+                                os.chmod(os.path.join(root, f), stat.S_IRUSR | stat.S_IWUSR)
+                            except OSError:
+                                pass
+                        for d in dirs:
+                            try:
+                                os.chmod(os.path.join(root, d), stat.S_IRWXU)
+                            except OSError:
+                                pass
+                    try:
+                        os.chmod(target_path, stat.S_IRWXU)
+                    except OSError:
+                        pass
+                    shutil.rmtree(target_path, ignore_errors=True)
+            except Exception:
+                pass
             raise
