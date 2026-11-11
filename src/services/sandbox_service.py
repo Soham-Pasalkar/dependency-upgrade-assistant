@@ -224,7 +224,7 @@ class SandboxService:
             self._execution_states[execution_id] = ExecutionLifecycleState.QUEUED
 
         # 2. Check Docker Availability (Fail-Closed Policy)
-        availability = self.runner.check_availability()
+        availability = self.get_availability()
         if not availability.is_available:
             summary = (
                 f"Docker sandbox unavailable: {availability.error_message}. "

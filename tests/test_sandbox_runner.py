@@ -273,7 +273,16 @@ def test_live_docker_execution_success(tmp_path: Path):
     runner = _get_live_docker_runner_or_skip()
     work_dir = tmp_path / "live_work"
     work_dir.mkdir()
-    (work_dir / "sample.py").write_text("x = 10 + 20\n")
+    try:
+        os.chmod(work_dir, 0o777)
+    except Exception:
+        pass
+    sample_file = work_dir / "sample.py"
+    sample_file.write_text("x = 10 + 20\n")
+    try:
+        os.chmod(sample_file, 0o666)
+    except Exception:
+        pass
 
     res = runner.run_command(
         command_args=["python", "-m", "compileall", "-q", "."],

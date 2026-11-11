@@ -225,6 +225,10 @@ def copy_sanitized_workspace(
 
         dest_dir = target_dir / rel_root
         dest_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(dest_dir, 0o777)
+        except Exception:
+            pass
 
         for filename in files:
             src_file = Path(root) / filename
@@ -296,6 +300,10 @@ class SnapshotManager:
         """
         temp_dir = tempfile.mkdtemp(prefix="dua_sandbox_")
         target_path = Path(temp_dir).resolve()
+        try:
+            os.chmod(target_path, 0o777)
+        except Exception:
+            pass
         manifest = SnapshotManifest()
         manifest_file: Optional[Path] = None
 

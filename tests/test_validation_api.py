@@ -30,24 +30,23 @@ def test_validation_status_endpoint():
 
 def test_validation_execute_when_docker_unavailable():
     """Verify POST /api/validation/execute truthfully returns NOT_RUNNABLE when Docker is down."""
-    with patch.object(
-        SandboxService,
-        "get_availability",
-        return_value=DockerAvailability(
-            is_available=False,
-            error_message="Docker binary not found on host.",
-        ),
-    ):
-        payload = {
-            "manifest_type": "requirements.txt",
-        }
-        response = client.post("/api/validation/execute", json=payload)
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "NOT_RUNNABLE"
-        assert data["is_runnable"] is False
-        assert "Docker sandbox unavailable" in data["summary"]
-        assert len(data["commands"]) == 0
+    service = get_sandbox_service()
+    mock_down = DockerAvailability(
+        is_available=False,
+        error_message="Docker binary not found on host.",
+    )
+    with patch.object(service, "get_availability", return_value=mock_down):
+        with patch.object(service.runner, "check_availability", return_value=mock_down):
+            payload = {
+                "manifest_type": "requirements.txt",
+            }
+            response = client.post("/api/validation/execute", json=payload)
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "NOT_RUNNABLE"
+            assert data["is_runnable"] is False
+            assert "Docker sandbox unavailable" in data["summary"]
+            assert len(data["commands"]) == 0
 
 
 def test_validation_execute_with_proposal_success():
