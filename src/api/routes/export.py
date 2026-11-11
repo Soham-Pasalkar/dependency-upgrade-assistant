@@ -179,3 +179,4 @@ async def download_artifact_alias(
 ) -> FileResponse:
     """Convenience alias route matching /export/{export_id}/{artifact_type}."""
     return await download_artifact(export_id=export_id, artifact_type=artifact_type, exporter=exporter)
+

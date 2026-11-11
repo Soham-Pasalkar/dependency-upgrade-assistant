@@ -4,14 +4,17 @@ import type {
   DependencyStatus,
   ManifestAnalysisResponse,
   RecommendationBatchResponse,
+  UpgradeProposalResponse,
 } from '../api/client';
 import {
   analyzeManifest,
   generateRecommendations,
+  generateUpgradePlan,
   getAiStatus,
   uploadManifest,
 } from '../api/client';
 import { SandboxValidation } from './SandboxValidation';
+import { PlanReviewer } from './PlanReviewer';
 
 const PYTHON_SAMPLE = `# Production dependencies
 requests==2.28.0
@@ -56,6 +59,13 @@ export const ManifestAnalyzer: React.FC = () => {
   const [isGeneratingRecs, setIsGeneratingRecs] = useState<boolean>(false);
   const [recsResult, setRecsResult] = useState<RecommendationBatchResponse | null>(null);
   const [recsError, setRecsError] = useState<string | null>(null);
+
+  // M4/M7 Planning & Approval State
+  const [isGeneratingPlan, setIsGeneratingPlan] = useState<boolean>(false);
+  const [proposal, setProposal] = useState<UpgradeProposalResponse | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [isApproved, setIsApproved] = useState<boolean>(false);
+  const [approvalNote, setApprovalNote] = useState<string>('');
 
   const [statusFilter, setStatusFilter] = useState<'ALL' | DependencyStatus>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -136,6 +146,10 @@ export const ManifestAnalyzer: React.FC = () => {
     setAnalysisResult(null);
     setRecsResult(null);
     setRecsError(null);
+    setProposal(null);
+    setPlanError(null);
+    setIsApproved(false);
+    setApprovalNote('');
 
     try {
       let result: ManifestAnalysisResponse;
@@ -187,6 +201,38 @@ export const ManifestAnalyzer: React.FC = () => {
     } finally {
       setIsGeneratingRecs(false);
     }
+  };
+
+  const handleGeneratePlan = async () => {
+    if (!recsResult || recsResult.recommendations.length === 0) {
+      setPlanError('No recommendations available to construct an upgrade plan.');
+      return;
+    }
+
+    setIsGeneratingPlan(true);
+    setPlanError(null);
+
+    try {
+      const plan = await generateUpgradePlan({
+        manifest_type: manifestType,
+        original_content: rawContent,
+        recommendations: recsResult.recommendations,
+        file_path: manifestType,
+      });
+      setProposal(plan);
+      setIsApproved(false);
+      setApprovalNote('');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to generate upgrade plan.';
+      setPlanError(msg);
+    } finally {
+      setIsGeneratingPlan(false);
+    }
+  };
+
+  const handleApproveProposal = (note?: string) => {
+    setIsApproved(true);
+    if (note) setApprovalNote(note);
   };
 
   const toggleRowExpansion = (rowKey: string) => {
@@ -600,6 +646,33 @@ export const ManifestAnalyzer: React.FC = () => {
                   </tbody>
                 </table>
               </div>
+
+              {/* Upgrade Planning Action Bar */}
+              <div className="plan-trigger-card" data-testid="plan-trigger-section">
+                <div className="plan-trigger-info">
+                  <h4>Deterministic Upgrade Plan &amp; Patch Synthesis</h4>
+                  <p>
+                    Compile validated recommendations into an atomic upgrade proposal, generate unified Git diffs,
+                    and verify patch applicability.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="btn-primary btn-plan-trigger"
+                  onClick={handleGeneratePlan}
+                  disabled={isGeneratingPlan || recsResult.recommendations.length === 0}
+                  data-testid="btn-generate-plan"
+                >
+                  {isGeneratingPlan ? 'Synthesizing Plan & Unified Diff...' : 'Generate Upgrade Plan & Unified Diff'}
+                </button>
+              </div>
+
+              {planError && (
+                <div className="alert-banner alert-error" role="alert" data-testid="plan-error-banner">
+                  <span className="alert-icon">⚠</span>
+                  <span className="alert-message">{planError}</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -768,8 +841,19 @@ export const ManifestAnalyzer: React.FC = () => {
             </div>
           )}
 
+          {/* M4/M7 Upgrade Plan, Unified Diff & Human Approval Section */}
+          {proposal && (
+            <PlanReviewer
+              proposal={proposal}
+              onApprove={handleApproveProposal}
+              isApproved={isApproved}
+              approvalNote={approvalNote}
+            />
+          )}
+
           {/* Sandboxed Validation Subsystem */}
           <SandboxValidation
+            proposal={proposal}
             manifestType={manifestType}
             originalContent={rawContent}
           />

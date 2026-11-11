@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-11T05:38:05Z",
+  "updated": "2026-11-11T06:05:06Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -722,7 +722,7 @@
       "depends_on": [
         "M5"
       ],
-      "status": "awaiting_approval",
+      "status": "done",
       "criteria": [
         {
           "text": "Export service bundles changes into downloadable .patch files and JSON execution summaries",
@@ -789,7 +789,11 @@
           "sha256": null
         }
       ],
-      "approval": null,
+      "approval": {
+        "at": "2026-11-11T05:52:00Z",
+        "note": "approved at terminal",
+        "actor": "human-tty"
+      },
       "rework": 0,
       "started": "2026-11-11T05:18:57Z",
       "note": null
@@ -800,33 +804,69 @@
       "depends_on": [
         "M6"
       ],
-      "status": "planned",
+      "status": "awaiting_approval",
       "criteria": [
         {
           "text": "React UI connects to FastAPI across complete workflow",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "Complete 10-step user journey verified end-to-end across FastAPI routes and React UI components (ManifestAnalyzer -> PlanReviewer -> SandboxValidation -> ExportManager) in tests/test_e2e_workflow_api.py and frontend Vitest suite (27 passing tests)."
         },
         {
           "text": "Displays dependency findings, badges, and diffs",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "ManifestAnalyzer and PlanReviewer display ecosystem badges, dependency findings, recommendation confidences, action tags, and syntax-highlighted unified diff lines. Verified by 13 unit tests across ManifestAnalyzer.test.tsx and PlanReviewer.test.tsx."
         },
         {
           "text": "Displays test logs and truthful status badges",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "SandboxValidation displays truthful status badges (PASSED, FAILED, TIMED_OUT, NOT_RUNNABLE) based on server-authoritative results, expandable execution logs, and container execution metadata. Verified in SandboxValidation.test.tsx and test_e2e_workflow_api.py."
         },
         {
           "text": "Implements responsive loading, empty, and actionable error states",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "Loading spinners, actionable error alerts with diagnostics, empty placeholder prompts, and responsive layouts implemented across BackendStatus, ManifestAnalyzer, PlanReviewer, SandboxValidation, and ExportManager. Verified across 27 Vitest tests."
         }
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "at": "2026-11-11T06:03:24Z",
+          "cmd": "./.venv/bin/pytest tests/test_e2e_workflow_api.py -v",
+          "result": "2 passed, 1 warning in 4.52s: complete 10-step E2E lifecycle verified for Python and Node.js manifests",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-11T06:03:33Z",
+          "cmd": "npm --prefix frontend test -- --run",
+          "result": "6 test files passed, 27 passed out of 27 tests in 777ms (including PlanReviewer, ExportManager, SandboxValidation, ManifestAnalyzer, BackendStatus, App)",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-11T06:03:37Z",
+          "cmd": "npm --prefix frontend run lint && npm --prefix frontend run build",
+          "result": "Lint passed with 0 errors (1 warning). Production build built 24 modules into dist/ in 71ms with zero errors",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-11T06:03:41Z",
+          "cmd": "./.venv/bin/pytest -q",
+          "result": "564 passed, 6 skipped (live Docker unavailable in local dev environment), zero regressions across all modules",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-11T06:03:45Z",
+          "cmd": "python3 .agents/skills/ai-dlc-engineering/scripts/scan_secrets.py .",
+          "result": "PASS: 0 finding(s)",
+          "file": null,
+          "sha256": null
+        }
+      ],
       "approval": null,
       "rework": 0,
-      "started": null,
+      "started": "2026-11-11T05:52:48Z",
       "note": null
     },
     {
@@ -888,5 +928,5 @@
       "at": "2026-11-10T19:26:28Z"
     }
   ],
-  "head": "8a565a66521d870c51cd183526bd2936e9531931f0f7f06aded64fa7b59b0d3a"
+  "head": "a487e5bfd479d72cfa41946bc66207e7e333062f3c2717f629fd26207faf9a68"
 }

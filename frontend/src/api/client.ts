@@ -473,6 +473,60 @@ export async function generateUpgradePlan(
   }
 }
 
+export interface WorkspaceApplyRequest {
+  proposal_id?: string | null;
+  approved: boolean;
+  approval_note?: string | null;
+  target_path?: string | null;
+  workspace_id?: string | null;
+  expected_sha256?: string | null;
+  run_id?: string | null;
+}
+
+export interface WorkspaceApplyResponse {
+  success: boolean;
+  status: string;
+  message: string;
+  applied_changes_count: number;
+  file_path: string;
+  sha256?: string | null;
+  proposal_status: ProposalStatus;
+}
+
+/**
+ * Apply an approved upgrade proposal to workspace with explicit human approval.
+ */
+export async function applyUpgradeProposal(
+  request: WorkspaceApplyRequest
+): Promise<WorkspaceApplyResponse> {
+  const url = `${config.apiBaseUrl}/api/plan/apply`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => null);
+      const detail = errorData?.detail || `HTTP ${response.status}`;
+      throw new ApiError(`Failed to apply proposal: ${detail}`, response.status);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    throw new ApiError(`Failed to apply proposal: ${message}`);
+  }
+}
+
 // ----------------------------------------------------------------------
 // M5: Sandboxed Validation Types and Functions
 // ----------------------------------------------------------------------
