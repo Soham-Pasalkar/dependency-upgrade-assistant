@@ -475,6 +475,12 @@ class SandboxService:
         )
 
         with self._lock:
+            # Prevent overwriting CANCELLED if user cancelled during report assembly
+            if self._execution_states.get(execution_id) == ExecutionLifecycleState.CANCELLED:
+                self._execution_containers.pop(execution_id, None)
+                self._execution_procs.pop(execution_id, None)
+                return self._executions[execution_id]
+
             self._executions[execution_id] = report
             self._execution_states[execution_id] = final_lifecycle
             self._execution_containers.pop(execution_id, None)

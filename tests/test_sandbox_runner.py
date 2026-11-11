@@ -254,3 +254,126 @@ def test_runner_terminate_terminates_proc_and_container():
         assert "rm" in cmd
         assert "-f" in cmd
         assert c_name in cmd
+
+
+# ----------------------------------------------------------------------
+# Live Docker Integration Tests (executed when Docker daemon is available)
+# ----------------------------------------------------------------------
+
+def _get_live_docker_runner_or_skip() -> DockerSandboxRunner:
+    runner = DockerSandboxRunner()
+    avail = runner.check_availability()
+    if not avail.is_available:
+        pytest.skip(f"Live Docker daemon unavailable: {avail.error_message}")
+    return runner
+
+
+def test_live_docker_execution_success(tmp_path: Path):
+    """Verify real container execution with pinned image on a live Docker daemon."""
+    runner = _get_live_docker_runner_or_skip()
+    work_dir = tmp_path / "live_work"
+    work_dir.mkdir()
+    (work_dir / "sample.py").write_text("x = 10 + 20\n")
+
+    res = runner.run_command(
+        command_args=["python", "-m", "compileall", "-q", "."],
+        working_dir=work_dir,
+    )
+
+    assert res.is_runnable is True
+    assert res.is_success is True
+    assert res.exit_code == 0
+    assert res.timed_out is False
+    assert res.container_id is not None
+    assert res.image_digest is not None
+    assert res.image_digest.startswith("sha256:")
+
+    # Verify container was removed after execution
+    inspect_proc = subprocess.run(
+        ["docker", "inspect", res.container_id],
+        capture_output=True,
+    )
+    assert inspect_proc.returncode != 0
+
+
+def test_live_docker_execution_failure_exit_code(tmp_path: Path):
+    """Verify non-zero exit code and stdout/stderr capture on a live Docker daemon."""
+    runner = _get_live_docker_runner_or_skip()
+    work_dir = tmp_path / "live_work_fail"
+    work_dir.mkdir()
+
+    res = runner.run_command(
+        command_args=[
+            "python",
+            "-c",
+            "import sys; print('live fail stdout'); sys.stderr.write('live fail stderr'); sys.exit(7)",
+        ],
+        working_dir=work_dir,
+    )
+
+    assert res.is_runnable is True
+    assert res.is_success is False
+    assert res.exit_code == 7
+    assert "live fail stdout" in res.stdout
+    assert "live fail stderr" in res.stderr
+
+
+def test_live_docker_execution_timeout_and_cleanup(tmp_path: Path):
+    """Verify real container timeout kills container and returns exit code 124."""
+    runner = _get_live_docker_runner_or_skip()
+    work_dir = tmp_path / "live_work_timeout"
+    work_dir.mkdir()
+
+    res = runner.run_command(
+        command_args=["python", "-c", "import time; time.sleep(15)"],
+        working_dir=work_dir,
+        timeout=2,
+    )
+
+    assert res.timed_out is True
+    assert res.exit_code == 124
+    assert res.duration_seconds >= 1.5
+    assert "timed out after 2s" in str(res.error_message)
+
+    # Verify container was forcefully terminated
+    inspect_proc = subprocess.run(
+        ["docker", "inspect", res.container_id],
+        capture_output=True,
+    )
+    assert inspect_proc.returncode != 0
+
+
+def test_live_docker_security_invariants(tmp_path: Path):
+    """Verify real kernel-level isolation: non-root user, network disabled, read-only root."""
+    runner = _get_live_docker_runner_or_skip()
+    work_dir = tmp_path / "live_work_sec"
+    work_dir.mkdir()
+
+    # 1. Non-root user (must be 1000)
+    user_res = runner.run_command(command_args=["id", "-u"], working_dir=work_dir)
+    assert user_res.exit_code == 0
+    assert user_res.stdout.strip() == "1000"
+
+    # 2. Network isolation (network=none should fail connecting)
+    net_res = runner.run_command(
+        command_args=[
+            "python",
+            "-c",
+            "import urllib.request; urllib.request.urlopen('http://1.1.1.1', timeout=1)",
+        ],
+        working_dir=work_dir,
+    )
+    assert net_res.exit_code != 0
+    assert (
+        "Network is unreachable" in net_res.stderr
+        or "URLError" in net_res.stderr
+        or "timed out" in net_res.stderr
+    )
+
+    # 3. Read-only root filesystem (writing to root must fail)
+    ro_res = runner.run_command(
+        command_args=["touch", "/test_ro_file"],
+        working_dir=work_dir,
+    )
+    assert ro_res.exit_code != 0
+    assert "Read-only file system" in ro_res.stderr

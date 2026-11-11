@@ -308,6 +308,23 @@ def test_workspace_boundary_accepts_valid_subproject(tmp_path: Path):
     assert resolved == subproject.resolve()
 
 
+def test_workspace_boundary_rejects_root_directory_and_dot_references(tmp_path: Path):
+    """CRITICAL SECURITY TEST: Ensure workspace path cannot equal workspace root itself or use dot references."""
+    ws_root = tmp_path / "valid_root"
+    ws_root.mkdir()
+
+    for dot_path in [".", "./", ".//", "my_project/.."]:
+        with pytest.raises(InvalidWorkspaceError):
+            validate_trusted_workspace_path(dot_path, workspace_root=ws_root)
+
+    # Directly verify is_safe_relative_path rejects dot segments
+    assert is_safe_relative_path(".") is False
+    assert is_safe_relative_path("./") is False
+    assert is_safe_relative_path("foo/./bar") is False
+    assert is_safe_relative_path("..") is False
+    assert is_safe_relative_path("foo/../bar") is False
+
+
 # ----------------------------------------------------------------------
 # Section 6: Snapshot Hardening Tests
 # ----------------------------------------------------------------------

@@ -19,7 +19,7 @@ import tempfile
 import threading
 import unittest.mock
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, Union
 import pytest
 
 

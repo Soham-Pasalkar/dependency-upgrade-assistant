@@ -114,3 +114,4 @@ class DependencyStagingManager:
             message="Offline staging initialized. Container executes under strict --network none isolation.",
             diagnostics=["Offline execution policy active: container network disabled."],
         )
+

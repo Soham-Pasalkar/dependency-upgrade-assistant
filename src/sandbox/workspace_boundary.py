@@ -48,9 +48,7 @@ def is_safe_relative_path(path_str: str) -> bool:
     # 4. Traversal segment check across both slash types
     normalized = unquoted.replace("\\", "/").split("/")
     if ".." in normalized or "." in normalized:
-        # Note: "." or ".." as path segments are rejected
-        if ".." in normalized:
-            return False
+        return False
 
     return True
 
@@ -87,9 +85,11 @@ def validate_trusted_workspace_path(
         raise InvalidWorkspaceError("Failed to resolve workspace path.") from exc
 
     # Boundary containment verification:
-    # Must be either root itself or a strict child within root
+    # Must be a strict child within root (never root itself)
+    if resolved_target == root:
+        raise InvalidWorkspaceError("Access denied: workspace path must not equal authorized root itself.")
     try:
-        if resolved_target != root and root not in resolved_target.parents:
+        if root not in resolved_target.parents:
             raise InvalidWorkspaceError("Access denied: path escapes authorized workspace root.")
     except Exception as exc:
         raise InvalidWorkspaceError("Access denied: path escapes authorized workspace root.") from exc
@@ -97,14 +97,14 @@ def validate_trusted_workspace_path(
     # Sibling prefix check (string prefix protection)
     root_str = str(root)
     target_str = str(resolved_target)
-    if not (target_str == root_str or target_str.startswith(root_str + os.sep)):
+    if not target_str.startswith(root_str + os.sep):
         raise InvalidWorkspaceError("Access denied: path is not within authorized workspace root.")
 
     # Symlink escape verification
     if candidate_target.is_symlink():
         try:
             real_link_target = candidate_target.resolve()
-            if real_link_target != root and root not in real_link_target.parents:
+            if real_link_target == root or root not in real_link_target.parents:
                 raise InvalidWorkspaceError("Access denied: symlink points outside authorized workspace root.")
         except Exception as exc:
             raise InvalidWorkspaceError("Failed to verify symlink target.") from exc
@@ -116,3 +116,4 @@ def validate_trusted_workspace_path(
         raise InvalidWorkspaceError("Specified workspace path is not a directory.")
 
     return resolved_target
+

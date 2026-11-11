@@ -111,3 +111,4 @@ class BoundedStreamCapture:
             out_str = "".join(self.stdout_chunks)
             err_str = "".join(self.stderr_chunks)
             return out_str, err_str, self.truncated
+
