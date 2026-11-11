@@ -636,8 +636,8 @@ def test_snapshot_creation_simulated_root_host_fallback(tmp_path: Path):
         # Also mock stat st_uid to return 1000 so post-creation ownership verification passes
         orig_stat = Path.stat
 
-        def mock_stat_fn(self_path):
-            st = orig_stat(self_path)
+        def mock_stat_fn(self_path, *args, **kwargs):
+            st = orig_stat(self_path, *args, **kwargs)
             # Create a mock stat_result with st_uid=1000
             class StatWrapper:
                 def __init__(self, orig):
@@ -779,8 +779,8 @@ def test_snapshot_ownership_mismatch_raises_and_cleans_up(tmp_path: Path):
         return res
 
     orig_stat = Path.stat
-    def mock_mismatched_stat(self_path):
-        st = orig_stat(self_path)
+    def mock_mismatched_stat(self_path, *args, **kwargs):
+        st = orig_stat(self_path, *args, **kwargs)
         class MismatchStat:
             def __init__(self, orig):
                 self._orig = orig
