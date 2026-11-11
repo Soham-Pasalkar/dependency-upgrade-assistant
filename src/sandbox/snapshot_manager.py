@@ -104,6 +104,109 @@ class SnapshotManifest:
     overlay_target: Optional[str] = None
 
 
+def parse_user_spec(user_spec: Optional[str] = None) -> tuple[int, int]:
+    """Parse a user specification string into numerical (uid, gid).
+
+    Default fallback is (1000, 1000).
+    """
+    spec = user_spec or DEFAULT_NON_ROOT_USER
+    try:
+        parts = str(spec).strip().split(":")
+        uid = int(parts[0])
+        gid = int(parts[1]) if len(parts) > 1 else uid
+        return uid, gid
+    except (ValueError, IndexError):
+        return 1000, 1000
+
+
+def apply_secure_directory_permissions(
+    dir_path: Path,
+    container_user: Optional[str] = None,
+) -> None:
+    """Apply strict 0700 permissions and assign non-root container ownership if running as root.
+
+    Raises:
+        SnapshotCreationError: If permissions cannot be set or ownership cannot be assigned.
+    """
+    try:
+        os.chmod(dir_path, stat.S_IRWXU)
+    except OSError as exc:
+        raise SnapshotCreationError(
+            f"Failed applying secure directory permissions (0700) on '{dir_path}': {exc}"
+        ) from exc
+
+    if hasattr(os, "getuid") and os.getuid() == 0:
+        uid, gid = parse_user_spec(container_user)
+        try:
+            os.chown(dir_path, uid, gid)
+        except OSError as exc:
+            raise SnapshotCreationError(
+                f"Root host fallback failed assigning container ownership ({uid}:{gid}) to directory '{dir_path}': {exc}"
+            ) from exc
+
+
+def apply_secure_file_permissions(
+    file_path: Path,
+    container_user: Optional[str] = None,
+) -> None:
+    """Harden file permissions (strip group/world write) and assign non-root ownership if running as root.
+
+    Raises:
+        SnapshotCreationError: If permissions cannot be set or ownership cannot be assigned.
+    """
+    try:
+        st = file_path.stat()
+        secure_mode = (st.st_mode | stat.S_IRUSR | stat.S_IWUSR) & ~(stat.S_IWGRP | stat.S_IWOTH)
+        os.chmod(file_path, secure_mode)
+    except OSError as exc:
+        raise SnapshotCreationError(
+            f"Failed applying secure file permissions on '{file_path}': {exc}"
+        ) from exc
+
+    if hasattr(os, "getuid") and os.getuid() == 0:
+        uid, gid = parse_user_spec(container_user)
+        try:
+            os.chown(file_path, uid, gid)
+        except OSError as exc:
+            raise SnapshotCreationError(
+                f"Root host fallback failed assigning container ownership ({uid}:{gid}) to file '{file_path}': {exc}"
+            ) from exc
+
+
+def verify_snapshot_security_invariants(
+    snapshot_dir: Path,
+    container_user: Optional[str] = None,
+) -> None:
+    """Verify that a newly created snapshot satisfies all security invariants:
+    1. Root directory exists and is mode 0700.
+    2. Zero world-writable bits (st_mode & 0o002 == 0) anywhere.
+    3. Zero 'others' permissions (st_mode & 0o007 == 0) on all directories.
+    4. Snapshot ownership matches the expected non-root execution identity (on POSIX).
+    """
+    if not validate_snapshot_permissions(snapshot_dir):
+        raise SnapshotCreationError(
+            f"Snapshot directory '{snapshot_dir}' failed permission validation: directory must be mode 0700."
+        )
+
+    if hasattr(os, "getuid"):
+        if os.getuid() == 0:
+            expected_uid, _ = parse_user_spec(container_user)
+        else:
+            expected_uid = os.getuid()
+
+        try:
+            st = snapshot_dir.stat()
+            if st.st_uid != expected_uid:
+                raise SnapshotCreationError(
+                    f"Snapshot directory ownership mismatch on '{snapshot_dir}': "
+                    f"owned by UID {st.st_uid}, expected non-root container identity UID {expected_uid}."
+                )
+        except OSError as exc:
+            raise SnapshotCreationError(
+                f"Failed verifying ownership on snapshot directory '{snapshot_dir}': {exc}"
+            ) from exc
+
+
 def validate_snapshot_permissions(path: Path | str) -> bool:
     """Verify that a snapshot directory enforces strict isolation:
     - Mode is NOT world-writable (st_mode & 0o002 == 0).
@@ -217,6 +320,7 @@ def copy_sanitized_workspace(
     source_root: Path,
     target_dir: Path,
     manifest: SnapshotManifest,
+    container_user: Optional[str] = None,
 ) -> None:
     """Replicate workspace files into target_dir with strict security filtering.
     
@@ -226,6 +330,7 @@ def copy_sanitized_workspace(
     3. Special files (FIFOs, sockets, device nodes) raise SecurityException.
     4. Copy failures fail closed with SnapshotCreationError (never silently ignored).
     5. SnapshotManifest records counts and sanitized relative paths without leaking secret contents.
+    6. All copied directories and files have secure permissions and ownership assigned fail-closed.
     """
     real_source = source_root.resolve()
 
@@ -260,13 +365,7 @@ def copy_sanitized_workspace(
 
         dest_dir = target_dir / rel_root
         dest_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            os.chmod(dest_dir, 0o700)
-            if hasattr(os, "getuid") and os.getuid() == 0:
-                parts = DEFAULT_NON_ROOT_USER.split(":")
-                os.chown(dest_dir, int(parts[0]), int(parts[1]))
-        except Exception:
-            pass
+        apply_secure_directory_permissions(dest_dir, container_user)
 
         for filename in files:
             src_file = Path(root) / filename
@@ -306,19 +405,12 @@ def copy_sanitized_workspace(
             # 4. Copy regular file safely (Fail-Closed)
             try:
                 shutil.copy2(src_file, dest_file)
-                # Harden file permissions: owner read/write, remove world/group write
-                try:
-                    current_mode = dest_file.stat().st_mode
-                    secure_mode = (current_mode | stat.S_IRUSR | stat.S_IWUSR) & ~(stat.S_IWGRP | stat.S_IWOTH)
-                    os.chmod(dest_file, secure_mode)
-                    if hasattr(os, "getuid") and os.getuid() == 0:
-                        parts = DEFAULT_NON_ROOT_USER.split(":")
-                        os.chown(dest_file, int(parts[0]), int(parts[1]))
-                except Exception:
-                    pass
+                apply_secure_file_permissions(dest_file, container_user)
                 manifest.included_files_count += 1
                 rel_path = str((rel_root / filename)).replace("\\", "/")
                 manifest.included_relative_paths.append(rel_path)
+            except SnapshotCreationError:
+                raise
             except Exception as exc:
                 raise SnapshotCreationError(
                     f"Failed copying workspace file '{filename}' into snapshot: {exc}"
@@ -334,6 +426,7 @@ class SnapshotManager:
         proposal: Optional[UpgradeProposalResponse] = None,
         manifest_type: Optional[str] = None,
         original_content: Optional[str] = None,
+        container_user: Optional[str] = None,
     ) -> IsolatedSnapshot:
         """Create an ephemeral isolated snapshot for sandboxed validation.
 
@@ -342,29 +435,25 @@ class SnapshotManager:
             proposal: Optional upgrade proposal to apply into the snapshot.
             manifest_type: Optional manifest type (e.g. 'requirements.txt' or 'package.json').
             original_content: Optional raw manifest content if no proposal exists.
+            container_user: Optional container execution user identity (e.g. "1000:1000").
 
         Returns:
             IsolatedSnapshot instance with ephemeral directory path and SnapshotManifest.
         """
         temp_dir = tempfile.mkdtemp(prefix="dua_sandbox_")
         target_path = Path(temp_dir).resolve()
-        try:
-            os.chmod(target_path, 0o700)
-            if hasattr(os, "getuid") and os.getuid() == 0:
-                parts = DEFAULT_NON_ROOT_USER.split(":")
-                os.chown(target_path, int(parts[0]), int(parts[1]))
-        except Exception:
-            pass
         manifest = SnapshotManifest()
         manifest_file: Optional[Path] = None
 
         try:
+            apply_secure_directory_permissions(target_path, container_user)
+
             # 1. Copy source workspace if provided
             if source_workspace:
                 src_path = Path(source_workspace).resolve()
                 if not src_path.is_dir():
                     raise SnapshotCreationError(f"Source workspace does not exist or is not a directory: {src_path}")
-                copy_sanitized_workspace(src_path, target_path, manifest)
+                copy_sanitized_workspace(src_path, target_path, manifest, container_user=container_user)
 
             # 2. Overlay proposal content if proposal is provided
             if proposal is not None:
@@ -373,6 +462,7 @@ class SnapshotManager:
                 )
                 target_manifest = target_path / Path(rel_manifest).name
                 target_manifest.write_text(proposal.proposed_content, encoding="utf-8")
+                apply_secure_file_permissions(target_manifest, container_user)
                 manifest_file = target_manifest
                 manifest.has_proposal_overlay = True
                 manifest.overlay_target = target_manifest.name
@@ -380,9 +470,13 @@ class SnapshotManager:
                 filename = "package.json" if manifest_type == "package.json" else "requirements.txt"
                 target_manifest = target_path / filename
                 target_manifest.write_text(original_content, encoding="utf-8")
+                apply_secure_file_permissions(target_manifest, container_user)
                 manifest_file = target_manifest
                 manifest.has_proposal_overlay = False
                 manifest.overlay_target = filename
+
+            # 3. Post-creation verification: verify snapshot permissions and ownership
+            verify_snapshot_security_invariants(target_path, container_user)
 
             return IsolatedSnapshot(
                 temp_dir=temp_dir,

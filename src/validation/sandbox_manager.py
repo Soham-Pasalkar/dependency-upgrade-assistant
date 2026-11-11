@@ -1,25 +1,33 @@
-"""Dedicated Docker sandbox manager for safe, isolated execution of untrusted repository code.
+"""DEPRECATED: Legacy DockerSandboxManager.
 
-Enforces strict containment guarantees:
-- Non-root user execution (--user 1000:1000).
-- Network disabled by default (--network none).
-- Resource constraints (--memory=512m, --cpus=1.0, --pids-limit=64).
-- No privileged mode (--privileged strictly prohibited).
-- Docker socket mounting strictly forbidden (never mount /var/run/docker.sock).
-- Reference copy mounted strictly read-only; working copy mounted read-write.
-- Fail-closed security policy: if Docker is unavailable, tests are classified NOT_RUNNABLE.
-- Untrusted repository code is NEVER executed on the host system.
+Authoritative container execution in Dependency Upgrade Assistant 2.0 is managed by
+`src.sandbox.runner.DockerSandboxRunner` and `src.sandbox.container_config.SandboxSecurityConfig`.
+
+This class is retained for backward compatibility with prototype components (e.g. legacy
+orchestrator and prototype validator), but now enforces mandatory production security controls:
+- Network isolation is strictly enforced (--network none); network_enabled=True is rejected/overridden.
+- Root container execution is strictly forbidden.
+- Read-only root filesystem (--read-only) and tmpfs isolation are enforced.
+- Capability drop (--cap-drop=ALL) and no-new-privileges are enforced.
+- Image references are pinned and validated.
 """
 from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
+
+from src.sandbox.container_config import (
+    ContainerConfigBuilder,
+    SandboxSecurityConfig as HardenedSandboxSecurityConfig,
+    validate_and_resolve_user,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -168,29 +176,38 @@ class DockerSandboxManager:
 
         effective_timeout = timeout if timeout is not None else self.config.timeout_seconds
 
-        # Build secure container execution command
-        container_cmd = [
-            self.docker_bin,
-            "run",
-            "--rm",
-            f"--user={self.config.user}",
-            f"--network={'bridge' if self.config.network_enabled else 'none'}",
-            f"--memory={self.config.memory_limit}",
-            f"--cpus={self.config.cpu_limit}",
-            f"--pids-limit={self.config.pids_limit}",
-            "-v", f"{work_path}:/workspace/working:rw",
-            "-w", "/workspace/working",
-        ]
+        # Convert legacy config values to sanitized server limits
+        try:
+            mem_match = re.search(r"(\d+)", str(self.config.memory_limit))
+            mem_mb = int(mem_match.group(1)) if mem_match else 512
+        except Exception:
+            mem_mb = 512
 
-        if reference_dir:
-            ref_path = Path(reference_dir).resolve()
-            if ref_path.is_dir():
-                if "docker.sock" in str(ref_path):
-                    raise ValueError("Forbidden mount: Docker socket mounting is strictly prohibited.")
-                container_cmd.extend(["-v", f"{ref_path}:/workspace/reference:ro"])
+        try:
+            cpu_val = float(self.config.cpu_limit)
+        except Exception:
+            cpu_val = 1.0
 
-        container_cmd.append(self.config.image)
-        container_cmd.extend(command_args)
+        hardened_config = HardenedSandboxSecurityConfig(
+            image=self.config.image,
+            network_enabled=False,  # Enforce --network none unconditionally across all execution paths
+            memory_mb=mem_mb,
+            cpu_limit=cpu_val,
+            pids_limit=self.config.pids_limit,
+            timeout_seconds=effective_timeout,
+            user=self.config.user,
+            read_only_root=True,
+            cap_drop_all=True,
+            no_new_privileges=True,
+        )
+
+        run_args = ContainerConfigBuilder.build_run_args(
+            config=hardened_config,
+            working_dir=work_path,
+            reference_dir=reference_dir,
+            command_args=command_args,
+        )
+        container_cmd = [self.docker_bin] + run_args
 
         start_time = time.monotonic()
         try:

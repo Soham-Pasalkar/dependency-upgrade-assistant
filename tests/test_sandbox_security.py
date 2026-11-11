@@ -1,6 +1,9 @@
 """Security and containment verification tests for M5 Sandboxed Validation subsystem."""
 import os
+import stat
+import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 import pytest
 
 from src.models.manifest import Ecosystem
@@ -581,3 +584,217 @@ def test_snapshot_creation_failure_fails_closed(tmp_path: Path):
     bad_source = tmp_path / "does_not_exist_xyz"
     with pytest.raises(SnapshotCreationError, match="Source workspace does not exist"):
         SnapshotManager.create_snapshot(source_workspace=bad_source)
+
+
+def test_snapshot_creation_normal_non_root_host_identity(tmp_path: Path):
+    """Verify normal non-root host execution sets 0700 permissions and matching UID ownership."""
+    src_dir = tmp_path / "non_root_src"
+    src_dir.mkdir()
+    (src_dir / "app.py").write_text("print('test')")
+    sub = src_dir / "nested"
+    sub.mkdir()
+    (sub / "util.py").write_text("def f(): pass")
+
+    snapshot = SnapshotManager.create_snapshot(source_workspace=src_dir)
+    try:
+        snap_path = snapshot.path
+        assert snap_path.exists()
+        assert validate_snapshot_permissions(snap_path) is True
+
+        # Owner must match current host user
+        if hasattr(os, "getuid"):
+            assert snap_path.stat().st_uid == os.getuid()
+            assert (snap_path / "nested").stat().st_uid == os.getuid()
+            assert (snap_path / "app.py").stat().st_uid == os.getuid()
+
+        # Permissions must be strictly 0700 for directories
+        assert (snap_path.stat().st_mode & 0o007) == 0
+        assert ((snap_path / "nested").stat().st_mode & 0o007) == 0
+
+        # Files must not have group or world write
+        assert ((snap_path / "app.py").stat().st_mode & 0o022) == 0
+    finally:
+        snapshot.cleanup()
+
+
+def test_snapshot_creation_simulated_root_host_fallback(tmp_path: Path):
+    """SIMULATED ROOT-HOST TEST: Verify root host assigns non-root container ownership to all snapshot artifacts."""
+    src_dir = tmp_path / "root_src"
+    src_dir.mkdir()
+    (src_dir / "index.py").write_text("x = 1")
+    sub = src_dir / "subdir"
+    sub.mkdir()
+    (sub / "subfile.py").write_text("y = 2")
+
+    chown_calls = []
+
+    def mock_chown(path, uid, gid):
+        chown_calls.append((str(path), uid, gid))
+
+    # Mock os.getuid to return 0 (root) and mock os.chown
+    with patch("os.getuid", return_value=0), patch("os.chown", side_effect=mock_chown):
+        # Also mock stat st_uid to return 1000 so post-creation ownership verification passes
+        orig_stat = Path.stat
+
+        def mock_stat_fn(self_path):
+            st = orig_stat(self_path)
+            # Create a mock stat_result with st_uid=1000
+            class StatWrapper:
+                def __init__(self, orig):
+                    self._orig = orig
+                    self.st_mode = orig.st_mode
+                    self.st_uid = 1000
+                    self.st_gid = 1000
+                def __getattr__(self, name):
+                    return getattr(self._orig, name)
+            return StatWrapper(st)
+
+        with patch.object(Path, "stat", mock_stat_fn):
+            snapshot = SnapshotManager.create_snapshot(
+                source_workspace=src_dir,
+                container_user="1000:1000",
+            )
+            try:
+                snap_path = snapshot.path
+                assert snap_path.exists()
+
+                # Verify chown was invoked for:
+                # 1. Snapshot root directory
+                # 2. Subdirectory
+                # 3. Root file
+                # 4. Nested file
+                assert len(chown_calls) >= 4
+                for path_str, uid, gid in chown_calls:
+                    assert uid == 1000
+                    assert gid == 1000
+            finally:
+                snapshot.cleanup()
+
+
+def test_snapshot_creation_fails_closed_on_chmod_failure(tmp_path: Path):
+    """CRITICAL SECURITY TEST: Ensure permission failure on snapshot root raises SnapshotCreationError and cleans up."""
+    src_dir = tmp_path / "src_chmod_fail"
+    src_dir.mkdir()
+
+    created_dirs = []
+    orig_mkdtemp = tempfile.mkdtemp
+
+    def tracking_mkdtemp(**kwargs):
+        res = orig_mkdtemp(**kwargs)
+        created_dirs.append(res)
+        return res
+
+    with patch("tempfile.mkdtemp", side_effect=tracking_mkdtemp):
+        with patch("os.chmod", side_effect=OSError("Disk read-only or EPERM")):
+            with pytest.raises(SnapshotCreationError, match="Failed applying secure directory permissions"):
+                SnapshotManager.create_snapshot(source_workspace=src_dir)
+
+    # Verify that the created temporary directory was cleaned up and does not linger on disk
+    assert len(created_dirs) == 1
+    assert not Path(created_dirs[0]).exists(), "Failed snapshot creation must not leak orphaned directories!"
+
+
+def test_snapshot_creation_fails_closed_on_chown_failure_when_root(tmp_path: Path):
+    """SIMULATED ROOT-HOST TEST: Ensure chown failure under root raises SnapshotCreationError and cleans up."""
+    src_dir = tmp_path / "src_chown_fail"
+    src_dir.mkdir()
+
+    created_dirs = []
+    orig_mkdtemp = tempfile.mkdtemp
+
+    def tracking_mkdtemp(**kwargs):
+        res = orig_mkdtemp(**kwargs)
+        created_dirs.append(res)
+        return res
+
+    with patch("tempfile.mkdtemp", side_effect=tracking_mkdtemp):
+        with patch("os.getuid", return_value=0):
+            with patch("os.chown", side_effect=OSError("Operation not permitted")):
+                with pytest.raises(SnapshotCreationError, match="Root host fallback failed assigning container ownership"):
+                    SnapshotManager.create_snapshot(source_workspace=src_dir, container_user="1000:1000")
+
+    assert len(created_dirs) == 1
+    assert not Path(created_dirs[0]).exists(), "Failed root fallback snapshot must clean up immediately!"
+
+
+def test_snapshot_proposal_overlay_ownership_and_permissions(tmp_path: Path):
+    """Verify proposal overlay file has 0600 permissions and no group/world write access."""
+    src_dir = tmp_path / "src_overlay"
+    src_dir.mkdir()
+    (src_dir / "requirements.txt").write_text("urllib3==1.26.5\n")
+
+    proposal = UpgradeProposalResponse(
+        proposal_id="prop-123",
+        manifest_type="requirements.txt",
+        ecosystem=Ecosystem.PYTHON,
+        file_path="requirements.txt",
+        plan_items=[],
+        total_planned=1,
+        total_unchanged=0,
+        total_conflicts=0,
+        original_content="urllib3==1.26.5\n",
+        proposed_content="urllib3==2.2.1\n",
+        unified_diff="--- a/requirements.txt\n+++ b/requirements.txt\n",
+        integrity=PatchIntegrityResult(
+            is_valid=True,
+            can_apply=True,
+            can_reverse=True,
+            syntax_valid=True,
+            target_versions_match=True,
+            unrelated_dependencies_unchanged=True,
+            original_unchanged=True,
+            checks_passed=["syntax"],
+        ),
+        status=ProposalStatus.READY_FOR_REVIEW,
+    )
+
+    snapshot = SnapshotManager.create_snapshot(source_workspace=src_dir, proposal=proposal)
+    try:
+        manifest_file = snapshot.manifest_path
+        assert manifest_file is not None
+        assert manifest_file.exists()
+        assert manifest_file.read_text(encoding="utf-8") == "urllib3==2.2.1\n"
+
+        # Check permissions: owner read/write, zero group/world write
+        st = manifest_file.stat()
+        assert (st.st_mode & 0o022) == 0, "Overlay file must not have group or world write bits!"
+        assert (st.st_mode & 0o600) == 0o600, "Overlay file must have owner read/write!"
+        assert snapshot.manifest.has_proposal_overlay is True
+        assert snapshot.manifest.overlay_target == "requirements.txt"
+    finally:
+        snapshot.cleanup()
+
+
+def test_snapshot_ownership_mismatch_raises_and_cleans_up(tmp_path: Path):
+    """Verify that an ownership mismatch detected in verification raises SnapshotCreationError and cleans up."""
+    src_dir = tmp_path / "src_mismatch"
+    src_dir.mkdir()
+
+    created_dirs = []
+    orig_mkdtemp = tempfile.mkdtemp
+
+    def tracking_mkdtemp(**kwargs):
+        res = orig_mkdtemp(**kwargs)
+        created_dirs.append(res)
+        return res
+
+    orig_stat = Path.stat
+    def mock_mismatched_stat(self_path):
+        st = orig_stat(self_path)
+        class MismatchStat:
+            def __init__(self, orig):
+                self._orig = orig
+                self.st_mode = orig.st_mode
+                self.st_uid = 99999  # Mismatched UID
+                self.st_gid = 99999
+            def __getattr__(self, name):
+                return getattr(self._orig, name)
+        return MismatchStat(st)
+
+    with patch("tempfile.mkdtemp", side_effect=tracking_mkdtemp):
+        with patch.object(Path, "stat", mock_mismatched_stat):
+            with pytest.raises(SnapshotCreationError, match="Snapshot directory ownership mismatch"):
+                SnapshotManager.create_snapshot(source_workspace=src_dir)
+
+    assert len(created_dirs) == 1
+    assert not Path(created_dirs[0]).exists(), "Mismatched ownership snapshot must be cleaned up!"

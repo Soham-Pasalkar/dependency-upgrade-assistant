@@ -9,6 +9,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
 
+from src.models.manifest import Ecosystem
+from src.models.plan import PatchIntegrityResult, ProposalStatus, UpgradeProposalResponse
 from src.sandbox.container_config import SandboxSecurityConfig
 from src.sandbox.runner import (
     DockerAvailability,
@@ -16,6 +18,7 @@ from src.sandbox.runner import (
     MAX_OUTPUT_BYTES,
     SandboxExecutionResult,
 )
+from src.sandbox.snapshot_manager import SnapshotManager, validate_snapshot_permissions
 from src.sandbox.streaming_capture import BoundedStreamCapture, strip_ansi_sequences
 
 
@@ -435,3 +438,72 @@ def test_live_docker_creates_test_artifacts_in_secure_snapshot():
         assert (cache_dir.stat().st_mode & 0o002) == 0
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def test_live_docker_snapshot_manager_integration():
+    """Verify live Docker execution against a real SnapshotManager snapshot with 0700 permissions and proposal overlay."""
+    runner = _get_live_docker_runner_or_skip()
+    src_dir = Path(tempfile.mkdtemp(prefix="dua_live_src_")).resolve()
+    try:
+        (src_dir / "app.py").write_text("print('live snapshot app')\n")
+        (src_dir / "requirements.txt").write_text("urllib3==1.26.5\n")
+
+        # Create real snapshot with proposal overlay using the runner's configured non-root user
+        proposal = UpgradeProposalResponse(
+            proposal_id="prop-live-001",
+            manifest_type="requirements.txt",
+            ecosystem=Ecosystem.PYTHON,
+            file_path="requirements.txt",
+            plan_items=[],
+            total_planned=1,
+            total_unchanged=0,
+            total_conflicts=0,
+            original_content="urllib3==1.26.5\n",
+            proposed_content="urllib3==2.2.1\n",
+            unified_diff="--- a/requirements.txt\n+++ b/requirements.txt\n",
+            integrity=PatchIntegrityResult(
+                is_valid=True,
+                can_apply=True,
+                can_reverse=True,
+                syntax_valid=True,
+                target_versions_match=True,
+                unrelated_dependencies_unchanged=True,
+                original_unchanged=True,
+                checks_passed=["syntax"],
+            ),
+            status=ProposalStatus.READY_FOR_REVIEW,
+        )
+
+        snapshot = SnapshotManager.create_snapshot(
+            source_workspace=src_dir,
+            proposal=proposal,
+            container_user=runner.config.user,
+        )
+        try:
+            assert validate_snapshot_permissions(snapshot.path) is True
+
+            # Run compileall inside the container mounted to the snapshot directory
+            res = runner.run_command(
+                command_args=["python", "-m", "compileall", "-q", "."],
+                working_dir=snapshot.path,
+            )
+
+            assert res.is_runnable is True
+            assert res.is_success is True
+            assert res.exit_code == 0
+
+            # Verify the container could read the proposal overlay
+            read_res = runner.run_command(
+                command_args=["cat", "requirements.txt"],
+                working_dir=snapshot.path,
+            )
+            assert read_res.exit_code == 0
+            assert "urllib3==2.2.1" in read_res.stdout
+
+            # Verify snapshot directory remains strictly 0700 (not world-writable)
+            assert validate_snapshot_permissions(snapshot.path) is True
+        finally:
+            snapshot.cleanup()
+            assert not snapshot.path.exists()
+    finally:
+        shutil.rmtree(src_dir, ignore_errors=True)

@@ -289,6 +289,7 @@ class SandboxService:
                 source_workspace=validated_source_ws,
                 proposal=proposal,
                 manifest_type=manifest_type,
+                container_user=security_config.user,
             )
 
             # 5. Explicit Test Discovery (WP7)
