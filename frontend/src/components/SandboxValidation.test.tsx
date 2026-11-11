@@ -156,4 +156,67 @@ describe('SandboxValidation Component', () => {
     expect(screen.getByText('py_compile')).toBeInTheDocument();
     expect(screen.getByText('pytest')).toBeInTheDocument();
   });
+
+  it('renders proposal approval badge correctly when proposal is attached', async () => {
+    vi.mocked(apiClient.getSandboxStatus).mockResolvedValueOnce({
+      is_available: true,
+      version: '26.0.0',
+      error_message: null,
+    });
+
+    const mockProposal: apiClient.UpgradeProposalResponse = {
+      proposal_id: 'prop-test-789',
+      manifest_type: 'requirements.txt',
+      ecosystem: 'python',
+      file_path: 'requirements.txt',
+      plan_items: [],
+      total_planned: 1,
+      total_unchanged: 2,
+      total_conflicts: 0,
+      original_content: 'requests==2.28.0\n',
+      proposed_content: 'requests==2.32.3\n',
+      unified_diff: '--- a/requirements.txt\n+++ b/requirements.txt\n',
+      integrity: {
+        is_valid: true,
+        can_apply: true,
+        can_reverse: true,
+        syntax_valid: true,
+        target_versions_match: true,
+        unrelated_dependencies_unchanged: true,
+        original_unchanged: true,
+        checks_passed: ['syntax_check'],
+        checks_failed: [],
+        errors: [],
+        warnings: [],
+      },
+      status: 'READY_FOR_REVIEW',
+      requires_human_approval: true,
+      diagnostics: [],
+      summary: '1 upgrade planned',
+    };
+
+    const { rerender } = render(
+      <SandboxValidation
+        proposal={mockProposal}
+        manifestType="requirements.txt"
+        isApproved={false}
+      />
+    );
+
+    expect(screen.getByTestId('validation-approval-gate-badge')).toHaveTextContent(
+      'Proposal Review Pending'
+    );
+
+    rerender(
+      <SandboxValidation
+        proposal={mockProposal}
+        manifestType="requirements.txt"
+        isApproved={true}
+      />
+    );
+
+    expect(screen.getByTestId('validation-approval-gate-badge')).toHaveTextContent(
+      'Proposal Human-Approved'
+    );
+  });
 });

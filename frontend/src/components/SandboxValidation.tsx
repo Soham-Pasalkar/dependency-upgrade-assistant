@@ -15,11 +15,13 @@ interface SandboxValidationProps {
   proposal?: UpgradeProposalResponse | null;
   manifestType?: string;
   originalContent?: string;
+  isApproved?: boolean;
 }
 
 export const SandboxValidation: React.FC<SandboxValidationProps> = ({
   proposal,
   manifestType = 'requirements.txt',
+  isApproved = false,
 }) => {
   const [sandboxStatus, setSandboxStatus] = useState<SandboxStatusResponse | null>(null);
   const [isValidating, setIsValidating] = useState<boolean>(false);
@@ -115,6 +117,20 @@ export const SandboxValidation: React.FC<SandboxValidationProps> = ({
             )
           ) : (
             <span className="badge badge-neutral">Probing Docker runtime...</span>
+          )}
+
+          {proposal && (
+            <span
+              className={`badge ${isApproved ? 'badge-success' : 'badge-warning'}`}
+              data-testid="validation-approval-gate-badge"
+              title={
+                isApproved
+                  ? 'Human approval recorded for this proposal'
+                  : 'Explicit human approval pending in Plan Reviewer'
+              }
+            >
+              {isApproved ? '✓ Proposal Human-Approved' : '⚠ Proposal Review Pending'}
+            </span>
           )}
         </div>
       </div>

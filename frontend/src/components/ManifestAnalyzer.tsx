@@ -856,6 +856,7 @@ export const ManifestAnalyzer: React.FC = () => {
             proposal={proposal}
             manifestType={manifestType}
             originalContent={rawContent}
+            isApproved={isApproved}
           />
         </div>
       )}
