@@ -47,8 +47,8 @@ from src.services.run_store import JobRecord, RunStore, StoredResolution, get_ru
 
 logger = logging.getLogger(__name__)
 KIND = "resolution"
-UNAVAILABLE_MESSAGE = ("The isolated resolver is unavailable: Docker, the pinned resolver image or the resolver "
-                       "network could not be used. Check that Docker is running and try again.")
+UNAVAILABLE_MESSAGE = ("Docker, the pinned resolver image or the resolver network could not be used. "
+                       "Check that Docker is running and try again.")
 
 
 class JobServiceError(Exception):

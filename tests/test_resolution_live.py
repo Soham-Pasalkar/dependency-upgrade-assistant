@@ -152,13 +152,13 @@ def test_transitive_conflict(rt):
 
 
 def test_prerelease_policy(rt):
-    _, ranged, _ = live(rt, "numpy>=1.26,<2.1\n")
+    # pytest 8.0.0rc1/rc2 (universal wheels) precede the final 8.0.0 on PyPI.
+    _, ranged, _ = live(rt, "pytest>=7.4,<8.0.1\n")
     assert ranged.status == ResolutionStatus.COMPATIBLE, ranged.failure
-    numpy = {p.name.lower(): p.version for p in ranged.packages}["numpy"]
-    assert all(tag not in numpy for tag in ("a", "b", "rc", "dev"))  # no prerelease unless pinned
-    _, pinned, _ = live(rt, "numpy==2.0.0rc1\n")
-    assert pinned.status == ResolutionStatus.COMPATIBLE, pinned.failure
-    assert {p.name.lower(): p.version for p in pinned.packages}["numpy"] == "2.0.0rc1"
+    assert {p.name.lower(): p.version for p in ranged.packages}["pytest"] == "8.0.0"  # not 8.0.0rc2
+    _, pinned, _ = live(rt, "pytest==8.0.0rc2\n")
+    assert pinned.status == ResolutionStatus.COMPATIBLE, pinned.failure  # a pinned prerelease is allowed
+    assert {p.name.lower(): p.version for p in pinned.packages}["pytest"] == "8.0.0rc2"
 
 
 def test_yanked_pin_warning(rt):

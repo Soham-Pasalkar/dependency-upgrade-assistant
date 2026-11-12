@@ -90,6 +90,16 @@ DOCKER_TIMEOUT_SECONDS=60
 DOCKER_MAX_MEMORY_MB=512
 DOCKER_MAX_CPUS=1.0
 
+# Python compatibility resolver (M12). Values outside 1..ceiling stop the backend from starting.
+RESOLVER_TIMEOUT_SECONDS=180   # per run T (max 600); a job (two runs) is bounded by 2T
+RESOLVER_MEMORY_MB=1024        # per resolver container (max 4096)
+RESOLVER_CPUS=1.0              # (max 4)
+RESOLVER_PIDS_LIMIT=256        # (max 1024)
+RESOLVER_TMPFS_MB=512          # scratch space (max 2048)
+RESOLVER_MAX_CONCURRENT=2      # concurrent jobs (max 4)
+RESOLVER_MAX_REPORT_MB=10      # resolver report size cap (max 50)
+RESOLVER_MAX_PACKAGES=500      # selected packages per run (max 2000)
+
 # Browser origins allowed to make state-changing requests (never "*").
 # In development, loopback frontends (localhost, 127.0.0.1, [::1]) on DEV_FRONTEND_PORTS are
 # allowed automatically, so Vite works on 5173 or its fallback 5174 without extra settings.
@@ -158,6 +168,26 @@ The backend fail-closed policy truthfully returns status `NOT_RUNNABLE` with dia
 
 ---
 
+## 6a. Compatibility Checks (Python resolver)
+
+Before a Python plan can be approved, validated, applied or exported, pip's own resolver must resolve the
+**complete proposed dependency set**, and the server must verify the result. Details, configuration,
+security model and troubleshooting: [docs/RESOLUTION_ENGINE.md](RESOLUTION_ENGINE.md).
+
+- **Requires Docker.** Without it the check reports *Resolver unavailable* and approval stays locked.
+  The pinned image is pulled on first use, or pull it ahead of time:
+  `docker pull python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535`.
+- **Network:** the resolver container has no direct network; it reaches only `pypi.org` and
+  `files.pythonhosted.org` through a per-job egress proxy. The backend host itself fetches PyPI metadata
+  for verification.
+- **Only COMPATIBLE unlocks approval.** Conflicts, unsupported input (npm, source-only packages, `-r`,
+  `-e`, URLs, index options), failures, time-outs and an unavailable resolver all keep it locked. There is
+  no override.
+- **Compatible is not safe.** It means the set resolves; it does not mean the packages are vetted or
+  safe, and DUA does not perform malware detection. Review the packages the upgrade introduces.
+
+---
+
 ## 7. Step-by-Step Interactive Demo Walkthrough
 
 ### Scenario A: Python Ecosystem (`requirements.txt`)
@@ -177,8 +207,13 @@ The backend fail-closed policy truthfully returns status `NOT_RUNNABLE` with dia
 7. In the **Upgrade Plan & Diff Review** panel:
    - Inspect planned items and version changes.
    - Expand the **Unified Patch Diff** viewer to see exact additions (`+`) and deletions (`-`).
-   - Check the **"I have inspected the planned changes..."** checkbox.
-   - Click **"Confirm Human Approval"** to satisfy the human approval gate.
+   - In **Compatibility**, click **"Check compatibility"** (`POST /api/proposals/{id}/resolve`). Progress
+     shows the current dependency set (1 of 2), then the proposed set (2 of 2); you can cancel.
+   - When it reports **Compatible**, read the disclosure, review any **new packages introduced by this
+     upgrade**, and expand the resolved lists to see exact versions and upload dates.
+   - Check the **"I have read the diff above and approve these changes."** checkbox (offered only after a
+     compatible result).
+   - Click **"Approve changes"** to satisfy the human approval gate.
 8. Scroll to **Sandboxed Container Validation**:
    - Notice the `✓ Proposal Human-Approved` badge.
    - Click **"Run Sandboxed Validation"** (`POST /api/validation/execute`).
@@ -186,7 +221,9 @@ The backend fail-closed policy truthfully returns status `NOT_RUNNABLE` with dia
 9. Scroll to **Export Deliverables**:
    - Click **"Generate Verified Export Bundle"** (`POST /api/export`).
    - View SHA-256 checksums for each artifact.
-   - Download `.patch`, `summary.json`, `execution.log`, `checksums.sha256`, or the complete `.zip` bundle.
+   - Download `.patch`, `summary.json`, `execution.log`, `compatibility-report.md`, `checksums.sha256`, or
+     the complete `.zip` bundle. The report and `summary.json` list both resolved sets, introduced packages,
+     upload dates, fingerprints and the compatibility disclosure.
 
 ### Scenario B: Node.js Ecosystem (`package.json`)
 1. Switch format dropdown to **package.json**.
@@ -202,7 +239,10 @@ The backend fail-closed policy truthfully returns status `NOT_RUNNABLE` with dia
      }
    }
    ```
-3. Repeat steps 4–9 to analyze dependencies, generate recommendations against npm, review the JSON diff, confirm approval, execute validation, and export deliverables.
+3. Repeat steps 4–7 to analyze dependencies, generate recommendations against npm and review the JSON diff.
+4. The **Compatibility** check reports **Not supported**: npm compatibility verification is not yet
+   supported (planned for M13). Approval, validation of the upgrade, apply and export stay locked for npm
+   plans.
 
 ---
 
@@ -225,6 +265,9 @@ npm --prefix frontend test -- --run
 npm --prefix frontend run lint
 npm --prefix frontend run build
 
-# 6. Verify AI-DLC governance integrity
+# 6. Live compatibility resolver and egress isolation tests (need Docker and internet access)
+DUA_REQUIRE_DOCKER=1 python -m pytest -v tests/test_egress_live.py tests/test_resolution_live.py
+
+# 7. Verify AI-DLC governance integrity
 python3 .agents/skills/ai-dlc-engineering/scripts/aidlc.py verify
 ```

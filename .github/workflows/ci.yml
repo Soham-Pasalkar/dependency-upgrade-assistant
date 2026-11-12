@@ -76,6 +76,37 @@ jobs:
           docker version --format 'docker {{.Server.Version}}'
           pytest -v -rA tests/test_egress_live.py tests/test_resolution_live.py
 
+      - name: Set up Node.js for the browser journey
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Browser journey to a verified COMPATIBLE plan (real backend, resolver and headless Chrome)
+        run: |
+          npm --prefix frontend ci
+          pip install "websockets==15.0.1"   # test tooling for the DevTools driver only
+          mkdir -p journey
+          python -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000 > journey/backend.log 2>&1 &
+          npm --prefix frontend run dev -- --port 5173 --strictPort > journey/vite.log 2>&1 &
+          google-chrome --headless=new --remote-debugging-port=9222 --no-first-run --disable-gpu \
+            --user-data-dir="$RUNNER_TEMP/chrome" about:blank > journey/chrome.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8000/api/health > /dev/null && curl -sf http://localhost:5173 > /dev/null \
+              && curl -sf http://127.0.0.1:9222/json > /dev/null && break
+            sleep 1
+          done
+          python tests/e2e/browser_journey.py compatible journey 1440 900
+          python tests/e2e/browser_journey.py compatible journey 390 844
+
+      - name: Upload browser journey screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m12-browser-journey
+          path: journey/
+
   frontend:
     name: Frontend tests, lint and build
     runs-on: ubuntu-latest

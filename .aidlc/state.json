@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-12T17:55:05Z",
+  "updated": "2026-11-12T18:56:29Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -1372,6 +1372,27 @@
           "result": "success, all 7 jobs: pytest Python 3.10-3.13 each 1099 passed, 1 skipped; Python 3.14 1098 passed, 2 skipped (extra skip: pre-existing live staging test, runner Docker check timed out after 5 s; same test passed in the Docker job); Docker job 74 + 45 passed (existing sandbox suites; no M12 live tests yet); frontend 41 passed. https://github.com/Soham-Pasalkar/dependency-upgrade-assistant/actions/runs/43273960784",
           "file": null,
           "sha256": null
+        },
+        {
+          "at": "2026-11-12T18:56:29Z",
+          "cmd": "python3 -m pytest -q -o addopts=\"\" -p no:cacheprovider -m \"not live_resolution\"",
+          "result": "P4-P11 local (macOS arm64, Python 3.14.3, no Docker): 1234 passed, 9 skipped (Docker-only), 36 live tests deselected; 0 failed. Includes proxy, runtime (fake Docker CLI), job lifecycle and races, enforcement matrix and bypass attempts, API, export agreement, timeout hierarchy, pool bound.",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-12T18:56:29Z",
+          "cmd": "npm --prefix frontend test; npx tsc -b; npm run lint; npm run build; npm audit --omit=dev",
+          "result": "56 passed (5 consecutive runs under concurrent backend load after the approval-checkbox wait fix); tsc pass; lint pass with 2 set-state-in-effect warnings (one pre-existing in BackendStatus); build pass; 0 vulnerabilities.",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-12T18:56:29Z",
+          "cmd": "python tests/e2e/browser_journey.py unavailable <out> 1440 900 and 390 844 (local real backend + Vite + headless Chrome, no Docker)",
+          "result": "Both widths: Not verified -> Resolver unavailable; approval locked; validation disabled; horizontal overflow <= 0. COMPATIBLE journey runs in the CI Docker job.",
+          "file": null,
+          "sha256": null
         }
       ],
       "approval": null,
@@ -1438,5 +1459,5 @@
       "at": "2026-11-12T05:40:30Z"
     }
   ],
-  "head": "c9579ab85983e4af269aedd2dd4a9f6fb234ce5957b4859847124a80d740562e"
+  "head": "9c5784ce9e2b153296b34bc1505645c41c162ef67616a65037b4cf34d29248a3"
 }

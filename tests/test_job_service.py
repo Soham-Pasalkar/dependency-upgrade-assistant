@@ -297,3 +297,57 @@ def test_proxy_denials_are_recorded_as_warnings(client):
     original = service.store.latest_resolution(plan["proposal_id"], ResolutionRole.ORIGINAL)
     assert "egress_denied: evil.example:443 host_not_allowed" in proposed.report.warnings
     assert original.report.warnings == []
+
+
+def test_timeout_hierarchy(client):
+    """ADR-012: job = started_at + 2T; run = min(run_start + T, job deadline); slow setup shortens run 2."""
+    T = settings.RESOLVER_TIMEOUT_SECONDS
+    service, pypi, runtime = install_service()
+    now = [0.0]
+    service.monotonic = lambda: now[0]
+    deadlines = {}
+    real_start, real_run = runtime.start_job, runtime.run
+
+    def slow_start(job_id, deadline_epoch):
+        now[0] += 20  # network and proxy set-up took 20 s
+        deadlines["proxy_epoch"] = deadline_epoch
+        return real_start(job_id, deadline_epoch)
+
+    def timed_run(net, role, manifest, run_deadline, cancelled, max_stdout=None):
+        deadlines[role] = run_deadline
+        now[0] += T - 15  # each run takes T - 15 seconds
+        return real_run(net, role, manifest, run_deadline, cancelled, max_stdout)
+    runtime.start_job, runtime.run = slow_start, timed_run
+    plan = make_plan(client)
+    job = wait_for_job(service.submit(plan["proposal_id"]).job.id)
+    assert job.status == JobStatus.SUCCEEDED
+    assert job.deadline_at == pytest.approx(job.started_at + 2 * T)  # recorded job deadline
+    assert deadlines["proxy_epoch"] == pytest.approx(job.started_at + 2 * T)  # the proxy closes at the job deadline
+    assert deadlines["original"] == 20 + T  # run 1: its own budget
+    assert deadlines["proposed"] == 2 * T  # run 2: cut to the job deadline instead of (T + 5) + T
+    assert deadlines["proposed"] < (20 + T - 15) + T
+
+
+def test_worker_pool_is_bounded(client):
+    """At most RESOLVER_MAX_CONCURRENT jobs run at once; the rest wait QUEUED."""
+    active, peak, lock = [0], [0], threading.Lock()
+    gate = threading.Event()
+
+    def counting(role, manifest):
+        if role == "original":
+            with lock:
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+            gate.wait(5)
+            with lock:
+                active[0] -= 1
+        return None
+    service, pypi, runtime = install_service(counting, max_workers=settings.RESOLVER_MAX_CONCURRENT)
+    plans = [make_plan(client) for _ in range(settings.RESOLVER_MAX_CONCURRENT + 2)]
+    jobs = [service.submit(p["proposal_id"]).job.id for p in plans]
+    time.sleep(0.5)
+    queued = [service.get(j).status for j in jobs].count(JobStatus.QUEUED)
+    gate.set()
+    for j in jobs:
+        assert wait_for_job(j).status == JobStatus.SUCCEEDED
+    assert peak[0] == settings.RESOLVER_MAX_CONCURRENT and queued == 2

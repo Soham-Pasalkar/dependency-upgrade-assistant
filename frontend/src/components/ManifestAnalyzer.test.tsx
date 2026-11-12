@@ -352,6 +352,8 @@ describe('ManifestAnalyzer Component', () => {
     expect(apiClient.generateRunPlan).toHaveBeenCalledWith('run_test', 0);
     expect(screen.getByTestId('btn-run-validation')).toBeDisabled();
 
+    // M12: approval is offered once the server's compatibility status (mocked COMPATIBLE) has loaded.
+    await waitFor(() => expect(screen.getByTestId('approval-checkbox')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('approval-checkbox'));
     fireEvent.click(screen.getByTestId('confirm-approval-btn'));
     await waitFor(() => expect(screen.getByTestId('approval-confirmed-banner')).toBeInTheDocument());
@@ -371,6 +373,8 @@ describe('ManifestAnalyzer Component', () => {
     await waitFor(() => expect(screen.getByTestId('btn-generate-plan')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('btn-generate-plan'));
     await waitFor(() => expect(screen.getByTestId('plan-reviewer-section')).toBeInTheDocument());
+    // M12: approval is offered once the server's compatibility status (mocked COMPATIBLE) has loaded.
+    await waitFor(() => expect(screen.getByTestId('approval-checkbox')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('approval-checkbox'));
     fireEvent.click(screen.getByTestId('confirm-approval-btn'));
     await waitFor(() => expect(screen.getByTestId('approval-error')).toHaveTextContent('does not match'));
