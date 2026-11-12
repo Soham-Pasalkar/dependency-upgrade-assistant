@@ -33,4 +33,5 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
     "live_staging: performs real pip/npm downloads and, where Docker is available, real container runs",
+    "live_resolution: runs the real resolver and egress proxy containers against PyPI (needs Docker)",
 ]
