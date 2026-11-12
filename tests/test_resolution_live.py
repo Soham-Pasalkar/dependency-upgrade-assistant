@@ -202,6 +202,16 @@ def api(rt, tmp_path):
     run_store_module._store = previous
 
 
+def cleaned_up(job_id: str, bound: float = resolver_runtime.CLEANUP_SECONDS + 10) -> bool:
+    """Containers and networks are removed after the terminal state, within the cleanup bound."""
+    end = time.monotonic() + bound
+    while time.monotonic() < end:
+        if leftovers(job_id) == []:
+            return True
+        time.sleep(1)
+    return False
+
+
 def direct_plan(original: str, proposed: str, workspace=None) -> dict:
     diff = "".join(difflib.unified_diff(original.splitlines(True), proposed.splitlines(True),
                                         "a/requirements.txt", "b/requirements.txt"))
@@ -277,7 +287,7 @@ def test_job_timeout_is_not_a_conflict(api, monkeypatch):
     assert view["proposed"] is None
     assert client.post(f"/api/proposals/{plan['proposal_id']}/approve",
                        json={"diff_sha256": plan["diff_sha256"]}).status_code == 409
-    assert leftovers(job["id"]) == []
+    assert cleaned_up(job["id"])  # ADR-012: cleanup follows the terminal state within its 30 s bound
 
 
 def test_restart_interrupts_a_running_job(api):
@@ -293,8 +303,7 @@ def test_restart_interrupts_a_running_job(api):
     assert job["status"] == "INTERRUPTED"
     view = client.get(f"/api/proposals/{plan['proposal_id']}/resolution").json()
     assert view["status"] == "UNKNOWN" and view["proposed"] is None and view["original"] is None
-    time.sleep(2)
-    assert leftovers(job_id) == []
+    assert cleaned_up(job_id)
 
 
 def test_forged_report_from_inside_the_container_is_rejected(api, monkeypatch):
