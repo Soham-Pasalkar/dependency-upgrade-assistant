@@ -49,7 +49,7 @@ def workspace_root(tmp_path, monkeypatch):
     return settings.resolved_workspace_root
 
 
-def _validate(workspace: Path, root: Path, proposal: UpgradeProposalResponse, timeout: int = 180):
+def _validate(workspace: Path, root: Path, proposal: UpgradeProposalResponse, timeout: int = 120):
     registry = ProposalRegistry()
     pid = registry.store(proposal)
     service = SandboxService(proposal_registry=registry)
