@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-12T17:51:50Z",
+  "updated": "2026-11-12T17:55:05Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -1281,8 +1281,8 @@
         },
         {
           "text": "C5 Structured report and server-computed fingerprint. Verified: All report fields present; the fingerprint is computed by the supervisor; resolver stdout cannot set the status or fingerprint; **forgery tests:** a report claiming an unsatisfied `Requires-Dist` closure, wrong hashes, a non-allow-listed artifact host, extra packages, malformed JSON or excess size each give RESOLUTION_FAILED Evidence: `tests/test_resolution_verifier.py` (forgery matrix on captured real reports); `tests/test_resolution_fingerprint.py`. Type: Unit + security. Docker: No.",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "tests/test_resolution_verifier.py (forgery matrix on captured real pip reports: injected status/fingerprint/role fields, unsatisfied Requires-Dist closure incl. forged success for numpy 2.1.0 + scipy 1.10.0, wrong hashes, non-allow-listed host, extra packages, malformed JSON, oversized report -> RESOLUTION_FAILED; all FR-27b fields; supervisor-computed fingerprint) and tests/test_resolution_fingerprint.py: passed locally (1091 passed) and in CI run 43273960784 on 0cf5e4d (Python 3.10-3.14). Unit + security; Docker not required."
         },
         {
           "text": "C6 Input-change invalidation. Verified: Changing the proposal diff, original or proposed manifest, constraints, image digest, pip policy arguments or allow-list version changes the fingerprint; stored evidence then counts as UNKNOWN and approval is blocked Evidence: `test_resolution_fingerprint.py` (one case per input); `tests/test_resolution_enforcement.py::test_stale_evidence_blocks`. Type: Unit + API. Docker: No.",
@@ -1365,6 +1365,13 @@
           "result": "Full backend regression after P3, local: 1091 passed, 9 skipped (all 9 need live Docker), 0 failed. No existing test modified.",
           "file": null,
           "sha256": null
+        },
+        {
+          "at": "2026-11-12T17:55:05Z",
+          "cmd": "GitHub Actions CI run 43273960784 on commit 0cf5e4d6ded98c75a672de9e524e13b92b8389e1",
+          "result": "success, all 7 jobs: pytest Python 3.10-3.13 each 1099 passed, 1 skipped; Python 3.14 1098 passed, 2 skipped (extra skip: pre-existing live staging test, runner Docker check timed out after 5 s; same test passed in the Docker job); Docker job 74 + 45 passed (existing sandbox suites; no M12 live tests yet); frontend 41 passed. https://github.com/Soham-Pasalkar/dependency-upgrade-assistant/actions/runs/43273960784",
+          "file": null,
+          "sha256": null
         }
       ],
       "approval": null,
@@ -1431,5 +1438,5 @@
       "at": "2026-11-12T05:40:30Z"
     }
   ],
-  "head": "29984efaa80bebeaf23f11a800f92820e888f8dedf4244d84fd725f85cadc4e2"
+  "head": "c9579ab85983e4af269aedd2dd4a9f6fb234ce5957b4859847124a80d740562e"
 }
