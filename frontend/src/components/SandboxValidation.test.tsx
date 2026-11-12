@@ -227,4 +227,18 @@ describe('SandboxValidation Component', () => {
     expect(apiClient.executeValidation).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByText(/Docker available/i)).toBeInTheDocument());
   });
+
+  it('sends only the plan to validate; the server decides image, limits and tests', async () => {
+    vi.mocked(apiClient.getSandboxStatus).mockResolvedValueOnce({ is_available: true, version: '26.0.0', error_message: null });
+    vi.mocked(apiClient.executeValidation).mockResolvedValueOnce({
+      execution_id: 'val-x', status: 'NO_TESTS_FOUND', is_runnable: true, summary: 'No tests', commands: [],
+      total_duration_seconds: 0.1, image_used: 'python:3.11-slim', network_enabled: false, resource_limits: {},
+      logs: '', created_at: 0, diagnostics: [],
+    });
+    render(<SandboxValidation manifestType="requirements.txt" isApproved proposal={{ proposal_id: 'prop_9' } as apiClient.UpgradeProposalResponse} />);
+    fireEvent.click(screen.getByTestId('btn-run-validation'));
+    await waitFor(() => expect(screen.getByTestId('validation-results')).toBeInTheDocument());
+    expect(apiClient.executeValidation).toHaveBeenCalledWith({ proposal_id: 'prop_9' });
+    expect(screen.getByTestId('validation-status-badge')).toHaveTextContent('No tests found');
+  });
 });

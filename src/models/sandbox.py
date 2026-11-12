@@ -62,7 +62,7 @@ class SandboxExecutionRequest(BaseModel):
     )
     custom_test_cmd: Optional[List[str]] = Field(
         default=None,
-        description="Optional whitelisted test command override (e.g. ['pytest', '-v', 'tests/'])",
+        description="Not accepted. The server determines the test command; any value is rejected (422).",
     )
     timeout_seconds: Optional[int] = Field(
         default=60,
@@ -88,7 +88,7 @@ class SandboxExecutionRequest(BaseModel):
     )
     image_override: Optional[str] = Field(
         default=None,
-        description="Optional allowlisted container image override",
+        description="Not accepted. The server selects the pinned image; any value is rejected (422).",
     )
     ecosystem: Optional[str] = Field(
         default=None,
@@ -99,6 +99,15 @@ class SandboxExecutionRequest(BaseModel):
     @classmethod
     def reject_untrusted_parameters(cls, data: Any) -> Any:
         if isinstance(data, dict):
+            # 0. The validation operation is server-controlled and bound into approval (F13)
+            if data.get("custom_test_cmd") is not None:
+                raise ValueError(
+                    "custom_test_cmd is not accepted: the server determines the test command for an approved plan."
+                )
+            if data.get("image_override") is not None:
+                raise ValueError(
+                    "image_override is not accepted: the server selects the pinned validation image."
+                )
             # 1. Strictly forbid attempts to enable network
             if data.get("network_enabled") is True:
                 raise ValueError("Enabling network is strictly forbidden in sandbox execution.")
@@ -138,6 +147,12 @@ class ValidationReportResponse(BaseModel):
     created_at: float = Field(..., description="Epoch timestamp of execution creation")
     completed_at: Optional[float] = Field(default=None, description="Epoch timestamp of execution completion")
     diagnostics: List[str] = Field(default_factory=list, description="Diagnostic notices or warnings")
+    validation_fingerprint: Optional[str] = Field(
+        default=None, description="SHA-256 of the server-controlled validation policy this run used"
+    )
+    validation_policy: Optional[Dict[str, Any]] = Field(
+        default=None, description="Effective server-controlled validation policy (image, limits, discovery rules)"
+    )
 
 
 class SandboxExecutionLogResponse(BaseModel):

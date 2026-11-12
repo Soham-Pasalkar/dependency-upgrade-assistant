@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.approval_helpers import approve_registered_proposal
+from src.sandbox.validation_policy import policy_for_proposal
 
 from src.api.main import app
 from src.models.export import ArtifactType
@@ -104,6 +105,8 @@ def sample_registered_execution(sample_registered_proposal: str) -> str:
     report = ValidationReportResponse(
         execution_id="exec_api_test_999",
         proposal_id=sample_registered_proposal,
+        # A server-run validation records the approved policy's fingerprint (F13).
+        validation_fingerprint=policy_for_proposal(get_proposal_registry().get(sample_registered_proposal).proposal).fingerprint,
         status=ValidationStatus.PASSED,
         is_runnable=True,
         summary="All tests passed in container.",

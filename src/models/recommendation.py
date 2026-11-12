@@ -31,6 +31,8 @@ class ValidationStatus(str, Enum):
     REJECTED_INCOMPATIBLE = "REJECTED_INCOMPATIBLE"
     FALLBACK_DETERMINISTIC = "FALLBACK_DETERMINISTIC"
     SKIPPED = "SKIPPED"
+    # Candidate derived from offline catalog data: never registry-verified, never planned (M11, F10).
+    UNVERIFIED_OFFLINE = "UNVERIFIED_OFFLINE"
 
 
 class ModelMetadata(BaseModel):
@@ -67,6 +69,10 @@ class PackageUpgradeRecommendation(BaseModel):
     )
     raw_line: Optional[str] = Field(default=None, description="Original manifest declaration line")
     line_number: Optional[int] = Field(default=None, description="Line number in original manifest")
+    data_source: str = Field(
+        default="UNKNOWN",
+        description="Origin of the version data behind this recommendation (see RegistryDataSource)",
+    )
 
 
 class RecommendationBatchRequest(BaseModel):

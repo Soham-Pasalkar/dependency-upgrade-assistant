@@ -28,6 +28,9 @@ from src.models.run import (
     RunResponse,
 )
 from src.services import repository_service as repo_svc
+from src.sandbox.validation_policy import ValidationPolicyError, policy_for_proposal
+from src.services.approval_service import ensure_registered
+from src.services.retention import maybe_run_retention
 from src.services.proposal_registry import ProposalRegistry, get_proposal_registry
 from src.services.recommendation_service import RecommendationService
 from src.services.run_store import RunStore, StoredManifest, get_run_store, sha256_text
@@ -130,6 +133,7 @@ async def analyze_repository(
     request: RepositoryAnalyzeRequest,
     store: Annotated[RunStore, Depends(get_run_store)],
 ) -> RunResponse:
+    await run_in_threadpool(maybe_run_retention)
     try:
         return await run_in_threadpool(_analyze_repository, request.url, store)
     except repo_svc.RepositoryError as err:
@@ -149,6 +153,7 @@ async def analyze_manifest_run(
     if not request.content.strip():
         raise HTTPException(status_code=422, detail="The manifest is empty.")
     kind = "package_json" if manifest_type == "package.json" else "requirements"
+    await run_in_threadpool(maybe_run_retention)
     try:
         analysis = await run_in_threadpool(manifest_service.analyze_manifest, manifest_type, request.content)
     except ManifestParseError as err:
@@ -233,7 +238,9 @@ async def run_plan(
     )
     proposal = await run_in_threadpool(planner.create_upgrade_proposal, plan_request)
     if proposal.proposal_id:
-        await run_in_threadpool(store.bind_proposal, proposal.proposal_id, run_id, index, proposal.unified_diff)
+        await run_in_threadpool(
+            store.bind_proposal, proposal.proposal_id, run_id, index, proposal.unified_diff, proposal
+        )
     return proposal
 
 
@@ -247,7 +254,7 @@ async def approve_proposal(
     binding = await run_in_threadpool(store.get_binding, proposal_id)
     if binding is None:
         raise HTTPException(status_code=409, detail="Only plans built from an analysis can be approved.")
-    stored = registry.get(proposal_id)
+    stored = await run_in_threadpool(ensure_registered, proposal_id, store, registry)
     if stored is None:
         raise HTTPException(status_code=410, detail="This plan has expired. Build it again.")
     proposal = stored.proposal
@@ -255,10 +262,18 @@ async def approve_proposal(
         raise HTTPException(status_code=409, detail="The diff you reviewed does not match this plan. Reload and review it again.")
     if not proposal.integrity.is_valid or proposal.total_planned == 0:
         raise HTTPException(status_code=409, detail="This plan cannot be approved: it has no valid changes.")
-    record = await run_in_threadpool(store.record_approval, proposal_id, binding.diff_sha256, request.note)
+    try:
+        # The server, not the client, decides how this plan will be validated; the approval covers it.
+        policy = policy_for_proposal(proposal)
+    except ValidationPolicyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    record = await run_in_threadpool(
+        store.record_approval, proposal_id, binding.diff_sha256, request.note, policy.fingerprint
+    )
     return ApprovalResponse(
         proposal_id=proposal_id, run_id=binding.run_id, diff_sha256=record.diff_sha256, approved=True,
         approved_at=record.approved_at, note=record.note,
+        validation_fingerprint=policy.fingerprint, validation_policy=policy.to_dict(),
     )
 
 
@@ -272,4 +287,5 @@ async def get_approval(proposal_id: str, store: Annotated[RunStore, Depends(get_
         proposal_id=proposal_id, run_id=binding.run_id, diff_sha256=binding.diff_sha256,
         approved=record is not None, approved_at=record.approved_at if record else None,
         note=record.note if record else None,
+        validation_fingerprint=record.validation_fingerprint if record else None,
     )

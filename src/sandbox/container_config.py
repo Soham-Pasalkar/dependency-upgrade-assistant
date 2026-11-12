@@ -181,10 +181,8 @@ class ContainerConfigBuilder:
         # Validate Image and obtain pinned reference if available
         base_tag = validate_image_or_raise(config.image)
         if config.use_pinned_digest:
-            try:
-                image_ref = get_pinned_image_reference(base_tag)
-            except Exception:
-                image_ref = base_tag
+            # Fail closed: never fall back to a mutable tag when a pinned digest was required.
+            image_ref = get_pinned_image_reference(base_tag)
         else:
             image_ref = base_tag
 

@@ -9,6 +9,7 @@ import { cancelValidationExecution, executeValidation, getSandboxStatus } from '
 
 interface SandboxValidationProps {
   proposal?: UpgradeProposalResponse | null;
+  /** Kept for compatibility; validation settings are decided by the server. */
   manifestType?: string;
   isApproved?: boolean;
   onReport?: (report: ValidationReportResponse | null) => void;
@@ -32,7 +33,6 @@ const isTestCommand = (name: string) => /pytest|unittest|npm test|jest|vitest|mo
 
 export const SandboxValidation: React.FC<SandboxValidationProps> = ({
   proposal,
-  manifestType = 'requirements.txt',
   isApproved = false,
   onReport,
 }) => {
@@ -54,14 +54,8 @@ export const SandboxValidation: React.FC<SandboxValidationProps> = ({
     setIsValidating(true);
     setValidationError(null);
     try {
-      const report = await executeValidation({
-        proposal_id: proposal?.proposal_id || undefined,
-        manifest_type: manifestType,
-        timeout_seconds: 60,
-        memory_limit_mb: 512,
-        cpu_limit: '1.0',
-        pids_limit: 64,
-      });
+      // The server decides how an approved plan is validated (image, limits, tests); send only the plan.
+      const report = await executeValidation({ proposal_id: proposal?.proposal_id || undefined });
       setValidationReport(report);
       onReport?.(report);
     } catch (err) {

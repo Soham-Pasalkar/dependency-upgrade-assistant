@@ -247,7 +247,81 @@ def build_pip_download_command(requirements_file: Path, dest: Path, arch: Option
     return cmd
 
 
+_HASH_OPTION = re.compile(r"^--hash=(sha256|sha384|sha512):[0-9a-f]+$", re.I)
+
+
+def sanitize_requirements(content: str) -> Tuple[List[str], List[str]]:
+    """Rebuild a requirements file pip can safely read on the host.
+
+    The repository's file is untrusted: pip would honour options written inside it
+    (--index-url, --extra-index-url, --find-links, --trusted-host, -r, -c, ...) and direct
+    references (``name @ https://...``), letting a repository make this machine contact any URL.
+    Only plain PEP 508 requirements from PyPI, optionally with ``--hash`` pins, are kept.
+    Returns (sanitized_lines, rejected_lines).
+    """
+    from packaging.requirements import InvalidRequirement, Requirement
+
+    logical: List[str] = []
+    buf = ""
+    for raw in content.splitlines():
+        line = raw.rstrip()
+        if line.endswith("\\"):
+            buf += line[:-1] + " "
+            continue
+        logical.append(buf + line)
+        buf = ""
+    if buf:
+        logical.append(buf)
+
+    kept: List[str] = []
+    rejected: List[str] = []
+    for line in logical:
+        text = re.split(r"(^|\s)#", line, maxsplit=1)[0].strip()
+        if not text:
+            continue
+        if text.startswith("-"):
+            rejected.append(text)
+            continue
+        tokens = text.split()
+        req_tokens: List[str] = []
+        hashes: List[str] = []
+        bad = False
+        for tok in tokens:
+            if tok.startswith("--"):
+                if _HASH_OPTION.match(tok):
+                    hashes.append(tok)
+                else:
+                    bad = True
+            elif hashes:
+                bad = True  # requirement text after options is not valid
+            else:
+                req_tokens.append(tok)
+        if bad or not req_tokens:
+            rejected.append(text)
+            continue
+        try:
+            req = Requirement(" ".join(req_tokens))
+        except InvalidRequirement:
+            rejected.append(text)
+            continue
+        if req.url:
+            rejected.append(text)
+            continue
+        kept.append(" ".join([str(req)] + hashes))
+    return kept, rejected
+
+
 def _stage_python(cache_path: Path, content: str, run) -> StagingResult:
+    sanitized, rejected = sanitize_requirements(content)
+    if rejected:
+        return StagingResult(
+            success=False, status="UNSTAGEABLE", cache_dir=cache_path, ecosystem="python",
+            message=(
+                "Some lines are pip options, URLs, local paths or editable installs. They are not staged, "
+                "because they could make this machine fetch from locations other than PyPI."
+            ),
+            diagnostics=rejected[:10],
+        )
     unsupported = [ln.strip() for ln in content.splitlines() if ln.strip() and not ln.strip().startswith("#")
                    and _UNSTAGEABLE_PATTERNS.match(ln)]
     if unsupported:
@@ -264,7 +338,8 @@ def _stage_python(cache_path: Path, content: str, run) -> StagingResult:
     work = Path(tempfile.mkdtemp(prefix="pip_work_", dir=cache_path))  # inside the watched cache
     try:
         req = work / "requirements.txt"
-        req.write_text(content, encoding="utf-8")
+        # pip only ever reads the sanitized file, never the repository's own text.
+        req.write_text("\n".join(sanitized) + "\n", encoding="utf-8")
         wheels = cache_path / "python"
         wheels.mkdir(parents=True, exist_ok=True)
         code, output = run(build_pip_download_command(req, wheels), work, cache_path, host_tool_env(work))
@@ -315,11 +390,27 @@ def _stage_npm(cache_path: Path, content: str, rel_path: Optional[str], workspac
     if not (manifest.get("dependencies") or manifest.get("devDependencies")):
         return StagingResult(success=True, status="NOT_REQUIRED", cache_dir=cache_path, ecosystem="npm",
                              message="package.json declares no dependencies.")
-    for section in ("dependencies", "devDependencies", "optionalDependencies"):
-        for name, spec in (manifest.get(section) or {}).items():
-            if isinstance(spec, str) and re.match(r"^(file:|link:|git|github:|https?:|workspace:)", spec.strip(), re.I):
+    non_registry = re.compile(r"^(file:|link:|git|github:|gitlab:|bitbucket:|gist:|https?:|workspace:|/|\.)", re.I)
+
+    def _specs(node, prefix=""):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                yield from _specs(value, f"{prefix}{key}/")
+        elif isinstance(node, str):
+            yield prefix.rstrip("/"), node
+
+    for section in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
+                    "overrides", "resolutions"):
+        for name, spec in _specs(manifest.get(section) or {}):
+            value = spec.strip()
+            # Registry specs are semver ranges, dist-tags or npm: aliases. Anything with a "/" outside an
+            # npm: alias is a URL, path or GitHub shorthand (user/repo), which npm would fetch from elsewhere.
+            if non_registry.match(value) or ("/" in value and not value.startswith("npm:")):
                 return StagingResult(success=False, status="UNSTAGEABLE", cache_dir=cache_path, ecosystem="npm",
                                      message=f"'{name}' is not installed from the npm registry and cannot be staged offline.")
+    if manifest.get("workspaces") or manifest.get("bundleDependencies") or manifest.get("bundledDependencies"):
+        return StagingResult(success=False, status="UNSTAGEABLE", cache_dir=cache_path, ecosystem="npm",
+                             message="npm workspaces and bundled dependencies are not staged.")
 
     work = Path(tempfile.mkdtemp(prefix="npm_work_", dir=cache_path))  # inside the watched cache
     try:
@@ -328,6 +419,20 @@ def _stage_npm(cache_path: Path, content: str, rel_path: Optional[str], workspac
         if workspace and rel_path:
             existing = (Path(workspace) / rel_path).parent / "package-lock.json"
             if existing.is_file() and not existing.is_symlink() and existing.stat().st_size < 20 * 1024 * 1024:
+                try:
+                    repo_lock = json.loads(existing.read_text(encoding="utf-8"))
+                except ValueError:
+                    repo_lock = None
+                if not isinstance(repo_lock, dict):
+                    return StagingResult(success=False, status="FAILED", cache_dir=cache_path, ecosystem="npm",
+                                         message="The repository's package-lock.json is not valid JSON.")
+                foreign = _lockfile_hosts(repo_lock) - {"registry.npmjs.org"}
+                if foreign:
+                    # Checked before npm runs: npm would otherwise contact these hosts while resolving.
+                    return StagingResult(success=False, status="REGISTRY_BLOCKED", cache_dir=cache_path,
+                                         ecosystem="npm",
+                                         message="The repository's lockfile points at hosts other than registry.npmjs.org.",
+                                         diagnostics=sorted(foreign)[:10])
                 shutil.copyfile(existing, work / "package-lock.json")
                 lock_note = "updated from the repository's package-lock.json"
         npm_cache = cache_path / "npm-cache"

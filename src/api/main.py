@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from src.api.config import settings
 from src.api.database import init_db
 from src.api.security import RequestProtectionMiddleware
+from src.api.observability import RequestIdMiddleware, configure_logging, current_request_id
 from src.api.routes.health import router as health_router
 from src.api.routes.manifest import router as manifest_router
 from src.api.routes.plan import router as plan_router
@@ -25,6 +26,10 @@ logger = logging.getLogger("dua.api")
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan context manager for startup and shutdown events."""
+    logger.info(
+        "Environment %s; accepting state-changing requests from: %s",
+        settings.ENVIRONMENT, ", ".join(settings.allowed_origins) or "(none)",
+    )
     logger.info("Initializing database on startup...")
     try:
         init_db()
@@ -39,12 +44,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info(f"Removed {removed} expired repository workspace(s).")
     except Exception as e:
         logger.warning(f"Workspace cleanup skipped: {e}")
+    try:
+        from src.services.retention import run_retention
+        run_retention()
+    except Exception as e:
+        logger.warning(f"Retention skipped at startup: {type(e).__name__}")
     yield
     logger.info("Application shutting down...")
 
 
 def create_app() -> FastAPI:
     """FastAPI application factory."""
+    configure_logging()
     app = FastAPI(
         title=settings.APP_NAME,
         version=settings.APP_VERSION,
@@ -58,17 +69,21 @@ def create_app() -> FastAPI:
     app.add_middleware(
         RequestProtectionMiddleware,
         allowed_hosts=settings.ALLOWED_HOSTS,
-        allowed_origins=settings.CORS_ORIGINS,
+        allowed_origins=settings.allowed_origins,
     )
 
     # Configure CORS for local development
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.CORS_ORIGINS,
+        allow_origins=settings.allowed_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS", "HEAD"],
-        allow_headers=["Content-Type", "Accept", "X-DUA-Client"],
+        allow_headers=["Content-Type", "Accept", "X-DUA-Client", "X-Request-ID"],
+        expose_headers=["X-Request-ID"],
     )
+
+    # Outermost: every response (including blocked requests) carries a correlation ID.
+    app.add_middleware(RequestIdMiddleware)
 
     # Global Exception Handler
     @app.exception_handler(Exception)
@@ -80,6 +95,7 @@ def create_app() -> FastAPI:
                 "error": {
                     "code": "INTERNAL_SERVER_ERROR",
                     "message": "An unexpected server error occurred.",
+                    "request_id": current_request_id(),
                     "details": str(exc) if settings.DEBUG else None,
                 }
             },

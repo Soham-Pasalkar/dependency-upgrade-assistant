@@ -22,6 +22,7 @@ from src.services.upgrade_planner import HumanApprovalRequiredError, UpgradePlan
 from src.services.approval_service import ApprovalError, require_approved_proposal
 from src.services.proposal_registry import get_proposal_registry
 from src.services.run_store import get_run_store
+from src.api.observability import internal_error
 
 logger = logging.getLogger("dua.api.plan")
 
@@ -73,10 +74,7 @@ async def generate_upgrade_plan(
         )
     except Exception as err:
         logger.exception(f"Error generating upgrade plan: {err}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate upgrade plan: {str(err)}",
-        )
+        raise internal_error(logger, "Upgrade plan generation", err) from err
 
 
 @router.post(
@@ -104,10 +102,7 @@ async def validate_patch(
         return result
     except Exception as err:
         logger.exception(f"Error validating patch integrity: {err}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to validate patch: {str(err)}",
-        )
+        raise internal_error(logger, "Patch validation", err) from err
 
 
 @router.post(
@@ -134,6 +129,9 @@ async def apply_upgrade_proposal(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=err.message)
     try:
         response = await run_in_threadpool(planner.apply_workspace_mutation, request)
+        if response.success and request.proposal_id:
+            # Persist consumption so a restored plan cannot be applied a second time (replay protection).
+            await run_in_threadpool(get_run_store().mark_consumed, request.proposal_id)
         return response
     except HumanApprovalRequiredError as err:
         logger.warning(f"Human approval gate rejection: {err}")
@@ -143,7 +141,4 @@ async def apply_upgrade_proposal(
         )
     except Exception as err:
         logger.exception(f"Error applying workspace mutation: {err}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to apply workspace mutation: {str(err)}",
-        )
+        raise internal_error(logger, "Workspace update", err) from err

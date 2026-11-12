@@ -121,9 +121,12 @@ def test_pypi_client_fallback_to_local_catalog_on_network_error():
     client = PyPIRegistryClient(session=mock_session)
     meta = client.get_package_metadata("requests")
 
-    assert meta.status == RegistryLookupStatus.SUCCESS
+    # M11 (F10): catalog data is still returned, but explicitly as offline data, never as a live SUCCESS.
+    assert meta.status == RegistryLookupStatus.OFFLINE_CATALOG
+    assert meta.source == "OFFLINE_CATALOG"
     assert meta.latest_version is not None
-    assert "local catalog cache" in meta.deprecation_message
+    assert "offline catalog" in meta.error_message
+    assert meta.deprecation_message is None  # not presented as a registry deprecation notice
 
 
 # ---------------------------------------------------------------------------
@@ -448,3 +451,21 @@ def test_thread_local_session_isolation_in_concurrent_usage():
 
     # All 8 concurrent threads must have received unique, isolated Session instances
     assert len(sessions_seen) == 8
+
+
+def test_registry_timeouts_are_typed_and_retried():
+    """Audit scenario 10: timeouts are retried with backoff, then reported as TIMEOUT (never as data)."""
+    from src.services import registry_client as rc
+
+    npm_session = MagicMock(spec=requests.Session)
+    npm_session.get.side_effect = requests.Timeout("read timed out")
+    meta = NpmRegistryClient(session=npm_session).get_package_metadata("some-pkg")
+    assert meta.status == RegistryLookupStatus.TIMEOUT
+    assert meta.latest_version is None
+    assert npm_session.get.call_count == 1 + rc.TRANSIENT_RETRIES
+
+    pypi_session = MagicMock(spec=requests.Session)
+    pypi_session.get.side_effect = requests.Timeout("read timed out")
+    meta = PyPIRegistryClient(session=pypi_session).get_package_metadata("not-in-local-catalog-xyz")
+    assert meta.status == RegistryLookupStatus.TIMEOUT
+    assert meta.latest_version is None

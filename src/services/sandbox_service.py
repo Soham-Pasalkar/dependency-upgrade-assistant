@@ -24,6 +24,7 @@ from src.sandbox.container_config import (
     sanitize_resource_limits,
 )
 from src.sandbox.dependency_staging import DependencyStagingManager, StagingResult
+from src.sandbox.validation_policy import ValidationPolicy, derive_validation_policy, policy_for_proposal
 from src.api.config import settings
 from src.sandbox.image_catalog import (
     get_default_image_for_ecosystem,
@@ -158,6 +159,7 @@ class SandboxService:
         self,
         request: SandboxExecutionRequest,
         source_workspace: Optional[Path | str] = None,
+        policy: Optional[ValidationPolicy] = None,
     ) -> ValidationReportResponse:
         """Execute sandboxed validation with strict isolation, explicit test discovery, and cleanup.
 
@@ -192,36 +194,29 @@ class SandboxService:
         if source_workspace:
             validated_source_ws = validate_trusted_workspace_path(source_workspace)
 
-        # Determine ecosystem and manifest type
-        manifest_type = (
-            request.manifest_type
-            or (proposal.manifest_type if proposal else None)
-            or "requirements.txt"
+        # The validation operation is server-controlled (F13): image, limits and test discovery come from
+        # the policy bound into the approval, never from client-supplied fields.
+        if policy is None:
+            if proposal is not None:
+                policy = policy_for_proposal(proposal)
+            else:
+                policy = derive_validation_policy(request.manifest_type, request.ecosystem, None)
+        manifest_type = proposal.manifest_type if proposal else (
+            "package.json" if policy.ecosystem == "npm" else (request.manifest_type or "requirements.txt")
         )
-        ecosystem = (
-            request.ecosystem
-            or (proposal.ecosystem.value if proposal and hasattr(proposal.ecosystem, "value") else "python")
-        )
-
-        # Select & validate container image and resolve pinned digest
-        if request.image_override:
-            container_image = validate_image_or_raise(request.image_override)
-        else:
-            container_image = get_default_image_for_ecosystem(ecosystem or manifest_type)
+        ecosystem = policy.ecosystem
+        container_image = policy.image_tag
         image_digest = get_image_digest(container_image)
-
-        # Sanitize and clamp resource limits
-        mem_mb, cpus, pids, timeout_sec = sanitize_resource_limits(
-            memory_mb=request.memory_limit_mb,
-            cpu_limit=request.cpu_limit,
-            pids_limit=request.pids_limit,
-            timeout_seconds=request.timeout_seconds,
+        mem_mb, cpus, pids, timeout_sec = (
+            policy.memory_limit_mb, policy.cpu_limit, policy.pids_limit, policy.timeout_seconds
         )
 
         # Initialize Execution Record in QUEUED state
         initial_report = ValidationReportResponse(
             execution_id=execution_id,
             proposal_id=request.proposal_id,
+            validation_fingerprint=policy.fingerprint,
+            validation_policy=policy.to_dict(),
             status=ValidationStatus.NOT_RUNNABLE,
             lifecycle_state=ExecutionLifecycleState.QUEUED,
             is_runnable=False,
@@ -336,7 +331,7 @@ class SandboxService:
             discovery: TestDiscoveryResult = TestDiscoveryManager.discover_tests(
                 snapshot_dir=snapshot.path,
                 ecosystem=ecosystem,
-                custom_cmd=request.custom_test_cmd,
+                custom_cmd=None,  # never client-controlled
             )
             test_discovery_status = discovery.status.value
             diagnostics.append(f"Test Discovery: {discovery.description}")
@@ -520,6 +515,8 @@ class SandboxService:
 
         report = ValidationReportResponse(
             execution_id=execution_id,
+            validation_fingerprint=policy.fingerprint,
+            validation_policy=policy.to_dict(),
             proposal_id=request.proposal_id,
             status=overall_status,
             lifecycle_state=final_lifecycle,

@@ -220,3 +220,62 @@ def test_staged_npm_validation_copies_cache_and_lockfile(tmp_path):
     assert install[:2] == ["npm", "ci"] and "--offline" in install and "--ignore-scripts" in install
     assert "/workspace/working/.dua_npm_cache" in install
     assert report.commands[0].command_name == "dependency_install"
+
+
+# --- Untrusted manifest content must not steer host-side fetches (audit F2/F3) ---------------
+
+@pytest.mark.parametrize("content", [
+    "--extra-index-url http://169.254.169.254/simple\nsix==1.16.0\n",
+    "--index-url http://evil.example/simple\nsix\n",
+    "-i http://evil.example/simple\nsix\n",
+    "--find-links http://evil.example/\nsix\n",
+    "--trusted-host evil.example\nsix\n",
+    "six @ http://127.0.0.1:9/six-1.16.0-py3-none-any.whl\n",
+    "six==1.16.0 --config-settings x=y\n",
+    "six==1.16.0 --global-option=--x\n",
+    "not a valid requirement !!!\n",
+])
+def test_python_options_and_urls_are_refused_before_pip_runs(content):
+    r = D.prepare_staging_cache("python", manifest_content=content, runner=lambda *a, **k: pytest.fail("pip must not run"))
+    assert r.status == "UNSTAGEABLE"
+
+
+def test_pip_only_reads_the_sanitized_file():
+    seen = {}
+
+    def run(cmd, cwd, watch, env, **_):
+        seen["text"] = Path(cmd[cmd.index("-r") + 1]).read_text()
+        return 0, ""
+
+    content = "# comment\nrequests[socks]>=2.0; python_version > '3.8'  # trailing\nsix==1.16.0 \\\n  --hash=sha256:" + "a" * 64 + "\n"
+    D.prepare_staging_cache("python", manifest_content=content, runner=run)
+    assert "#" not in seen["text"]
+    assert 'requests[socks]>=2.0; python_version > "3.8"' in seen["text"]
+    assert "six==1.16.0 --hash=sha256:" + "a" * 64 in seen["text"]
+
+
+@pytest.mark.parametrize("pkg", [
+    {"dependencies": {"x": "1.0.0"}, "overrides": {"y": "https://evil.example/y.tgz"}},
+    {"dependencies": {"x": "1.0.0"}, "overrides": {"z": {"y": "github:evil/y"}}},
+    {"dependencies": {"x": "1.0.0"}, "resolutions": {"y": "file:../y"}},
+    {"dependencies": {"x": "evil/repo"}},
+    {"dependencies": {"x": "1.0.0"}, "workspaces": ["packages/*"]},
+])
+def test_npm_non_registry_overrides_and_shorthands_are_refused(pkg):
+    r = D.prepare_staging_cache("npm", manifest_content=json.dumps(pkg), runner=lambda *a, **k: pytest.fail("npm must not run"))
+    assert r.status == "UNSTAGEABLE"
+
+
+def test_npm_alias_and_ranges_are_allowed():
+    pkg = {"dependencies": {"a": "^1.2.0", "b": "npm:@scope/b@2.0.0", "c": "latest", "d": ">=1 <2 || 3.x"}}
+    r = D.prepare_staging_cache("npm", manifest_content=json.dumps(pkg), runner=_fake_npm({"": {}}))
+    assert r.status == "STAGED"
+    r.cleanup()
+
+
+def test_npm_repository_lockfile_with_foreign_hosts_is_blocked_before_npm_runs(tmp_path):
+    (tmp_path / "package-lock.json").write_text(json.dumps({"lockfileVersion": 3, "packages": {
+        "node_modules/x": {"resolved": "http://169.254.169.254/x.tgz"}}}))
+    r = D.prepare_staging_cache("npm", manifest_content=PKG, manifest_rel_path="package.json",
+                                source_workspace=tmp_path, runner=lambda *a, **k: pytest.fail("npm must not run"))
+    assert r.status == "REGISTRY_BLOCKED"

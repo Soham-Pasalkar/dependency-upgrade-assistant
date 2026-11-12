@@ -679,3 +679,43 @@ Additive; the architecture above remains the baseline. Legacy Streamlit (`src/ap
 
 ### Decision records (Revision 2)
 ADR-005 server-authoritative run state; ADR-006 hardened clone; ADR-007 offline dependency staging; ADR-008 frontend design system.
+
+## Revision 3 delta — M11 backend stabilization (2026-11-12)
+This section is additive; the Revision 2 delta above still applies.
+
+### API contract changes
+| Endpoint / model | Change | Reason |
+|------------------|--------|--------|
+| `POST /api/validation/execute` (`SandboxExecutionRequest`) | `custom_test_cmd` and `image_override` are rejected with 422. `timeout_seconds`, `memory_limit_mb`, `cpu_limit`, `pids_limit`, `manifest_type` and `ecosystem` are accepted only if they equal the server policy; otherwise 422. Clients should send only `proposal_id`. | F13: the validation operation is server-controlled |
+| `POST /api/proposals/{id}/approve`, `GET /api/proposals/{id}/approval` | New fields: `validation_fingerprint`, and `validation_policy` on approve. | The approval covers the validation policy |
+| `ValidationReportResponse` | New fields: `validation_fingerprint`, `validation_policy`. | Evidence of which policy ran |
+| `POST /api/export` | 409 if the referenced validation run's fingerprint differs from the approval's. | F13 |
+| Validation, export and apply | 409 `validation_settings_changed` if the server policy differs from the one approved, including approvals recorded before M11. | F13, fails closed |
+| `RegistryLookupStatus` | New value `OFFLINE_CATALOG`. Catalog fallbacks no longer report `SUCCESS`. | F10 |
+| `AnalyzedDependency`, `PackageUpgradeRecommendation` | New field `data_source`: `LIVE_REGISTRY`, `CACHED_REGISTRY`, `OFFLINE_CATALOG`, `UNAVAILABLE` or `UNKNOWN`. | F10 |
+| `ValidationStatus` (recommendations) | New value `UNVERIFIED_OFFLINE`: assigned to candidates derived from offline data. These are never planned. | F10 |
+
+### Components
+- **`src/sandbox/validation_policy.py`:** derives the only validation policy the server will run (pinned image, network `none`, offline-staged install, fixed discovery rules, limits from settings). Its SHA-256 fingerprint is stored in `dua_approvals.validation_fingerprint`.
+- **`src/services/retention.py`:** export retention (`EXPORT_RETENTION_HOURS`, default 24) and run retention (`RUN_RETENTION_HOURS`, default 168). It runs at startup and at most every 15 minutes when runs or exports are created, and never removes work whose plan is still within `PLAN_RETENTION_HOURS`.
+
+### Failure modes and known limitations
+- **F11, synchronous processing.**
+  - Repository analysis, recommendations, staging and validation all run inside the HTTP request, in a thread-pool worker.
+  - Worst-case validation is about 3 commands × `DOCKER_TIMEOUT_SECONDS`, plus up to 180 s of staging. Repository analysis is bounded by the 90 s clone plus registry lookups for up to 100 manifests.
+  - Consequences:
+    - a closed browser tab does not stop the work;
+    - the cancel endpoint needs an execution ID that is only returned when the run finishes;
+    - concurrent long requests occupy thread-pool workers.
+  - **Direction for M12:** the compatibility engine adds resolver executions of up to several minutes. M12 should introduce job-style execution for resolution and validation:
+    - `POST` returns a job ID immediately;
+    - `GET` polls status;
+    - cancel uses the job ID;
+    - job state is persisted in the existing SQLite store, with a small in-process worker pool.
+
+    No external queue is needed for the single-machine deployment model.
+- **F12, DNS time-of-check vs time-of-use (TOCTOU):** the repository host check resolves `github.com` and `api.github.com` and refuses non-public addresses, but git then performs its own DNS resolution. The residual risk is a DNS answer that changes between the check and git's lookup. It is limited because the hostname is fixed to `github.com` (no user-controlled host), transport is https-only with certificate validation, and redirects are disabled. Closing the gap fully would require connecting git to a pre-resolved address, which is not justified by the current threat model.
+- **F12, GitHub rate limit:** unauthenticated GitHub API use is limited to 60 requests per hour per IP. When exhausted, analysis fails with a typed `rate_limited` error and the reset time; no clone is attempted. Authenticated access is out of scope; private repositories and PATs are deferred.
+
+### Decision records
+No new ADR: F13 and F10 tighten ADR-005 (server-authoritative state). Retention follows the existing SQLite design.

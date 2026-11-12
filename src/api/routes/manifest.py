@@ -14,6 +14,7 @@ from src.models.manifest import (
     ManifestAnalysisResponse,
 )
 from src.services.manifest_service import ManifestService
+from src.api.observability import internal_error
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +69,7 @@ async def analyze_raw_manifest(
         )
     except Exception as err:
         logger.error(f"Unexpected error analyzing manifest: {err}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal error processing manifest: {err}",
-        )
+        raise internal_error(logger, "Manifest analysis", err) from err
 
 
 @router.post(
@@ -132,7 +130,4 @@ async def upload_manifest_file(
         )
     except Exception as err:
         logger.error(f"Unexpected error processing uploaded manifest '{filename}': {err}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal error processing uploaded manifest: {err}",
-        )
+        raise internal_error(logger, "Manifest upload", err) from err

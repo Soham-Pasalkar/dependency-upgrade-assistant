@@ -139,6 +139,33 @@ class ProposalRegistry:
             logger.info(f"Registered proposal '{proposal_id}' (active entries: {len(self._store)})")
             return proposal_id
 
+    def restore(
+        self,
+        proposal_id: str,
+        proposal: UpgradeProposalResponse,
+        state: ProposalLifecycleState = ProposalLifecycleState.AVAILABLE,
+    ) -> StoredProposal:
+        """Re-register a durably stored proposal under its original ID (e.g. after a restart).
+
+        Never overwrites a live entry: if the ID is already present, the live entry is returned.
+        """
+        with self._lock:
+            self._evict_expired()
+            existing = self._store.get(proposal_id)
+            if existing is not None:
+                return existing
+            if len(self._store) >= self.max_entries:
+                evictable = [k for k, v in self._store.items() if v.state != ProposalLifecycleState.APPLYING]
+                if not evictable:
+                    raise RegistryCapacityExceededError("Proposal registry capacity exhausted.")
+                del self._store[min(evictable, key=lambda k: self._store[k].created_at)]
+            copy = proposal.model_copy(deep=True)
+            copy.proposal_id = proposal_id
+            stored = StoredProposal(proposal_id=proposal_id, proposal=copy, created_at=time.time(), state=state)
+            self._store[proposal_id] = stored
+            logger.info(f"Restored proposal '{proposal_id}' from durable storage (state {state}).")
+            return stored
+
     def get(self, proposal_id: str) -> Optional[StoredProposal]:
         """Retrieve a stored proposal by ID if it exists and has not expired."""
         with self._lock:

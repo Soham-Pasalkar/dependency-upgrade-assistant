@@ -14,7 +14,11 @@ export type RegistryLookupStatus =
   | 'NETWORK_ERROR'
   | 'SKIPPED'
   | 'TOO_LARGE'
-  | 'TIMEOUT';
+  | 'TIMEOUT'
+  | 'OFFLINE_CATALOG';
+
+/** Where version data came from. Only LIVE_REGISTRY and CACHED_REGISTRY are registry answers. */
+export type RegistryDataSource = 'LIVE_REGISTRY' | 'CACHED_REGISTRY' | 'OFFLINE_CATALOG' | 'UNAVAILABLE' | 'UNKNOWN';
 
 export type RecommendationCategory =
   | 'RECOMMENDED'
@@ -29,7 +33,8 @@ export type ValidationStatus =
   | 'REJECTED_HALLUCINATION'
   | 'REJECTED_INCOMPATIBLE'
   | 'FALLBACK_DETERMINISTIC'
-  | 'SKIPPED';
+  | 'SKIPPED'
+  | 'UNVERIFIED_OFFLINE';
 
 export interface ModelMetadata {
   name: string;
@@ -60,6 +65,7 @@ export interface PackageUpgradeRecommendation {
   validation_status: ValidationStatus;
   raw_line: string | null;
   line_number: number | null;
+  data_source?: RegistryDataSource;
 }
 
 export interface RecommendationBatchRequest {
@@ -116,6 +122,7 @@ export interface AnalyzedDependency {
   status: DependencyStatus;
   status_reason: string;
   registry_status: RegistryLookupStatus;
+  data_source?: RegistryDataSource;
   available_versions: string[];
   yanked_or_deprecated: boolean;
   deprecation_reason: string | null;
@@ -564,16 +571,9 @@ export interface ValidationCommandResult {
   error_message?: string | null;
 }
 
+/** Validation is configured by the server for an approved plan; the client only names the plan. */
 export interface SandboxExecutionRequest {
   proposal_id?: string | null;
-  manifest_type?: string | null;
-  custom_test_cmd?: string[] | null;
-  timeout_seconds?: number;
-  memory_limit_mb?: number;
-  cpu_limit?: string;
-  pids_limit?: number;
-  image_override?: string | null;
-  ecosystem?: string | null;
 }
 
 export interface ValidationReportResponse {

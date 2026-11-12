@@ -74,3 +74,9 @@ class ApprovalResponse(BaseModel):
     approved: bool
     approved_at: Optional[float] = None
     note: Optional[str] = None
+    validation_fingerprint: Optional[str] = Field(
+        default=None, description="SHA-256 of the server-controlled validation policy covered by this approval"
+    )
+    validation_policy: Optional[dict] = Field(
+        default=None, description="Validation policy (image, limits, discovery rules) the approval covers"
+    )

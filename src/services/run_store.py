@@ -17,6 +17,7 @@ from typing import Iterator, List, Optional
 
 from src.api.config import settings
 from src.models.manifest import ManifestAnalysisResponse
+from src.models.plan import UpgradeProposalResponse
 from src.models.recommendation import RecommendationBatchResponse
 from src.models.run import RepositoryInfo, RunManifest, RunResponse
 
@@ -60,6 +61,21 @@ CREATE TABLE IF NOT EXISTS dua_approvals (
 """
 
 
+# Additive migrations for databases created before these columns existed.
+MIGRATIONS = (
+    ("dua_proposals", "proposal_json", "ALTER TABLE dua_proposals ADD COLUMN proposal_json TEXT"),
+    ("dua_proposals", "consumed_at", "ALTER TABLE dua_proposals ADD COLUMN consumed_at REAL"),
+    ("dua_approvals", "validation_fingerprint", "ALTER TABLE dua_approvals ADD COLUMN validation_fingerprint TEXT"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, column, ddl in MIGRATIONS:
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(ddl)
+
+
 def sha256_text(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
@@ -86,6 +102,8 @@ class ProposalBinding:
     run_id: str
     index: int
     diff_sha256: str
+    created_at: float = 0.0
+    consumed: bool = False
 
 
 @dataclass
@@ -94,6 +112,7 @@ class ApprovalRecord:
     diff_sha256: str
     note: Optional[str]
     approved_at: float
+    validation_fingerprint: Optional[str] = None
 
 
 class RunStore:
@@ -112,6 +131,7 @@ class RunStore:
             if not self._initialized:
                 with self._lock:
                     conn.executescript(SCHEMA)
+                    _migrate(conn)
                     self._initialized = True
             yield conn
             conn.commit()
@@ -205,17 +225,38 @@ class RunStore:
         )
 
     # -- proposals and approvals --------------------------------------------
-    def bind_proposal(self, proposal_id: str, run_id: str, index: int, unified_diff: str) -> ProposalBinding:
+    def bind_proposal(
+        self,
+        proposal_id: str,
+        run_id: str,
+        index: int,
+        unified_diff: str,
+        proposal: Optional[UpgradeProposalResponse] = None,
+    ) -> ProposalBinding:
         digest = sha256_text(unified_diff)
+        now = time.time()
         with self._conn() as c:
             c.execute(
-                "INSERT INTO dua_proposals (proposal_id, run_id, idx, diff_sha256, created_at) VALUES (?,?,?,?,?)",
-                (proposal_id, run_id, index, digest, time.time()),
+                "INSERT INTO dua_proposals (proposal_id, run_id, idx, diff_sha256, created_at, proposal_json)"
+                " VALUES (?,?,?,?,?,?)",
+                (proposal_id, run_id, index, digest, now, proposal.model_dump_json() if proposal else None),
             )
             c.execute(
                 "UPDATE dua_run_manifests SET proposal_id=? WHERE run_id=? AND idx=?", (proposal_id, run_id, index)
             )
-        return ProposalBinding(proposal_id=proposal_id, run_id=run_id, index=index, diff_sha256=digest)
+        return ProposalBinding(proposal_id=proposal_id, run_id=run_id, index=index, diff_sha256=digest, created_at=now)
+
+    def get_stored_proposal(self, proposal_id: str) -> Optional[UpgradeProposalResponse]:
+        with self._conn() as c:
+            row = c.execute("SELECT proposal_json FROM dua_proposals WHERE proposal_id=?", (proposal_id,)).fetchone()
+        if not row or not row["proposal_json"]:
+            return None
+        return UpgradeProposalResponse.model_validate_json(row["proposal_json"])
+
+    def mark_consumed(self, proposal_id: str) -> None:
+        with self._conn() as c:
+            c.execute("UPDATE dua_proposals SET consumed_at=? WHERE proposal_id=? AND consumed_at IS NULL",
+                      (time.time(), proposal_id))
 
     def get_binding(self, proposal_id: str) -> Optional[ProposalBinding]:
         with self._conn() as c:
@@ -223,17 +264,22 @@ class RunStore:
         if not row:
             return None
         return ProposalBinding(
-            proposal_id=row["proposal_id"], run_id=row["run_id"], index=row["idx"], diff_sha256=row["diff_sha256"]
+            proposal_id=row["proposal_id"], run_id=row["run_id"], index=row["idx"], diff_sha256=row["diff_sha256"],
+            created_at=row["created_at"], consumed=row["consumed_at"] is not None,
         )
 
-    def record_approval(self, proposal_id: str, diff_sha256: str, note: Optional[str]) -> ApprovalRecord:
+    def record_approval(
+        self, proposal_id: str, diff_sha256: str, note: Optional[str], validation_fingerprint: Optional[str] = None
+    ) -> ApprovalRecord:
         now = time.time()
         with self._conn() as c:
             c.execute(
-                "INSERT OR REPLACE INTO dua_approvals (proposal_id, diff_sha256, note, approved_at) VALUES (?,?,?,?)",
-                (proposal_id, diff_sha256, note, now),
+                "INSERT OR REPLACE INTO dua_approvals"
+                " (proposal_id, diff_sha256, note, approved_at, validation_fingerprint) VALUES (?,?,?,?,?)",
+                (proposal_id, diff_sha256, note, now, validation_fingerprint),
             )
-        return ApprovalRecord(proposal_id=proposal_id, diff_sha256=diff_sha256, note=note, approved_at=now)
+        return ApprovalRecord(proposal_id=proposal_id, diff_sha256=diff_sha256, note=note, approved_at=now,
+                              validation_fingerprint=validation_fingerprint)
 
     def get_approval(self, proposal_id: str) -> Optional[ApprovalRecord]:
         with self._conn() as c:
@@ -241,8 +287,31 @@ class RunStore:
         if not row:
             return None
         return ApprovalRecord(
-            proposal_id=row["proposal_id"], diff_sha256=row["diff_sha256"], note=row["note"], approved_at=row["approved_at"]
+            proposal_id=row["proposal_id"], diff_sha256=row["diff_sha256"], note=row["note"], approved_at=row["approved_at"],
+            validation_fingerprint=row["validation_fingerprint"],
         )
+
+    # -- retention (M11, F9) -------------------------------------------------
+    def prune_expired(self, run_cutoff: float, plan_cutoff: float) -> int:
+        """Delete runs created before run_cutoff whose plans were all created before plan_cutoff.
+
+        Deleting a run cascades to its manifests, proposal bindings and approvals (foreign keys).
+        Runs with any plan still inside the plan retention window are kept.
+        Returns the number of runs deleted.
+        """
+        with self._conn() as c:
+            rows = c.execute(
+                """SELECT id FROM dua_runs r
+                   WHERE r.created_at < ?
+                     AND NOT EXISTS (
+                       SELECT 1 FROM dua_proposals p WHERE p.run_id = r.id AND p.created_at >= ?
+                     )""",
+                (run_cutoff, plan_cutoff),
+            ).fetchall()
+            ids = [row["id"] for row in rows]
+            for run_id in ids:
+                c.execute("DELETE FROM dua_runs WHERE id=?", (run_id,))
+        return len(ids)
 
     @staticmethod
     def _manifest_from_row(row: sqlite3.Row) -> StoredManifest:

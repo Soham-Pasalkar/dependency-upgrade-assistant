@@ -19,6 +19,7 @@ from src.services.run_store import RunStore, get_run_store
 from pathlib import Path
 
 from src.api.config import settings
+from src.api.observability import internal_error
 
 logger = logging.getLogger("dua.api.validation")
 
@@ -66,6 +67,26 @@ async def execute_validation(
     except ApprovalError as err:
         raise HTTPException(status_code=err.status_code, detail=err.message)
 
+    # The approved, server-controlled policy decides limits; explicit client values must agree with it (F13).
+    policy = approved.policy
+    expected = {
+        "timeout_seconds": policy.timeout_seconds,
+        "memory_limit_mb": policy.memory_limit_mb,
+        "cpu_limit": policy.cpu_limit,
+        "pids_limit": policy.pids_limit,
+        "manifest_type": approved.stored.proposal.manifest_type,
+        "ecosystem": policy.ecosystem,
+    }
+    for field, value in expected.items():
+        if field in request.model_fields_set and getattr(request, field) is not None:
+            given = getattr(request, field)
+            same = float(given) == float(value) if field == "cpu_limit" else str(given) == str(value)
+            if not same:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{field} is set by the server for approved plans and cannot be changed by the client.",
+                )
+
     # Repository runs validate the real workspace with the approved change applied (FR-18).
     source_workspace = None
     workspace_dir = await run_in_threadpool(store.workspace_dir, approved.binding.run_id)
@@ -85,7 +106,7 @@ async def execute_validation(
             )
 
     try:
-        report = await run_in_threadpool(service.execute_validation, request, source_workspace)
+        report = await run_in_threadpool(service.execute_validation, request, source_workspace, policy)
         return report
     except ValueError as err:
         err_msg = str(err)
@@ -100,10 +121,7 @@ async def execute_validation(
         )
     except Exception as err:
         logger.exception(f"Unexpected error executing sandboxed validation: {err}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Validation execution failed: {str(err)}",
-        )
+        raise internal_error(logger, "Validation", err) from err
 
 
 @router.get(

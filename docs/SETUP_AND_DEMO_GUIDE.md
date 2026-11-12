@@ -90,9 +90,16 @@ DOCKER_TIMEOUT_SECONDS=60
 DOCKER_MAX_MEMORY_MB=512
 DOCKER_MAX_CPUS=1.0
 
-# CORS Allowed Origins
-CORS_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173"]
+# Browser origins allowed to make state-changing requests (never "*").
+# In development, loopback frontends (localhost, 127.0.0.1, [::1]) on DEV_FRONTEND_PORTS are
+# allowed automatically, so Vite works on 5173 or its fallback 5174 without extra settings.
+DEV_FRONTEND_PORTS=[5173,5174,4173,3000]
+# Required when ENVIRONMENT=production:
+# CORS_ORIGINS=["https://dua.example.internal"]
 ```
+
+If the UI reports "Request blocked: origin not allowed (…)", the page's origin is not in the allow-list.
+Add the port to `DEV_FRONTEND_PORTS` (development) or the origin to `CORS_ORIGINS`, then restart the backend.
 
 ---
 

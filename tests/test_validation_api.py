@@ -129,7 +129,6 @@ def test_validation_execute_with_proposal_success():
         with patch.object(service.runner, "run_command", return_value=mock_exec_res):
             payload = {
                 "proposal_id": proposal.proposal_id,
-                "timeout_seconds": 30,
             }
             response = client.post("/api/validation/execute", json=payload)
             assert response.status_code == 200
@@ -160,15 +159,20 @@ def test_validation_execute_unknown_proposal_returns_404():
 
 
 def test_validation_execute_unauthorized_image_returns_400():
-    """CRITICAL SECURITY TEST: Requesting arbitrary/unapproved container image returns 400 Bad Request."""
-    payload = {
-        "proposal_id": _approved_proposal_id(),
-        "manifest_type": "requirements.txt",
-        "image_override": "attacker/pwn-box:latest",
-    }
-    response = client.post("/api/validation/execute", json=payload)
-    assert response.status_code == 400
-    assert "unauthorized container image" in response.json()["detail"].lower()
+    """CRITICAL SECURITY TEST: a client-chosen container image is refused.
+
+    Since M11 (F13) the server selects the pinned image for an approved plan; any image_override,
+    allowlisted or not, is rejected before validation starts.
+    """
+    for image in ("attacker/pwn-box:latest", "python:3.12-slim"):
+        payload = {
+            "proposal_id": _approved_proposal_id(),
+            "manifest_type": "requirements.txt",
+            "image_override": image,
+        }
+        response = client.post("/api/validation/execute", json=payload)
+        assert response.status_code == 422
+        assert "image_override is not accepted" in response.text
 
 
 def test_validation_execute_strictly_rejects_network_enabled_override():

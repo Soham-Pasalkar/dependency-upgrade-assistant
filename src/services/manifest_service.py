@@ -24,6 +24,7 @@ from src.models.manifest import (
     Ecosystem,
     ManifestAnalysisResponse,
     ParsedDependency,
+    RegistryDataSource,
     RegistryLookupStatus,
 )
 from src.services.registry_client import (
@@ -92,6 +93,8 @@ class ManifestService:
 
                 meta = self._query_registry(dep)
                 analyzed = self._classify_dependency(dep, meta)
+                if meta.status == RegistryLookupStatus.OFFLINE_CATALOG:
+                    analyzed = analyzed.model_copy(update={"diagnostic_message": meta.error_message})
                 return idx, analyzed
             except Exception as err:
                 logger.error(f"Error evaluating dependency '{dep.name}': {err}", exc_info=True)
@@ -107,6 +110,7 @@ class ManifestService:
                     status=DependencyStatus.PRESERVED,
                     status_reason=f"Evaluation error: {err}",
                     registry_status=RegistryLookupStatus.NETWORK_ERROR,
+                    data_source=RegistryDataSource.UNAVAILABLE,
                     line_number=dep.line_number,
                     raw_line=dep.raw_line,
                     diagnostic_message=str(err),
@@ -148,6 +152,7 @@ class ManifestService:
             latest_version=None,
             available_versions=[],
             status=RegistryLookupStatus.SKIPPED,
+            source="UNKNOWN",
         )
 
     def _classify_dependency(
@@ -155,8 +160,8 @@ class ManifestService:
         dep: ParsedDependency,
         meta: RegistryPackageMetadata,
     ) -> AnalyzedDependency:
-        # Check if registry lookup failed
-        if meta.status != RegistryLookupStatus.SUCCESS:
+        # Check if registry lookup failed. Offline catalog data stays usable but is explicitly labelled (F10).
+        if meta.status not in (RegistryLookupStatus.SUCCESS, RegistryLookupStatus.OFFLINE_CATALOG):
             return AnalyzedDependency(
                 name=dep.name,
                 original_name=dep.original_name,
@@ -169,6 +174,7 @@ class ManifestService:
                 status=DependencyStatus.PRESERVED,
                 status_reason=f"Registry lookup {meta.status.value}: {meta.error_message or 'Package not found'}",
                 registry_status=meta.status,
+                data_source=RegistryDataSource(meta.source),
                 line_number=dep.line_number,
                 raw_line=dep.raw_line,
                 diagnostic_message=meta.error_message,
@@ -219,6 +225,7 @@ class ManifestService:
                 status=status,
                 status_reason=reason,
                 registry_status=meta.status,
+                data_source=RegistryDataSource(meta.source),
                 available_versions=sample_versions,
                 yanked_or_deprecated=meta.is_deprecated_or_yanked,
                 deprecation_reason=meta.deprecation_message,
@@ -254,6 +261,7 @@ class ManifestService:
             status=DependencyStatus.PRESERVED,
             status_reason=f"Non-pinned constraint '{dep.declared_specifier}' preserved.",
             registry_status=meta.status,
+            data_source=RegistryDataSource(meta.source),
             available_versions=sample_versions,
             yanked_or_deprecated=meta.is_deprecated_or_yanked,
             deprecation_reason=meta.deprecation_message,
@@ -301,6 +309,7 @@ class ManifestService:
                 status=status,
                 status_reason=reason,
                 registry_status=meta.status,
+                data_source=RegistryDataSource(meta.source),
                 available_versions=sample_versions,
                 yanked_or_deprecated=meta.is_deprecated_or_yanked,
                 deprecation_reason=meta.deprecation_message,
@@ -336,6 +345,7 @@ class ManifestService:
             status=status,
             status_reason=reason,
             registry_status=meta.status,
+            data_source=RegistryDataSource(meta.source),
             available_versions=sample_versions,
             yanked_or_deprecated=meta.is_deprecated_or_yanked,
             deprecation_reason=meta.deprecation_message,

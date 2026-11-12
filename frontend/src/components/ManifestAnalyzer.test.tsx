@@ -378,7 +378,7 @@ describe('ManifestAnalyzer Component', () => {
     const offline = {
       ...ANALYSIS,
       dependencies: [
-        { ...dep('requests', 'UPGRADE_AVAILABLE', '2.28.0', '2.32.3'), deprecation_reason: 'Serving from local catalog cache (Network error)' },
+        { ...dep('requests', 'UPGRADE_AVAILABLE', '2.28.0', '2.32.3'), registry_status: 'OFFLINE_CATALOG' as const, data_source: 'OFFLINE_CATALOG' as const },
         { ...dep('ghost-pkg', 'PRESERVED', '1.0.0', '1.0.0'), registry_status: 'NOT_FOUND' as const },
       ],
     };
@@ -390,5 +390,18 @@ describe('ManifestAnalyzer Component', () => {
     expect(screen.getByTestId('offline-catalog-notice')).toBeInTheDocument();
     expect(screen.getByText('offline data')).toBeInTheDocument();
     expect(screen.getByText('not in registry')).toBeInTheDocument();
+  });
+
+  it('labels recommendations built on offline data as unverified', async () => {
+    vi.mocked(apiClient.generateRunRecommendations).mockResolvedValueOnce({
+      ...RECS,
+      recommendations: [rec({ validation_status: 'UNVERIFIED_OFFLINE', data_source: 'OFFLINE_CATALOG', is_ai_generated: false })],
+    });
+    render(<ManifestAnalyzer />);
+    await analyzeManually();
+    fireEvent.click(screen.getByTestId('btn-generate-recommendations'));
+    await waitFor(() => expect(screen.getByTestId('recommendations-results')).toBeInTheDocument());
+    expect(screen.getByText('Offline data, unverified')).toBeInTheDocument();
+    expect(screen.queryByText('Registry-checked')).not.toBeInTheDocument();
   });
 });

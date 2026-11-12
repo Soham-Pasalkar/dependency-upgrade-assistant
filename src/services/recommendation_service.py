@@ -22,6 +22,34 @@ from src.services.ai.validator import RegistryGroundTruthValidator
 logger = logging.getLogger("dua.services.recommendation")
 
 
+TRUSTED_FOR_OFFLINE_DOWNGRADE = {ValidationStatus.VALIDATED, ValidationStatus.FALLBACK_DETERMINISTIC}
+
+
+def mark_data_sources(recs, dependencies):
+    """Carry each dependency's data origin onto its recommendation (M11, F10).
+
+    A candidate derived from offline catalog data is never reported as registry-validated: it becomes
+    UNVERIFIED_OFFLINE, which the planner does not write into a patch.
+    """
+    by_name = {}
+    for dep in dependencies:
+        by_name.setdefault(dep.name.lower(), dep)
+        by_name.setdefault(dep.original_name.lower(), dep)
+    out = []
+    for rec in recs:
+        dep = by_name.get(rec.package_name.lower())
+        source = getattr(getattr(dep, "data_source", None), "value", "UNKNOWN") if dep else "UNKNOWN"
+        update = {"data_source": source}
+        if source == "OFFLINE_CATALOG" and rec.validation_status in TRUSTED_FOR_OFFLINE_DOWNGRADE:
+            update["validation_status"] = ValidationStatus.UNVERIFIED_OFFLINE
+            update["explanation"] = (
+                f"{rec.explanation} Versions come from the bundled offline catalog because the registry was "
+                "unreachable; this is not registry-verified and will not be included in a plan."
+            ).strip()
+        out.append(rec.model_copy(update=update))
+    return out
+
+
 class RecommendationService:
     """Coordinates upgrade recommendation generation, dynamic model discovery,
     registry ground-truth validation, and deterministic fallbacks.
@@ -142,6 +170,7 @@ class RecommendationService:
 
         # Validate candidate versions against registry ground truth
         validated_recs = self.validator.validate_batch(raw_recs, dependencies)
+        validated_recs = mark_data_sources(validated_recs, dependencies)
 
         # Calculate metrics
         total_upgrades = sum(

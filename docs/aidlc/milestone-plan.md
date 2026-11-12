@@ -133,3 +133,17 @@ Each milestone keeps the full backend and frontend suites green. Every new threa
 - **M9 depends on the current API, which M10 changes** (IDs and approval). The frontend API layer is kept in `api/client.ts` so the switch is localised.
 - **No local Docker.** Live sandbox evidence depends on GitHub Actions and needs the owner's consent to push.
 - **Network dependence.** The demo needs GitHub and the registries; failures surface as typed errors.
+
+## Revision 3 milestones — post-M10 stabilization (2026-11-12)
+Owner direction: two separate milestones. M11 establishes a verified backend checkpoint. The Dependency Compatibility & Resolution Engine follows as M12. M12 will be registered separately with its own requirements and architecture amendments; it is not part of this plan revision. The uncommitted post-M10 fixes F1–F7 (note N8) are carried into M11's verification scope.
+
+| ID | Title | Depends on | Acceptance criteria | Test approach | Risk |
+|----|-------|------------|---------------------|---------------|------|
+| M11 | Backend security and reliability stabilization | M10 | (1) F13: the server alone determines the validation image and test command from trusted configuration; clients cannot supply either; the validation configuration is bound into the approval fingerprint and re-verified at approval, validation and export; a no-op or substituted command can never yield PASSED; missing, skipped, failed and passed tests are distinguishable. (2) F10: explicit registry data source and status (live registry, offline catalog, unavailable, unknown) in the analysis and recommendation APIs and the UI; offline data is never labelled registry-verified and never counts as compatibility evidence; API documentation updated. (3) F8: bounded, idempotent export retention that survives restarts, removes orphans and keeps unexpired or referenced artifacts. (4) F9: bounded SQLite retention for expired runs, manifests, plans and approvals via cascading deletes, never touching unexpired work. (5) F11 and F12 limitations documented with the M12 direction. (6) F1–F7 re-verified. (7) Full backend and frontend suites, lint and build pass; Docker integration tests run in CI on the M11 commit. | Regression tests: the former false-PASSED scenario; approval invalidation on validation-configuration change; offline-status API and UI tests; retention boundary, restart and relationship tests. Full suites locally. CI Docker job on the exact commit once the owner authorizes a push. | Medium: F10 and F13 change public API fields; mitigated by explicit documentation and contract tests. |
+
+### Test strategy (Revision 3)
+Every fix has a regression test that fails before the fix. Docker-dependent evidence comes from CI on the exact commit. Skipped and not-run checks are reported as such.
+
+### Risks (Revision 3)
+- **API changes:** F13 removes client-supplied `custom_test_cmd` and `image_override`; F10 adds an explicit data-source field. These are documented, and the frontend is updated where it consumes them.
+- **No local Docker:** Docker evidence depends on CI and needs the owner's push authorization.

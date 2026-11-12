@@ -34,6 +34,17 @@ class RegistryLookupStatus(str, Enum):
     SKIPPED = "SKIPPED"
     TOO_LARGE = "TOO_LARGE"
     TIMEOUT = "TIMEOUT"
+    # The live registry could not be reached; versions come from the bundled offline catalog.
+    OFFLINE_CATALOG = "OFFLINE_CATALOG"
+
+
+class RegistryDataSource(str, Enum):
+    """Where a dependency's version data actually came from (M11, F10)."""
+    LIVE_REGISTRY = "LIVE_REGISTRY"        # answered by PyPI or npm during this request
+    CACHED_REGISTRY = "CACHED_REGISTRY"    # a live registry answer reused from the short-lived in-process cache
+    OFFLINE_CATALOG = "OFFLINE_CATALOG"    # bundled catalog; not verified against the registry
+    UNAVAILABLE = "UNAVAILABLE"            # no data: the registry failed and nothing else was used
+    UNKNOWN = "UNKNOWN"                    # not looked up (e.g. directives, unparseable entries)
 
 
 class ParsedDependency(BaseModel):
@@ -65,6 +76,10 @@ class AnalyzedDependency(BaseModel):
     status: DependencyStatus = Field(..., description="UP_TO_DATE, UPGRADE_AVAILABLE, or PRESERVED")
     status_reason: str = Field(default="", description="Human-readable justification for the classification")
     registry_status: RegistryLookupStatus = Field(default=RegistryLookupStatus.SKIPPED)
+    data_source: RegistryDataSource = Field(
+        default=RegistryDataSource.UNKNOWN,
+        description="Origin of the version data: live registry, cached registry answer, offline catalog, unavailable or unknown",
+    )
     available_versions: List[str] = Field(default_factory=list, description="Sample of recent available versions")
     yanked_or_deprecated: bool = Field(default=False, description="Whether package/version is yanked on PyPI or deprecated on npm")
     deprecation_reason: Optional[str] = Field(default=None, description="Deprecation message from registry")

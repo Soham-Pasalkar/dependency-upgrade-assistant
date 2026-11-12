@@ -7,11 +7,14 @@
 """
 from __future__ import annotations
 
+import logging
 from typing import Iterable, Optional, Set
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+logger = logging.getLogger("dua.api.security")
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 CLIENT_HEADER = "x-dua-client"
@@ -40,7 +43,7 @@ class RequestProtectionMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, allowed_hosts: Iterable[str], allowed_origins: Iterable[str]) -> None:
         super().__init__(app)
         self.allowed_hosts: Set[str] = {h.strip().lower().strip("[]") for h in allowed_hosts if h.strip()}
-        self.allowed_origins: Set[str] = {o.strip().rstrip("/") for o in allowed_origins if o.strip()}
+        self.allowed_origins: Set[str] = {o.strip().rstrip("/").lower() for o in allowed_origins if o.strip()}
 
     async def dispatch(self, request: Request, call_next):
         host = hostname_of(request.headers.get("host", ""))
@@ -50,9 +53,19 @@ class RequestProtectionMiddleware(BaseHTTPMiddleware):
         if request.method.upper() in SAFE_METHODS:
             return await call_next(request)
 
-        origin = (request.headers.get("origin") or "").strip().rstrip("/")
+        origin = (request.headers.get("origin") or "").strip().rstrip("/").lower()
         if not origin or origin == "null" or origin not in self.allowed_origins:
-            return JSONResponse(status_code=403, content={"detail": "Request blocked: origin not allowed."})
+            shown = (origin or "none")[:120]
+            logger.warning("Blocked %s %s from origin %r", request.method, request.url.path, shown)
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": (
+                        f"Request blocked: origin not allowed ({shown}). "
+                        "Add it to CORS_ORIGINS, or to DEV_FRONTEND_PORTS for a local development port."
+                    )
+                },
+            )
 
         if request.headers.get(CLIENT_HEADER, "").strip().lower() != CLIENT_HEADER_VALUE:
             return JSONResponse(status_code=403, content={"detail": "Request blocked: missing client header."})

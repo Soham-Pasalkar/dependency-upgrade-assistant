@@ -70,3 +70,11 @@ Additive. T-1's mitigation was documented but not implemented in v2.0 (note N4);
 | T-20 | Registry → host | Malicious package artifacts during offline staging | Tampering, Elevation of privilege | Download only from allow-listed registry hosts; verify SHA-256 / npm integrity; never build or execute on host; install only in the sandbox with `--ignore-scripts`/no index; 300 MB cap | Medium; malicious code inside a legitimately published package can still run inside the isolated sandbox |
 | T-21 | Repository → UI | Repository-derived strings (paths, package names, diffs) causing XSS | Tampering | React escaping only; no `dangerouslySetInnerHTML`; downloads served with `Content-Disposition: attachment` | Low |
 | T-22 | GitHub API | Rate-limit exhaustion blocks analysis | Denial of service | Short-lived metadata cache; clear rate-limited error with reset time | Low |
+
+## Revision 3 threats — M11 (2026-11-12)
+| ID | Boundary | Threat | Category | Mitigation | Residual risk |
+|----|----------|--------|----------|------------|---------------|
+| T-23 | TB-1 (Browser to API) | After approval, a client substitutes the validation command or image, for example a no-op, to manufacture a PASSED result that export then records | Tampering, Repudiation | Validation policy derived only on the server; `custom_test_cmd` and `image_override` rejected; policy fingerprint bound into approval and re-checked at validation, apply and export; a run whose fingerprint differs is refused at export | Low |
+| T-24 | Registry to analysis | Bundled offline catalog versions presented as live registry facts, leading to stale or incorrect upgrades | Spoofing (data provenance) | Explicit `OFFLINE_CATALOG` status and `data_source`; `UNVERIFIED_OFFLINE` recommendations never planned; UI labels | Low |
+| T-25 | Host resources | Unbounded growth of exports and persisted runs exhausts disk | Denial of service | Deterministic retention (F8 and F9) that keeps unexpired and referenced work | Low |
+| T-26 | Host to github.com | DNS answer changes between the public-address check and git's own resolution (TOCTOU) | Spoofing | Fixed host, https with certificate validation, redirects disabled; documented residual (F12) | Low |

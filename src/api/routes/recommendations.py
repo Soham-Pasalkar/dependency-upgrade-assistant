@@ -13,6 +13,7 @@ from src.models.recommendation import (
     RecommendationBatchResponse,
 )
 from src.services.recommendation_service import RecommendationService
+from src.api.observability import internal_error
 
 logger = logging.getLogger("dua.api.recommendations")
 
@@ -67,7 +68,4 @@ async def generate_recommendations(
         return response
     except Exception as e:
         logger.exception(f"Error generating recommendations: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate recommendations: {str(e)}",
-        )
+        raise internal_error(logger, "Recommendation generation", e) from e

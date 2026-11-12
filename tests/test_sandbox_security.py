@@ -1056,3 +1056,15 @@ def test_parse_user_spec_rejects_malformed_and_negative():
     for bad_spec in ["abc", "1000:abc", "-1", "-1000:1000", "1:2:3", "1000:-1", "not_a_number"]:
         with pytest.raises(ValueError):
             parse_user_spec(bad_spec)
+
+
+def test_missing_pinned_digest_fails_closed(monkeypatch, tmp_path):
+    """Audit F7: a required digest that cannot be resolved must not fall back to a mutable tag."""
+    import pytest as _pytest
+    from src.sandbox import container_config as cc
+    from src.sandbox import image_catalog
+
+    monkeypatch.setitem(image_catalog.PINNED_IMAGE_DIGESTS, "python:3.11-slim", None)
+    cfg = cc.SandboxSecurityConfig(image="python:3.11-slim")
+    with _pytest.raises(ValueError, match="No pinned digest"):
+        cc.ContainerConfigBuilder.build_run_args(config=cfg, working_dir=tmp_path, command_args=["true"])

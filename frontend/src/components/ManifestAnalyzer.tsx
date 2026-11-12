@@ -82,8 +82,9 @@ const REGISTRY_PROBLEM: Partial<Record<string, string>> = {
   TIMEOUT: 'registry timed out',
 };
 
-/** True when versions came from the bundled offline catalog instead of a live registry lookup. */
-const usedOfflineCatalog = (reason?: string | null) => !!reason && reason.startsWith('Serving from local catalog');
+/** True when versions came from the bundled offline catalog instead of a registry answer. */
+const usedOfflineCatalog = (dep: { data_source?: string; registry_status?: string }) =>
+  dep.data_source === 'OFFLINE_CATALOG' || dep.registry_status === 'OFFLINE_CATALOG';
 
 const formatBytes = (bytes: number) =>
   bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1048576).toFixed(1)} MB`;
@@ -99,6 +100,12 @@ const provenanceOf = (rec: PackageUpgradeRecommendation): { label: string; tone:
       return { label: 'Rule-based', tone: 'registry', hint: 'Derived from registry data with semantic-versioning rules. No model involved.' };
     case 'REJECTED_HALLUCINATION':
       return { label: 'Model version rejected', tone: 'bad', hint: 'The model proposed a version that does not exist in the registry. It was discarded.' };
+    case 'UNVERIFIED_OFFLINE':
+      return {
+        label: 'Offline data, unverified',
+        tone: 'advisory',
+        hint: 'The registry was unreachable. This version comes from bundled offline data, is not verified and will not be included in a plan.',
+      };
     case 'REJECTED_INCOMPATIBLE':
       return { label: 'Incompatible, rejected', tone: 'bad', hint: 'The proposed version does not satisfy the declared constraints.' };
     default:
@@ -834,12 +841,13 @@ export const ManifestAnalyzer: React.FC = () => {
                 </div>
               </dl>
 
-              {analysisResult.dependencies.some((d) => usedOfflineCatalog(d.deprecation_reason)) && (
+              {analysisResult.dependencies.some((d) => usedOfflineCatalog(d)) && (
                 <div className="notice" data-testid="offline-catalog-notice">
                   <p className="notice-title">Some versions are from offline data</p>
                   <p>
                     The registry could not be reached for packages marked “offline data”. Their versions come from a
-                    bundled catalog and may be out of date. Analyze again when the registry is reachable.
+                    bundled catalog, may be out of date, and are not used to build a plan. Analyze again when the
+                    registry is reachable.
                   </p>
                 </div>
               )}
@@ -907,7 +915,7 @@ export const ManifestAnalyzer: React.FC = () => {
                               <td>
                                 <span className="pkg mono">{dep.original_name}</span>
                                 {dep.dependency_type === 'development' && <span className="tag">dev</span>}
-                                {usedOfflineCatalog(dep.deprecation_reason) && (
+                                {usedOfflineCatalog(dep) && (
                                   <span
                                     className="tag tag-warn"
                                     title="The registry could not be reached; versions come from a bundled catalog and may be out of date."

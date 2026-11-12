@@ -26,8 +26,10 @@ from src.services.sandbox_service import (
     get_sandbox_service,
 )
 from src.services.secret_scanner import SecretLeakageError
-from src.services.approval_service import ApprovalError, require_approved_proposal
+from src.services.approval_service import ApprovalError, ensure_registered, require_approved_proposal
+from src.services.retention import maybe_run_retention
 from src.services.run_store import RunStore, get_run_store
+from src.api.observability import internal_error
 
 logger = logging.getLogger("dua.api.export")
 
@@ -58,8 +60,8 @@ async def create_export(
             detail="A valid 'proposal_id' is required to generate deliverables.",
         )
 
-    # 1. Retrieve server-authoritative proposal
-    stored_proposal = registry.get(request.proposal_id)
+    # 1. Retrieve server-authoritative proposal (restored from SQLite after a restart if needed)
+    stored_proposal = await run_in_threadpool(ensure_registered, request.proposal_id, store, registry)
     if not stored_proposal:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -88,6 +90,13 @@ async def create_export(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="This validation run belongs to a different plan.",
             )
+        if validation_report.validation_fingerprint != approved.approval.validation_fingerprint:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This validation run did not use the approved validation settings.",
+            )
+
+    await run_in_threadpool(maybe_run_retention)
 
     # 3. Export deliverables in worker thread pool
     try:
@@ -113,10 +122,7 @@ async def create_export(
         )
     except Exception as err:
         logger.exception(f"Unexpected error constructing export deliverables: {err}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate export deliverables: {str(err)}",
-        )
+        raise internal_error(logger, "Export", err) from err
 
 
 @router.get(

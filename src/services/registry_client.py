@@ -14,7 +14,7 @@ import logging
 import threading
 import time
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import requests
@@ -46,6 +46,8 @@ class RegistryPackageMetadata:
     is_deprecated_or_yanked: bool = False
     deprecation_message: Optional[str] = None
     error_message: Optional[str] = None
+    # LIVE_REGISTRY, CACHED_REGISTRY, OFFLINE_CATALOG or UNAVAILABLE (see RegistryDataSource)
+    source: str = "LIVE_REGISTRY"
 
 
 @dataclass
@@ -200,6 +202,13 @@ def _safe_fetch_json(
     return 400, None, "Too many redirects"
 
 
+def _from_cache(meta: RegistryPackageMetadata) -> RegistryPackageMetadata:
+    """A cache hit keeps its origin explicit: live answers become CACHED_REGISTRY."""
+    if meta.source == "LIVE_REGISTRY":
+        return replace(meta, source="CACHED_REGISTRY")
+    return meta
+
+
 def _fetch_json_with_retry(
     session: requests.Session,
     url: str,
@@ -305,7 +314,7 @@ class PyPIRegistryClient:
             if norm_name in self._cache:
                 entry = self._cache[norm_name]
                 if now - entry.timestamp < self.cache_ttl:
-                    return entry.data
+                    return _from_cache(entry.data)
 
         safe_name = urllib.parse.quote(norm_name)
         url = f"{self.OFFICIAL_BASE_URL}/{safe_name}/json"
@@ -354,6 +363,7 @@ class PyPIRegistryClient:
                         latest_version=None,
                         available_versions=[],
                         status=RegistryLookupStatus.TOO_LARGE,
+                        source="UNAVAILABLE",
                         error_message=err_msg or s_err or "PyPI metadata is too large to process",
                     )
 
@@ -424,12 +434,15 @@ class PyPIRegistryClient:
         """Fallback to local catalog if offline or PyPI is unreachable."""
         entry = self._local_catalog.get_package(package_name)
         if entry:
+            # Explicitly offline: never reported as a live registry answer (F10).
             return RegistryPackageMetadata(
                 package_name=package_name,
                 latest_version=entry.candidate_version,
                 available_versions=entry.known_versions,
-                status=RegistryLookupStatus.SUCCESS,
-                deprecation_message=f"Serving from local catalog cache ({error_msg})",
+                status=RegistryLookupStatus.OFFLINE_CATALOG,
+                deprecation_message=None,
+                error_message=f"PyPI unavailable ({failure_status.value}); using the bundled offline catalog: {error_msg}",
+                source="OFFLINE_CATALOG",
             )
         return RegistryPackageMetadata(
             package_name=package_name,
@@ -437,6 +450,7 @@ class PyPIRegistryClient:
             available_versions=[],
             status=failure_status,
             error_message=error_msg,
+            source="UNAVAILABLE",
         )
 
 
@@ -474,7 +488,7 @@ class NpmRegistryClient:
             if clean_name in self._cache:
                 entry = self._cache[clean_name]
                 if now - entry.timestamp < self.cache_ttl:
-                    return entry.data
+                    return _from_cache(entry.data)
 
         # Handle scoped packages (e.g. @types/node -> @types%2Fnode)
         if clean_name.startswith("@") and "/" in clean_name:
@@ -549,6 +563,7 @@ class NpmRegistryClient:
                     latest_version=None,
                     available_versions=[],
                     status=RegistryLookupStatus.TOO_LARGE,
+                    source="UNAVAILABLE",
                     error_message=err_msg or "npm metadata is too large to process",
                 )
             elif status_code == 504:
@@ -557,6 +572,7 @@ class NpmRegistryClient:
                     latest_version=None,
                     available_versions=[],
                     status=RegistryLookupStatus.TIMEOUT,
+                    source="UNAVAILABLE",
                     error_message=err_msg or "npm registry did not respond in time",
                 )
             elif status_code == 429:
@@ -565,6 +581,7 @@ class NpmRegistryClient:
                     latest_version=None,
                     available_versions=[],
                     status=RegistryLookupStatus.RATE_LIMITED,
+                    source="UNAVAILABLE",
                     error_message="npm registry rate limit exceeded (HTTP 429)",
                 )
             else:
@@ -573,6 +590,7 @@ class NpmRegistryClient:
                     latest_version=None,
                     available_versions=[],
                     status=RegistryLookupStatus.NETWORK_ERROR,
+                    source="UNAVAILABLE",
                     error_message=err_msg or f"npm registry returned HTTP {status_code}",
                 )
 
@@ -583,5 +601,6 @@ class NpmRegistryClient:
                 latest_version=None,
                 available_versions=[],
                 status=RegistryLookupStatus.NETWORK_ERROR,
+                source="UNAVAILABLE",
                 error_message=f"Network error querying npm registry: {err}",
             )

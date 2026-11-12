@@ -6,6 +6,7 @@ RunStore API, so the enforcement code path is still exercised end to end.
 """
 from __future__ import annotations
 
+from src.sandbox.validation_policy import policy_for_proposal
 from src.services.proposal_registry import get_proposal_registry
 from src.services.run_store import StoredManifest, get_run_store, sha256_text
 
@@ -22,5 +23,8 @@ def approve_registered_proposal(proposal_id: str, note: str = "approved in test"
         proposal_id=None,
     ))
     store.bind_proposal(proposal_id, run_id, 0, stored.proposal.unified_diff)
-    store.record_approval(proposal_id, sha256_text(stored.proposal.unified_diff), note)
+    # Same as POST /proposals/{id}/approve: the approval covers the server-derived validation policy.
+    store.record_approval(
+        proposal_id, sha256_text(stored.proposal.unified_diff), note, policy_for_proposal(stored.proposal).fingerprint
+    )
     return run_id

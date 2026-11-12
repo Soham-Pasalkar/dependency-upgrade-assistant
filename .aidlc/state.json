@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-12T04:43:41Z",
+  "updated": "2026-11-12T06:39:14Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -27,7 +27,7 @@
       "name": "Milestone plan",
       "status": "approved",
       "note": "approved at terminal",
-      "at": "2026-11-11T10:26:37Z"
+      "at": "2026-11-12T06:16:16Z"
     },
     "G5": {
       "name": "Release",
@@ -1058,7 +1058,7 @@
       "depends_on": [
         "M9"
       ],
-      "status": "awaiting_approval",
+      "status": "done",
       "criteria": [
         {
           "text": "POST /repositories/analyze performs FR-1R/FR-2R on a real public GitHub repo with NFR-9 limits enforced during acquisition and NFR-10/T-15..T-18 mitigations",
@@ -1145,9 +1145,99 @@
           "sha256": null
         }
       ],
-      "approval": null,
+      "approval": {
+        "at": "2026-11-12T05:15:14Z",
+        "note": "approved at terminal",
+        "actor": "human-tty"
+      },
       "rework": 0,
       "started": "2026-11-11T15:21:20Z",
+      "note": null
+    },
+    {
+      "id": "M11",
+      "title": "Backend security and reliability stabilization",
+      "depends_on": [
+        "M10"
+      ],
+      "status": "in_progress",
+      "criteria": [
+        {
+          "text": "F13: server-determined validation image and test command; no client-supplied command or image; validation configuration bound into the approval fingerprint and re-verified at approval, validation and export; no-op or substituted commands can never yield PASSED; missing, skipped, failed and passed tests distinguishable",
+          "verified": true,
+          "proof": "src/sandbox/validation_policy.py derives image (digest-pinned), discovery rules, limits and network from server config; SandboxExecutionRequest rejects custom_test_cmd and image_override; approval stores policy fingerprint (dua_approvals.validation_fingerprint) and require_approved_proposal re-verifies it for validation, apply and export; export checks the run's fingerprint; frontend sends only proposal_id. tests/test_validation_policy.py 21 passed; frontend 40 passed."
+        },
+        {
+          "text": "F10: explicit registry data source and status (live registry, offline catalog, unavailable, unknown) in analysis and recommendation APIs and the UI; offline data never labelled registry-verified nor treated as compatibility evidence; API docs updated",
+          "verified": true,
+          "proof": "OFFLINE_CATALOG status + data_source (LIVE_REGISTRY/CACHED_REGISTRY/OFFLINE_CATALOG/UNAVAILABLE/UNKNOWN) in analysis and recommendations; UNVERIFIED_OFFLINE never planned; UI labels from data_source; tests/test_registry_data_source.py + updated test_registry_clients.py (26 passed); frontend 41 passed; API changes documented in docs/aidlc/architecture.md Revision 3."
+        },
+        {
+          "text": "F8: bounded, idempotent export retention surviving restarts, removing orphans, preserving unexpired or referenced artifacts",
+          "verified": true,
+          "proof": "src/services/retention.py cleanup_exports (EXPORT_RETENTION_HOURS=24) at startup and rate-limited on run/export creation; tests/test_retention.py export cases incl. restart recovery then expiry."
+        },
+        {
+          "text": "F9: bounded SQLite retention for expired runs, manifests, plans and approvals via cascading deletes, never touching unexpired work",
+          "verified": true,
+          "proof": "RunStore.prune_expired (RUN_RETENTION_HOURS=168, keeps runs with plans inside PLAN_RETENTION_HOURS) via FK cascade; tests/test_retention.py cascade, boundary and idempotency cases."
+        },
+        {
+          "text": "F11 and F12 limitations documented with the M12 direction",
+          "verified": true,
+          "proof": "docs/aidlc/architecture.md Revision 3: F11 synchronous-processing impact and M12 job-style direction; F12 DNS TOCTOU residual and GitHub rate-limit behaviour; docs/aidlc/threat-model.md T-23..T-26."
+        },
+        {
+          "text": "F1-F7 (note N8) re-verified by tests",
+          "verified": true,
+          "proof": "F1-F7 regression suites re-run and passing (origin 29, request protection 20, staging 42, plan durability 7, observability 4, sandbox security 48); browser journey on 5174."
+        },
+        {
+          "text": "Full backend and frontend suites, lint and build pass; Docker integration tests run in CI on the M11 commit",
+          "verified": false,
+          "proof": null
+        }
+      ],
+      "evidence": [
+        {
+          "at": "2026-11-12T06:21:41Z",
+          "cmd": "python3 -m pytest -q -o addopts='' -p no:cacheprovider tests/test_validation_policy.py",
+          "result": "21 passed, 1 warning in 0.61s. Includes the Phase A false-PASSED scenario: custom_test_cmd ['python','-c','pass'] -> 422 and the runner is never invoked; image_override (incl. allowlisted images) -> 422; non-policy limits -> 422; settings change after approval -> 409 at validation and export; legacy approvals without fingerprint fail closed; export rejects runs with another fingerprint; NO_TESTS_FOUND / FAILED / NOT_RUNNABLE distinct.",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-12T06:25:49Z",
+          "cmd": "python3 -m pytest -q -o addopts='' -p no:cacheprovider tests/test_registry_data_source.py tests/test_registry_clients.py; cd frontend && npx vitest run",
+          "result": "26 passed, 1 warning in 11.43s; frontend 41 passed. Catalog fallback now status OFFLINE_CATALOG (was SUCCESS) with data_source OFFLINE_CATALOG; cache hits CACHED_REGISTRY; failures UNAVAILABLE; NOT_FOUND is LIVE_REGISTRY. Offline-based recommendations become UNVERIFIED_OFFLINE and are never planned; UI labels them 'Offline data, unverified'.",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-12T06:35:14Z",
+          "cmd": "python3 -m pytest -q -o addopts='' -p no:cacheprovider tests/test_retention.py",
+          "result": "7 passed, 1 warning in 0.08s. Export retention: expired+unreferenced removed, export of still-valid plan kept, fresh kept, stale staging (>1h) removed, fresh staging kept, unknown dirs and symlinks untouched, idempotent, age boundary exact, restart-recovered export expires. Run retention: cascade removes manifests/proposals/approvals of the expired run only; run with a still-valid plan kept; cutoff boundary strict; rate-limited trigger.",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-12T06:39:14Z",
+          "cmd": "python3 -m pytest -q -o addopts='' -p no:cacheprovider (full); cd frontend && npx vitest run && npx tsc -b && npx oxlint src && npm run build && npm audit; scan_secrets.py .",
+          "result": "Backend 759 passed, 9 skipped (all live-Docker: 6 test_sandbox_runner, 3 test_docker_staging_integration; Docker not installed). Frontend 41 passed; tsc clean; lint 0 errors 1 warning; build OK; npm audit 0 vulnerabilities; secrets PASS 0. F1-F7 suites: origin 29, request protection 20, staging 42, plan durability 7, observability 4, sandbox security 48 - all passed.",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-12T06:39:14Z",
+          "cmd": "node cdp.mjs m11.json (headless Chrome, Vite on 5174, local uvicorn on 8000)",
+          "result": "GitHub URL miguelgrinberg/microblog -> 54 packages -> recommendations -> plan -> server-recorded approval -> validation NOT_RUNNABLE (no Docker) -> export -> patch download HTTP 200; overflowX 0. Validation request now sends only proposal_id.",
+          "file": null,
+          "sha256": null
+        }
+      ],
+      "approval": null,
+      "rework": 0,
+      "started": "2026-11-12T06:16:31Z",
       "note": null
     }
   ],
@@ -1200,7 +1290,14 @@
       "text": "M10 post-submission audit (2026-11-12, before commit): added unit-test guard against live package downloads, live Docker staging integration tests (tests/test_docker_staging_integration.py) wired into CI with DUA_REQUIRE_DOCKER=1, frontend CI job, UI marking of offline-catalog and failed registry lookups, quiet git clone. M10 remains awaiting human G4 approval.",
       "status": "open",
       "at": "2026-11-12T04:43:41Z"
+    },
+    {
+      "id": "N8",
+      "kind": "risk",
+      "text": "Post-M10 hardening (2026-11-12, owner-directed, outside an approved milestone; uncommitted): fixed origin allow-list (Vite 5174 blocked); fixed host-side SSRF/dependency-confusion in staging (pip options and direct URLs in untrusted requirements; npm overrides/lockfile foreign hosts); plans persisted in SQLite with PLAN_RETENTION_HOURS and consumed-state replay protection; request IDs and non-leaking 500s; digest pinning fails closed. Recommend registering this as M11 via 'milestone add --replan' (requires G3 re-approval) before G5.",
+      "status": "open",
+      "at": "2026-11-12T05:40:30Z"
     }
   ],
-  "head": "65e9c462c1b5bc00a54fa86e59f510214e704dcc0f05d663387f70f54d89992c"
+  "head": "ba923e9b388a9ce7d66f75c763ef389765355bab2dc00fb52192bd8a85560d9f"
 }

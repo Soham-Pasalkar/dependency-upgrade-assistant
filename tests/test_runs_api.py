@@ -175,7 +175,7 @@ def test_repository_plan_validates_against_workspace(client, fake_repo):
     sandbox = get_sandbox_service()
     captured = {}
 
-    def fake_execute(request, source_workspace=None):
+    def fake_execute(request, source_workspace=None, policy=None):
         captured["ws"] = source_workspace
         return ValidationReportResponse(
             execution_id="val-ws", proposal_id=request.proposal_id, status=ValidationStatus.NOT_RUNNABLE,

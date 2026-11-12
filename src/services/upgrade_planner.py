@@ -295,6 +295,9 @@ class UpgradePlannerService:
                 elif matching_rec.validation_status == ValidationStatus.REJECTED_INCOMPATIBLE:
                     rationale = f"Rejected recommendation: candidate version is incompatible with manifest constraint ({matching_rec.explanation})"
                     details = "Target version was rejected by ground-truth registry validation as incompatible."
+                elif matching_rec.validation_status == ValidationStatus.UNVERIFIED_OFFLINE:
+                    rationale = "Not planned: the version data came from the bundled offline catalog, not the registry. Analyze again when the registry is reachable."
+                    details = "Offline catalog data is never used to write a patch (M11, F10)."
                 elif matching_rec.validation_status == ValidationStatus.SKIPPED:
                     rationale = f"Rejected recommendation: registry validation status was SKIPPED; candidate is unverified ({matching_rec.explanation})"
                     details = "Candidate has SKIPPED validation status and cannot be safely upgraded."
