@@ -14,6 +14,7 @@ from src.sandbox.runner import DockerAvailability, SandboxExecutionResult
 from src.sandbox.validation_policy import derive_validation_policy, policy_for_proposal
 from src.services.proposal_registry import get_proposal_registry
 from src.services.sandbox_service import get_sandbox_service
+from tests.resolution_doubles import resolve_compatible
 
 MANIFEST = "requests==2.28.0\n"
 UP = DockerAvailability(is_available=True, version="test")
@@ -30,6 +31,7 @@ def _approved_plan(client, approve=True):
     client.post(f"/api/runs/{run['run_id']}/manifests/0/recommendations", json={"force_deterministic": True})
     plan = client.post(f"/api/runs/{run['run_id']}/manifests/0/plan", json={}).json()
     if approve:
+        resolve_compatible(plan["proposal_id"])  # M12: approval requires verified COMPATIBLE evidence
         resp = client.post(f"/api/proposals/{plan['proposal_id']}/approve",
                            json={"diff_sha256": hashlib.sha256(plan["unified_diff"].encode()).hexdigest()})
         assert resp.status_code == 200

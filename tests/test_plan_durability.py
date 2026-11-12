@@ -11,6 +11,7 @@ from src.api.config import settings
 from src.api.main import app
 from src.services.proposal_registry import ProposalLifecycleState, get_proposal_registry
 from src.services.run_store import RunStore
+from tests.resolution_doubles import resolve_compatible
 
 MANIFEST = "requests==2.28.0\nurllib3==1.26.5\n"
 
@@ -26,6 +27,7 @@ def _approved_plan(client):
     client.post(f"/api/runs/{run['run_id']}/manifests/0/recommendations", json={"force_deterministic": True})
     plan = client.post(f"/api/runs/{run['run_id']}/manifests/0/plan", json={}).json()
     digest = hashlib.sha256(plan["unified_diff"].encode()).hexdigest()
+    resolve_compatible(plan["proposal_id"])  # M12: approval requires verified COMPATIBLE evidence
     assert client.post(f"/api/proposals/{plan['proposal_id']}/approve", json={"diff_sha256": digest}).status_code == 200
     return plan
 
@@ -49,6 +51,7 @@ def test_approval_can_be_recorded_after_restart(client):
     plan = client.post(f"/api/runs/{run['run_id']}/manifests/0/plan", json={}).json()
     _simulate_restart()
     digest = hashlib.sha256(plan["unified_diff"].encode()).hexdigest()
+    resolve_compatible(plan["proposal_id"])  # M12: approval requires verified COMPATIBLE evidence
     assert client.post(f"/api/proposals/{plan['proposal_id']}/approve", json={"diff_sha256": digest}).status_code == 200
 
 

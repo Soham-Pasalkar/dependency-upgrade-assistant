@@ -13,6 +13,7 @@ from src.api.main import app
 from src.models.sandbox import ValidationReportResponse, ValidationStatus
 from src.services import repository_service as rs
 from src.services.sandbox_service import get_sandbox_service
+from tests.resolution_doubles import resolve_compatible
 
 MANIFEST = "requests==2.28.0\nurllib3==1.26.5\n"
 
@@ -83,6 +84,7 @@ def test_approval_requires_matching_diff(client):
     pid = plan["proposal_id"]
     wrong = client.post(f"/api/proposals/{pid}/approve", json={"diff_sha256": "0" * 64})
     assert wrong.status_code == 409
+    resolve_compatible(pid)  # M12: approval requires verified COMPATIBLE evidence
     ok = client.post(f"/api/proposals/{pid}/approve", json={"diff_sha256": _sha(plan["unified_diff"]), "note": "lgtm"})
     assert ok.status_code == 200 and ok.json()["approved"] is True
     state = client.get(f"/api/proposals/{pid}/approval").json()
@@ -111,6 +113,7 @@ def test_export_rejects_validation_run_from_another_plan(client):
     _, plan_a = _manual_plan(client)
     _, plan_b = _manual_plan(client)
     for p in (plan_a, plan_b):
+        resolve_compatible(p["proposal_id"])  # M12: approval requires verified COMPATIBLE evidence
         client.post(f"/api/proposals/{p['proposal_id']}/approve", json={"diff_sha256": _sha(p["unified_diff"])})
     sandbox = get_sandbox_service()
     report = ValidationReportResponse(
@@ -170,6 +173,7 @@ def test_repository_plan_validates_against_workspace(client, fake_repo):
     plan = client.post(f"/api/runs/{run['run_id']}/manifests/{idx}/plan", json={}).json()
     assert plan["file_path"] == "api/requirements.txt"
     pid = plan["proposal_id"]
+    resolve_compatible(pid)  # M12: approval requires verified COMPATIBLE evidence
     client.post(f"/api/proposals/{pid}/approve", json={"diff_sha256": _sha(plan["unified_diff"])})
 
     sandbox = get_sandbox_service()

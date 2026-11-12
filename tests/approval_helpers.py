@@ -23,8 +23,12 @@ def approve_registered_proposal(proposal_id: str, note: str = "approved in test"
         proposal_id=None,
     ))
     store.bind_proposal(proposal_id, run_id, 0, stored.proposal.unified_diff)
-    # Same as POST /proposals/{id}/approve: the approval covers the server-derived validation policy.
+    # Same as POST /proposals/{id}/approve: the approval covers the server-derived validation policy and
+    # the supervisor-verified COMPATIBLE resolution (M12, produced through the real job pipeline).
+    from tests.resolution_doubles import resolve_compatible
+    evidence = resolve_compatible(proposal_id)
     store.record_approval(
-        proposal_id, sha256_text(stored.proposal.unified_diff), note, policy_for_proposal(stored.proposal).fingerprint
+        proposal_id, sha256_text(stored.proposal.unified_diff), note, policy_for_proposal(stored.proposal).fingerprint,
+        evidence.fingerprint,
     )
     return run_id

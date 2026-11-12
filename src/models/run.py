@@ -80,3 +80,7 @@ class ApprovalResponse(BaseModel):
     validation_policy: Optional[dict] = Field(
         default=None, description="Validation policy (image, limits, discovery rules) the approval covers"
     )
+    resolution_fingerprint: Optional[str] = Field(
+        default=None, description="Supervisor fingerprint of the verified COMPATIBLE proposed resolution approved"
+    )
+    resolution_status: Optional[str] = Field(default=None, description="Resolution status covered by this approval")

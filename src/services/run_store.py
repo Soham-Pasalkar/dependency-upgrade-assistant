@@ -398,6 +398,14 @@ class RunStore:
             ).fetchone()
         return self._job_from_row(row) if row else None
 
+    def latest_job(self, kind: str, subject_id: str) -> Optional[JobRecord]:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM dua_jobs WHERE kind=? AND subject_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (kind, subject_id),
+            ).fetchone()
+        return self._job_from_row(row) if row else None
+
     def transition_job(self, job_id: str, expected, new_status: JobStatus, **fields) -> bool:
         """Compare-and-set: move the job to new_status only if it is still in one of the expected states."""
         expected = tuple(JobStatus(s).value for s in (expected if isinstance(expected, (tuple, list)) else (expected,)))

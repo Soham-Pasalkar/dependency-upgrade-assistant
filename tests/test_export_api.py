@@ -143,9 +143,10 @@ def test_post_export_creates_bundle(client: TestClient, sample_registered_propos
     assert data["validation_status"] == "PASSED"
 
     items = data["items"]
-    assert len(items) == 5
+    assert len(items) == 6  # M12 FR-32d adds compatibility-report.md
+    assert "report_md" in {a["artifact_type"] for a in items}
     types = {item["artifact_type"] for item in items}
-    assert types == {"patch", "summary_json", "execution_log", "checksums", "bundle_zip"}
+    assert types == {"patch", "summary_json", "execution_log", "checksums", "bundle_zip", "report_md"}
 
     # Verify SHA-256 digests exist for all items
     for item in items:

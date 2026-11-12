@@ -13,6 +13,7 @@ class ArtifactType(str, Enum):
     EXECUTION_LOG = "execution_log"
     CHECKSUMS = "checksums"
     BUNDLE_ZIP = "bundle_zip"
+    REPORT_MD = "report_md"
 
 
 class ExportItemMetadata(BaseModel):

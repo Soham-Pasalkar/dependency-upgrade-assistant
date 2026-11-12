@@ -33,6 +33,18 @@ from src.api.observability import internal_error
 
 logger = logging.getLogger("dua.api.export")
 
+def _resolution_payload(approved, store: RunStore):
+    """FR-32d: the verified proposed evidence the approval covers, plus the original baseline of the same job."""
+    from src.resolution.models import ResolutionRole
+    from src.services.exporter import resolution_export_payload
+
+    proposed = approved.resolution
+    original = store.latest_resolution(proposed.proposal_id, ResolutionRole.ORIGINAL)
+    if original is not None and original.job_id != proposed.job_id:
+        original = None
+    return resolution_export_payload(proposed.report, original.report if original else None)
+
+
 router = APIRouter(tags=["Artifact Export & Deliverables"])
 
 
@@ -106,6 +118,7 @@ async def create_export(
             validation_report=validation_report,
             run_id=approved.binding.run_id,
             custom_notes=request.custom_notes,
+            resolution=_resolution_payload(approved, store),
         )
         return bundle.to_response()
     except SecretLeakageError as err:

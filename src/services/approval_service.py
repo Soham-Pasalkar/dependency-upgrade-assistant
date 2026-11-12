@@ -9,7 +9,8 @@ import time
 from src.api.config import settings
 from src.services.proposal_registry import ProposalLifecycleState, ProposalRegistry, StoredProposal
 from src.sandbox.validation_policy import ValidationPolicy, ValidationPolicyError, policy_for_proposal
-from src.services.run_store import ApprovalRecord, ProposalBinding, RunStore, sha256_text
+from src.resolution.models import ResolutionStatus
+from src.services.run_store import ApprovalRecord, ProposalBinding, RunStore, StoredResolution, sha256_text
 
 
 class ApprovalError(Exception):
@@ -26,6 +27,39 @@ class ApprovedProposal:
     binding: ProposalBinding
     approval: ApprovalRecord
     policy: ValidationPolicy
+    resolution: Optional[StoredResolution] = None
+
+
+_NOT_VERIFIED = {
+    "CONFLICT": "pip found conflicting requirements in the proposed dependency set.",
+    "UNSUPPORTED": "this plan contains requirements that M12 cannot resolve (see the compatibility details).",
+    "RESOLUTION_FAILED": "the compatibility check did not produce verifiable evidence.",
+    "RESOLVER_UNAVAILABLE": "the isolated resolver (Docker) was unavailable.",
+    "UNKNOWN": "no current compatibility evidence exists for this exact plan. Run the compatibility check.",
+}
+
+
+def require_compatible_resolution(proposal_id: str, store: RunStore, registry: ProposalRegistry,
+                                  action: str = "continue") -> StoredResolution:
+    """FR-28: only current, supervisor-verified COMPATIBLE evidence for the proposed set passes.
+
+    Status and fingerprint come from server-held evidence re-bound to today's plan, image and policy;
+    nothing the client sends is consulted. There is no override.
+    """
+    from src.services.job_service import JobServiceError, resolution_state  # import cycle: job_service uses us
+
+    try:
+        state = resolution_state(proposal_id, store, registry)
+    except JobServiceError as exc:
+        raise ApprovalError(exc.status_code, exc.code, exc.message)
+    if state.status != ResolutionStatus.COMPATIBLE or state.proposed is None:
+        detail = _NOT_VERIFIED.get(state.status.value, "compatibility is not verified.")
+        raise ApprovalError(
+            409, "compatibility_not_verified",
+            f"Compatibility not verified ({state.status.value}): {detail} You cannot {action} until the "
+            "proposed dependency set resolves.",
+        )
+    return state.proposed
 
 
 def is_expired(binding: ProposalBinding, now: Optional[float] = None) -> bool:
@@ -88,4 +122,12 @@ def require_approved_proposal(
             "validation_settings_changed",
             "The validation settings changed after this plan was approved. Review and approve it again.",
         )
-    return ApprovedProposal(stored=stored, binding=binding, approval=approval, policy=policy)
+    resolution = require_compatible_resolution(proposal_id, store, registry, action)
+    if not approval.resolution_fingerprint or approval.resolution_fingerprint != resolution.fingerprint:
+        raise ApprovalError(
+            409,
+            "compatibility_changed",
+            "The compatibility evidence for this plan changed after it was approved, or the approval predates "
+            "compatibility checks. Review and approve it again.",
+        )
+    return ApprovedProposal(stored=stored, binding=binding, approval=approval, policy=policy, resolution=resolution)

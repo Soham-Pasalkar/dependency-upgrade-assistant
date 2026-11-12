@@ -75,6 +75,20 @@ def isolated_run_store(tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def resolution_doubles(request):
+    """Unit and API tests never reach Docker: resolution jobs use the test doubles, whose output still
+    passes the real supervisor. Live tests (marker `live_resolution`) use the real runtime."""
+    if request.node.get_closest_marker("live_resolution"):
+        yield None
+        return
+    from src.services.job_service import set_job_service
+    from tests.resolution_doubles import install_service
+    service, _, runtime = install_service()
+    yield runtime
+    set_job_service(None)
+
+
+@pytest.fixture(autouse=True)
 def no_live_dependency_staging(request, monkeypatch):
     """Unit tests must not download packages. Live staging runs only in tests marked `live_staging`."""
     if request.node.get_closest_marker("live_staging"):

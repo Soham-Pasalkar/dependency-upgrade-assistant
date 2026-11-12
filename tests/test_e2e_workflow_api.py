@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 
 from src.api.main import app
 from src.models.manifest import Ecosystem
+from tests.resolution_doubles import resolve_compatible
 
 
 @pytest.fixture
@@ -115,6 +116,7 @@ def test_complete_e2e_journey_python_requirements(client: TestClient):
     # Validation is refused until the server has recorded approval of this exact diff.
     refused = client.post("/api/validation/execute", json={"proposal_id": proposal_id})
     assert refused.status_code == 409
+    resolve_compatible(proposal_id)  # M12: approval requires verified COMPATIBLE evidence
     approve_resp = client.post(
         f"/api/proposals/{proposal_id}/approve",
         json={"diff_sha256": hashlib.sha256(proposal["unified_diff"].encode("utf-8")).hexdigest()},
@@ -268,48 +270,19 @@ def test_complete_e2e_journey_npm_package_json(client: TestClient):
     # Validation is refused until the server has recorded approval of this exact diff.
     refused = client.post("/api/validation/execute", json={"proposal_id": proposal_id})
     assert refused.status_code == 409
+    # M12 (FR-23, FR-28, FR-31): npm compatibility verification is not yet supported (M13), so an npm
+    # plan is UNSUPPORTED and cannot be approved, validated as an approved upgrade, applied or exported.
+    resolve_resp = client.post(f"/api/proposals/{proposal_id}/resolve")
+    assert resolve_resp.status_code == 200 and resolve_resp.json()["job"] is None
+    resolution = resolve_resp.json()["resolution"]
+    assert resolution["status"] == "UNSUPPORTED" and resolution["approval_eligible"] is False
+    assert "npm compatibility verification is not yet supported" in \
+        resolution["proposed"]["unsupported"][0]["message"]
     approve_resp = client.post(
         f"/api/proposals/{proposal_id}/approve",
         json={"diff_sha256": hashlib.sha256(proposal["unified_diff"].encode("utf-8")).hexdigest()},
     )
-    assert approve_resp.status_code == 200
-    assert approve_resp.json()["approved"] is True
-
-    val_resp = client.post(
-        "/api/validation/execute",
-        json={
-            "proposal_id": proposal_id,
-            "manifest_type": "package.json",
-            "timeout_seconds": 60,
-        },
-    )
-    assert val_resp.status_code == 200
-    val_data = val_resp.json()
-    execution_id = val_data["execution_id"]
-
-    # Step 9: Export Deliverables
-    export_resp = client.post(
-        "/api/export",
-        json={
-            "proposal_id": proposal_id,
-            "execution_id": execution_id,
-            "include_logs": True,
-            "custom_notes": "Node.js package.json E2E test",
-        },
-    )
-    assert export_resp.status_code == 200
-    export_data = export_resp.json()
-    export_id = export_data["export_id"]
-
-    # Step 10: Download and Verify ZIP bundle
-    zip_resp = client.get(f"/api/export/{export_id}/download/bundle_zip")
-    assert zip_resp.status_code == 200
-    assert "application/zip" in zip_resp.headers["content-type"]
-
-    zip_bytes = io.BytesIO(zip_resp.content)
-    with zipfile.ZipFile(zip_bytes, "r") as zf:
-        assert zf.testzip() is None
-        names = zf.namelist()
-        assert any(n.endswith(".patch") for n in names)
-        assert "summary.json" in names
-        assert "checksums.sha256" in names
+    assert approve_resp.status_code == 409
+    assert approve_resp.json()["detail"]["code"] == "compatibility_not_verified"
+    assert client.post("/api/validation/execute", json={"proposal_id": proposal_id}).status_code == 409
+    assert client.post("/api/export", json={"proposal_id": proposal_id}).status_code == 409

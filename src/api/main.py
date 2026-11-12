@@ -19,6 +19,7 @@ from src.api.routes.recommendations import router as recommendations_router
 from src.api.routes.validation import router as validation_router
 from src.api.routes.export import router as export_router
 from src.api.routes.runs import router as runs_router
+from src.api.routes.resolution import router as resolution_router
 
 logger = logging.getLogger("dua.api")
 
@@ -49,6 +50,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         run_retention()
     except Exception as e:
         logger.warning(f"Retention skipped at startup: {type(e).__name__}")
+    try:
+        # ADR-012: jobs left QUEUED/RUNNING by a previous process become INTERRUPTED; leftovers are swept.
+        from src.services.job_service import get_job_service
+        get_job_service().recover()
+    except Exception as e:
+        logger.warning(f"Resolution job recovery skipped: {type(e).__name__}")
     yield
     logger.info("Application shutting down...")
 
@@ -110,6 +117,7 @@ def create_app() -> FastAPI:
     app.include_router(validation_router, prefix="/api")
     app.include_router(export_router, prefix="/api")
     app.include_router(runs_router, prefix="/api")
+    app.include_router(resolution_router, prefix="/api")
     # Also register under /api/v1 for REST API compliance with architecture spec
     app.include_router(health_router, prefix="/api/v1")
     app.include_router(manifest_router, prefix="/api/v1")
@@ -118,6 +126,7 @@ def create_app() -> FastAPI:
     app.include_router(validation_router, prefix="/api/v1")
     app.include_router(export_router, prefix="/api/v1")
     app.include_router(runs_router, prefix="/api/v1")
+    app.include_router(resolution_router, prefix="/api/v1")
     # Convenience root health check
     app.include_router(health_router)
 

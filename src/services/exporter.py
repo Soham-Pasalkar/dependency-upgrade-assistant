@@ -701,6 +701,108 @@ def generate_markdown_report(
 # Cryptographic Checksums & Export Structures
 # ---------------------------------------------------------------------------
 
+def resolution_export_payload(proposed, original=None) -> Dict[str, Any]:
+    """FR-32d: one payload for both the Markdown and the JSON export, so they cannot disagree.
+
+    ``proposed`` and ``original`` are supervisor-written ResolutionReport objects; nothing here is
+    client-supplied.
+    """
+    from src.resolution.policy import COMPATIBILITY_DISCLOSURE
+
+    def packages(report) -> List[Dict[str, Any]]:
+        if report is None:
+            return []
+        return [
+            {
+                "name": p.name, "version": p.version, "direct": p.direct, "introduced": p.introduced,
+                "constraints": list(p.constraints), "filename": p.filename, "sha256": p.sha256,
+                "upload_date": p.upload.value if p.upload.available else "date unavailable",
+                "upload_date_source": p.upload.source if p.upload.available else None,
+                "upload_date_reason": None if p.upload.available else p.upload.reason,
+            }
+            for p in report.packages
+        ]
+
+    comparison = proposed.comparison
+    return {
+        "status": proposed.status.value,
+        "proposed_fingerprint": proposed.fingerprint,
+        "original_status": original.status.value if original else None,
+        "original_fingerprint": original.fingerprint if original else None,
+        "resolver": proposed.resolver,
+        "image": proposed.image,
+        "target": proposed.target,
+        "policy_version": proposed.policy_version,
+        "allowlist_version": proposed.allowlist_version,
+        "resolved_at": proposed.created_at,
+        "comparison": (
+            {"available": comparison.available, "reason": comparison.reason, "introduced": list(comparison.introduced)}
+            if comparison else {"available": False, "reason": "not_computed", "introduced": []}
+        ),
+        "warnings": list(proposed.warnings),
+        "disclosure": COMPATIBILITY_DISCLOSURE,
+        "proposed_packages": packages(proposed),
+        "original_packages": packages(original),
+    }
+
+
+def _md_cell(value: Any) -> str:
+    return str(value if value is not None else "").replace("|", "\\|").replace("\n", " ")
+
+
+def render_compatibility_markdown(proposal: UpgradeProposalResponse, payload: Optional[Dict[str, Any]],
+                                  validation_status: str, created_at: str) -> str:
+    lines = [
+        "# Dependency upgrade report",
+        "",
+        f"- **Plan:** `{proposal.proposal_id}`",
+        f"- **Manifest:** `{proposal.file_path}`",
+        f"- **Generated (UTC):** {created_at}",
+        f"- **Validation outcome:** `{validation_status}`",
+        "",
+        "## Compatibility",
+        "",
+    ]
+    if not payload:
+        lines += ["Compatibility not verified for this plan.", ""]
+    else:
+        comparison = payload["comparison"]
+        lines += [
+            f"- **Status:** `{payload['status']}`",
+            f"- **Resolver:** {payload['resolver']} in `{payload['image']}`",
+            f"- **Target:** {payload['target'].get('implementation')} {payload['target'].get('python')} "
+            f"{payload['target'].get('platform')} {payload['target'].get('machine')}",
+            f"- **Proposed resolution fingerprint:** `{payload['proposed_fingerprint']}`",
+            f"- **Original resolution:** `{payload['original_status'] or 'not available'}`"
+            + (f" (fingerprint `{payload['original_fingerprint']}`)" if payload["original_fingerprint"] else ""),
+            "",
+            f"> {payload['disclosure']}",
+            "",
+        ]
+        if comparison["available"]:
+            introduced = ", ".join(f"`{n}`" for n in comparison["introduced"]) or "none"
+            lines += [f"**Packages introduced by this upgrade:** {introduced}", ""]
+        else:
+            lines += [f"**Introduced packages:** comparison unavailable ({comparison['reason']}).", ""]
+        if payload["warnings"]:
+            lines += ["**Warnings:**", ""] + [f"- {_md_cell(w)}" for w in payload["warnings"]] + [""]
+        for title, key in (("Proposed resolved dependencies", "proposed_packages"),
+                           ("Original resolved dependencies", "original_packages")):
+            rows = payload[key]
+            lines += [f"### {title}", ""]
+            if not rows:
+                lines += ["Not available.", ""]
+                continue
+            lines += ["| Package | Version | Direct | Introduced | Uploaded (UTC) |", "|---|---|---|---|---|"]
+            for r in rows:
+                introduced = "n/a" if r["introduced"] is None else ("yes" if r["introduced"] else "no")
+                lines.append(f"| {_md_cell(r['name'])} | {_md_cell(r['version'])} | "
+                             f"{'direct' if r['direct'] else 'transitive'} | {introduced} | {_md_cell(r['upload_date'])} |")
+            lines.append("")
+    lines += ["## Proposed change", "", "```diff", (proposal.unified_diff or "").rstrip("\n"), "```", ""]
+    return "\n".join(lines)
+
+
 def compute_sha256_bytes(data: bytes) -> str:
     """Compute hex-encoded SHA-256 digest for bytes."""
     return hashlib.sha256(data).hexdigest()
@@ -842,6 +944,7 @@ class ArtifactExporter:
         validation_report: Optional[ValidationReportResponse] = None,
         run_id: Optional[str] = None,
         custom_notes: Optional[str] = None,
+        resolution: Optional[Dict[str, Any]] = None,
     ) -> ExportBundle:
         """Bundle proposal changes, execution summaries, logs, and checksums into verified deliverables.
         
@@ -874,6 +977,7 @@ class ArtifactExporter:
             log_filename = "execution.log"
             summary_filename = "summary.json"
             checksums_filename = "checksums.sha256"
+            report_filename = "compatibility-report.md"
             zip_filename = f"{clean_name}-upgrade-bundle.zip"
 
             # 2. Synthesize Git-compatible Unified Patch
@@ -994,6 +1098,7 @@ class ArtifactExporter:
                     "zero_secrets_verified": True,
                     "sanitization_engine": "DUA 2.0 Pre-Export Secret Sanitizer",
                 },
+                "compatibility": resolution or {"status": "NOT_VERIFIED"},
                 "custom_notes": custom_notes,
             }
 
@@ -1004,11 +1109,20 @@ class ArtifactExporter:
             summary_sha256 = compute_sha256_file(summary_path)
             summary_size = summary_path.stat().st_size
 
+            # 4b. FR-32d Markdown report (same payload as summary.json "compatibility")
+            report_text = render_compatibility_markdown(proposal, resolution, val_status_str, now_iso)
+            verify_zero_secrets(report_text, source_name=report_filename)
+            report_path = stage_dir / report_filename
+            report_path.write_text(report_text, encoding="utf-8")
+            report_sha256 = compute_sha256_file(report_path)
+            report_size = report_path.stat().st_size
+
             # 5. Synthesize SHA-256 Checksums Manifest
             checksums_content = (
                 f"{patch_sha256}  {patch_filename}\n"
                 f"{summary_sha256}  {summary_filename}\n"
                 f"{log_sha256}  {log_filename}\n"
+                f"{report_sha256}  {report_filename}\n"
             )
             checksums_path = stage_dir / checksums_filename
             checksums_path.write_text(checksums_content, encoding="utf-8")
@@ -1022,6 +1136,7 @@ class ArtifactExporter:
                 zf.write(summary_path, arcname=summary_filename)
                 zf.write(log_path, arcname=log_filename)
                 zf.write(checksums_path, arcname=checksums_filename)
+                zf.write(report_path, arcname=report_filename)
 
             # Test zip integrity
             with zipfile.ZipFile(zip_path, mode="r") as zf:
@@ -1079,6 +1194,14 @@ class ArtifactExporter:
                     mime_type="text/plain; charset=utf-8",
                     size_bytes=checksums_size,
                     sha256=checksums_sha256,
+                ),
+                ArtifactType.REPORT_MD: ExportArtifactRecord(
+                    artifact_type=ArtifactType.REPORT_MD,
+                    file_path=final_dir / report_filename,
+                    filename=report_filename,
+                    mime_type="text/markdown; charset=utf-8",
+                    size_bytes=report_size,
+                    sha256=report_sha256,
                 ),
                 ArtifactType.BUNDLE_ZIP: ExportArtifactRecord(
                     artifact_type=ArtifactType.BUNDLE_ZIP,
@@ -1166,6 +1289,10 @@ class ArtifactExporter:
                 elif p.name == "checksums.sha256":
                     artifacts_map[ArtifactType.CHECKSUMS] = ExportArtifactRecord(
                         ArtifactType.CHECKSUMS, p, p.name, "text/plain; charset=utf-8", size, sha
+                    )
+                elif p.name == "compatibility-report.md":
+                    artifacts_map[ArtifactType.REPORT_MD] = ExportArtifactRecord(
+                        ArtifactType.REPORT_MD, p, p.name, "text/markdown; charset=utf-8", size, sha
                     )
                 elif p.name.endswith(".zip"):
                     artifacts_map[ArtifactType.BUNDLE_ZIP] = ExportArtifactRecord(

@@ -29,7 +29,7 @@ from src.models.run import (
 )
 from src.services import repository_service as repo_svc
 from src.sandbox.validation_policy import ValidationPolicyError, policy_for_proposal
-from src.services.approval_service import ensure_registered
+from src.services.approval_service import ApprovalError, ensure_registered, require_compatible_resolution
 from src.services.retention import maybe_run_retention
 from src.services.proposal_registry import ProposalRegistry, get_proposal_registry
 from src.services.recommendation_service import RecommendationService
@@ -267,13 +267,19 @@ async def approve_proposal(
         policy = policy_for_proposal(proposal)
     except ValidationPolicyError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    try:
+        # FR-28: only current, supervisor-verified COMPATIBLE evidence for the proposed set can be approved.
+        evidence = await run_in_threadpool(require_compatible_resolution, proposal_id, store, registry, "approve it")
+    except ApprovalError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
     record = await run_in_threadpool(
-        store.record_approval, proposal_id, binding.diff_sha256, request.note, policy.fingerprint
+        store.record_approval, proposal_id, binding.diff_sha256, request.note, policy.fingerprint, evidence.fingerprint
     )
     return ApprovalResponse(
         proposal_id=proposal_id, run_id=binding.run_id, diff_sha256=record.diff_sha256, approved=True,
         approved_at=record.approved_at, note=record.note,
         validation_fingerprint=policy.fingerprint, validation_policy=policy.to_dict(),
+        resolution_fingerprint=evidence.fingerprint, resolution_status=evidence.status.value,
     )
 
 
@@ -288,4 +294,5 @@ async def get_approval(proposal_id: str, store: Annotated[RunStore, Depends(get_
         approved=record is not None, approved_at=record.approved_at if record else None,
         note=record.note if record else None,
         validation_fingerprint=record.validation_fingerprint if record else None,
+        resolution_fingerprint=record.resolution_fingerprint if record else None,
     )
