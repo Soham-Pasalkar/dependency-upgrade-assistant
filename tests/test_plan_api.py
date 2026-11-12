@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.approval_helpers import approve_registered_proposal
+
 from src.api.main import app
 from src.models.manifest import Ecosystem
 from src.models.plan import ProposalStatus
@@ -206,6 +208,10 @@ def test_api_apply_workspace_mutation_success(client: TestClient, tmp_path: Path
         "approved": True,
         "target_path": "requirements.txt",
     }
+    # Without a server-recorded approval the mutation is refused (FR-16).
+    refused = client.post("/api/plan/apply", json=apply_payload)
+    assert refused.status_code == 403
+    approve_registered_proposal(proposal["proposal_id"])
     apply_res = client.post("/api/plan/apply", json=apply_payload)
     assert apply_res.status_code == 200
     data = apply_res.json()

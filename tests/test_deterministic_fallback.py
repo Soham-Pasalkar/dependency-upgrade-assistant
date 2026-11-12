@@ -214,5 +214,5 @@ def test_deterministic_exact_pin_bump_caution_m4_notice(engine):
     rec = recs[0]
     assert rec.candidate_version == "2.32.3"
     assert rec.category == RecommendationCategory.RECOMMENDED
-    assert "Requires manifest pin update in M4" in rec.explanation
+    assert "The exact pin in the manifest will be updated" in rec.explanation
 

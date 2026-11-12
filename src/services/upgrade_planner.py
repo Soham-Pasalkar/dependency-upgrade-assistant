@@ -338,7 +338,7 @@ class UpgradePlannerService:
                             declared_specifier=orig_dep.declared_specifier,
                             proposed_specifier=orig_dep.declared_specifier,
                             action=UpgradeAction.REJECT_CONFLICT,
-                            rationale=f"Arbitrary custom target version '{custom_override}' rejected: custom target must match explicitly validated M3 candidate '{validated_candidate}'.",
+                            rationale=f"Arbitrary custom target version '{custom_override}' rejected: custom target must match the registry-validated candidate '{validated_candidate}'.",
                             line_number=orig_dep.line_number,
                             dependency_type=orig_dep.dependency_type,
                             is_conflict=True,

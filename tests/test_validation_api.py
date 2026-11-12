@@ -14,9 +14,35 @@ from src.models.plan import (
 from src.models.sandbox import ExecutionLifecycleState, ValidationStatus
 from src.sandbox.runner import DockerAvailability, SandboxExecutionResult
 from src.services.proposal_registry import get_proposal_registry
+from tests.approval_helpers import approve_registered_proposal
 from src.services.sandbox_service import SandboxService, get_sandbox_service
 
 client = TestClient(app)
+
+
+
+def _approved_proposal_id() -> str:
+    """Register a minimal proposal and record server-side approval for it (FR-16)."""
+    proposal = UpgradeProposalResponse(
+        manifest_type="requirements.txt",
+        ecosystem=Ecosystem.PYTHON,
+        file_path="requirements.txt",
+        plan_items=[],
+        original_content="requests==2.28.0\n",
+        proposed_content="requests==2.32.3\n",
+        unified_diff="--- a/requirements.txt\n+++ b/requirements.txt\n@@ -1 +1 @@\n-requests==2.28.0\n+requests==2.32.3\n",
+        integrity=PatchIntegrityResult(
+            is_valid=True, can_apply=True, can_reverse=True, syntax_valid=True, target_versions_match=True,
+            unrelated_dependencies_unchanged=True, original_unchanged=True,
+        ),
+        status=ProposalStatus.READY_FOR_REVIEW,
+        requires_human_approval=True,
+        diagnostics=[],
+        summary="Approved test proposal",
+    )
+    proposal_id = get_proposal_registry().store(proposal)
+    approve_registered_proposal(proposal_id)
+    return proposal_id
 
 
 def test_validation_status_endpoint():
@@ -38,6 +64,7 @@ def test_validation_execute_when_docker_unavailable():
     with patch.object(service, "get_availability", return_value=mock_down):
         with patch.object(service.runner, "check_availability", return_value=mock_down):
             payload = {
+                "proposal_id": _approved_proposal_id(),
                 "manifest_type": "requirements.txt",
             }
             response = client.post("/api/validation/execute", json=payload)
@@ -83,6 +110,7 @@ def test_validation_execute_with_proposal_success():
         summary="Test proposal",
     )
     registry.store(proposal)
+    approve_registered_proposal(proposal.proposal_id)
 
     mock_avail = DockerAvailability(is_available=True, version="26.1.0")
     mock_exec_res = SandboxExecutionResult(
@@ -128,12 +156,13 @@ def test_validation_execute_unknown_proposal_returns_404():
     }
     response = client.post("/api/validation/execute", json=payload)
     assert response.status_code == 404
-    assert "not found in registry" in response.json()["detail"].lower()
+    assert "not found" in response.json()["detail"].lower()
 
 
 def test_validation_execute_unauthorized_image_returns_400():
     """CRITICAL SECURITY TEST: Requesting arbitrary/unapproved container image returns 400 Bad Request."""
     payload = {
+        "proposal_id": _approved_proposal_id(),
         "manifest_type": "requirements.txt",
         "image_override": "attacker/pwn-box:latest",
     }
@@ -227,6 +256,7 @@ def test_validation_reports_no_tests_found_when_repo_has_no_tests(tmp_path):
     with patch.object(service.runner, "check_availability", return_value=mock_avail):
         with patch.object(service.runner, "run_command", return_value=mock_exec_res):
             payload = {
+                "proposal_id": _approved_proposal_id(),
                 "manifest_type": "requirements.txt",
             }
             res = client.post("/api/validation/execute", json=payload)

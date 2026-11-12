@@ -1,65 +1,44 @@
-import React from 'react';
-import { BackendStatus } from './components/BackendStatus';
+import React, { useEffect, useState } from 'react';
+import { Landing } from './components/Landing';
+import { SiteHeader } from './components/SiteHeader';
 import { ManifestAnalyzer } from './components/ManifestAnalyzer';
 import './App.css';
 
+type View = 'home' | 'analyze';
+
+const readView = (): View =>
+  typeof window !== 'undefined' && window.location.hash.startsWith('#/analyze') ? 'analyze' : 'home';
+
 export const App: React.FC = () => {
+  const [view, setView] = useState<View>(readView);
+
+  useEffect(() => {
+    const onHashChange = () => {
+      const next = readView();
+      setView((prev) => {
+        if (prev !== next) window.scrollTo({ top: 0 });
+        return next;
+      });
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  useEffect(() => {
+    document.title =
+      view === 'analyze' ? 'Analyze dependencies | Dependency Upgrade Assistant' : 'Dependency Upgrade Assistant';
+  }, [view]);
+
   return (
-    <div className="app-container">
-      <header className="app-header">
-        <div className="header-brand">
-          <span className="brand-badge">DUA 2.0</span>
-          <h1 className="brand-title">Dependency Upgrade Assistant</h1>
-        </div>
-        <p className="brand-subtitle">
-          Interactive, security-first developer platform for Python and Node.js dependency upgrades.
-        </p>
-      </header>
-
-      <main className="app-main">
-        {/* M2 Manifest Ingestion and Dependency Analysis Section */}
-        <section className="dashboard-section">
-          <div className="section-header">
-            <span className="section-label">Milestone M2 Manifest Analysis</span>
-            <span className="status-pill">Active Vertical Slice</span>
-          </div>
+    <div className="view" key={view}>
+      {view === 'home' ? (
+        <Landing />
+      ) : (
+        <div className="app" data-testid="app-view">
+          <SiteHeader variant="app" />
           <ManifestAnalyzer />
-        </section>
-
-        {/* M1 System Foundation & Health Section */}
-        <section className="dashboard-section">
-          <div className="section-header">
-            <span className="section-label">Milestone M1 Foundation</span>
-            <span className="status-pill">System Health</span>
-          </div>
-          <BackendStatus />
-        </section>
-
-        <section className="info-card">
-          <h3 className="info-title">System Architecture Status</h3>
-          <ul className="info-list">
-            <li>
-              <strong>Manifest Evaluation:</strong> Pure-Python AST &amp; SemVer evaluators with PyPI and npm registry integration
-            </li>
-            <li>
-              <strong>Backend:</strong> FastAPI on Python 3.14 (Async ASGI, OpenAPI documentation at <code>/docs</code>)
-            </li>
-            <li>
-              <strong>Frontend:</strong> React 19 + TypeScript + Vite with native reverse proxy
-            </li>
-            <li>
-              <strong>Persistence:</strong> Embedded SQLite with WAL mode and foreign key enforcement
-            </li>
-            <li>
-              <strong>Security:</strong> Zero host code execution, in-memory credential protection, and strict URL boundaries
-            </li>
-          </ul>
-        </section>
-      </main>
-
-      <footer className="app-footer">
-        <p>Dependency Upgrade Assistant 2.0 &bull; Phase 2 Construction &bull; Milestone M2 Ingestion &amp; Analysis</p>
-      </footer>
+        </div>
+      )}
     </div>
   );
 };

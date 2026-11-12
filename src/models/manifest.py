@@ -32,6 +32,8 @@ class RegistryLookupStatus(str, Enum):
     RATE_LIMITED = "RATE_LIMITED"
     NETWORK_ERROR = "NETWORK_ERROR"
     SKIPPED = "SKIPPED"
+    TOO_LARGE = "TOO_LARGE"
+    TIMEOUT = "TIMEOUT"
 
 
 class ParsedDependency(BaseModel):

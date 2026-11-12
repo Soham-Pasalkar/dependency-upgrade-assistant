@@ -236,7 +236,8 @@ def test_pypi_client_enforces_oversized_response_chunks():
     meta = client.get_package_metadata("huge-package")
 
     mock_resp.close.assert_called()
-    assert meta.status in (RegistryLookupStatus.NETWORK_ERROR, RegistryLookupStatus.SUCCESS)
+    # FR-17: oversized metadata is reported distinctly as TOO_LARGE and never parsed.
+    assert meta.status in (RegistryLookupStatus.NETWORK_ERROR, RegistryLookupStatus.SUCCESS, RegistryLookupStatus.TOO_LARGE)
     if meta.status == RegistryLookupStatus.NETWORK_ERROR:
         assert "exceeded" in meta.error_message.lower()
 
@@ -253,7 +254,8 @@ def test_pypi_client_enforces_oversized_content_length():
     meta = client.get_package_metadata("huge-pkg-header")
 
     mock_resp.close.assert_called()
-    assert meta.status in (RegistryLookupStatus.NETWORK_ERROR, RegistryLookupStatus.SUCCESS)
+    # FR-17: oversized metadata is reported distinctly as TOO_LARGE and never parsed.
+    assert meta.status in (RegistryLookupStatus.NETWORK_ERROR, RegistryLookupStatus.SUCCESS, RegistryLookupStatus.TOO_LARGE)
     if meta.status == RegistryLookupStatus.NETWORK_ERROR:
         assert "exceeds maximum limit" in meta.error_message.lower()
 
@@ -273,7 +275,8 @@ def test_misleading_or_invalid_content_length_handled_safely():
 
     # Limit of 100 bytes caught the oversized stream despite misleading header
     mock_resp.close.assert_called()
-    assert meta.status in (RegistryLookupStatus.NETWORK_ERROR, RegistryLookupStatus.SUCCESS)
+    # FR-17: oversized metadata is reported distinctly as TOO_LARGE and never parsed.
+    assert meta.status in (RegistryLookupStatus.NETWORK_ERROR, RegistryLookupStatus.SUCCESS, RegistryLookupStatus.TOO_LARGE)
     if meta.status == RegistryLookupStatus.NETWORK_ERROR:
         assert "exceeded" in meta.error_message.lower()
 

@@ -31,3 +31,6 @@ minversion = "7.0"
 addopts = "-ra -q"
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "live_staging: performs real pip/npm downloads and, where Docker is available, real container runs",
+]

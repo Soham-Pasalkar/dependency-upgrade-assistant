@@ -3,37 +3,37 @@
   "project": "Dependency Upgrade Assistant 2.0",
   "tier": 3,
   "mode": "brownfield",
-  "phase": "operations",
+  "phase": "construction",
   "config": {
     "strict_approvals": true,
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-11T08:30:22Z",
+  "updated": "2026-11-12T04:43:41Z",
   "gates": {
     "G1": {
       "name": "Requirements",
       "status": "approved",
-      "note": "User approved: approve G1",
-      "at": "2026-11-09T11:38:51Z"
+      "note": "approved at terminal",
+      "at": "2026-11-11T10:26:30Z"
     },
     "G2": {
       "name": "Architecture and threat model",
       "status": "approved",
-      "note": "User authorized progression beyond G2 in G3 prompt: The user has authorized progression beyond G2.",
-      "at": "2026-11-10T13:21:52Z"
+      "note": "approved at terminal",
+      "at": "2026-11-11T10:26:34Z"
     },
     "G3": {
       "name": "Milestone plan",
       "status": "approved",
-      "note": "Human approval granted in M1 kickoff prompt: The revised G3 milestone plan has been presented and human approval has been granted. You may now begin Construction M1.",
-      "at": "2026-11-10T14:19:31Z"
+      "note": "approved at terminal",
+      "at": "2026-11-11T10:26:37Z"
     },
     "G5": {
       "name": "Release",
-      "status": "changes_requested",
-      "note": "Owner rejected v2.0 as a production-ready release; retained as engineering baseline",
-      "at": "2026-11-11T08:30:22Z"
+      "status": "pending",
+      "note": "New intent (Inception round 2 / one-day sprint). Owner authorized: 'After the governance checkpoint is committed, proceed with the authorized G1 reset and requirements Revision 2 preparation.' and 'Keep the existing AI-DLC approval requirements. Compress governance preparation and approvals into the minimum necessary process.'",
+      "at": "2026-11-11T10:10:33Z"
     }
   },
   "milestones": [
@@ -947,6 +947,208 @@
       "rework": 0,
       "started": "2026-11-11T06:17:46Z",
       "note": null
+    },
+    {
+      "id": "M9",
+      "title": "Premium frontend redesign and existing workflow integration",
+      "depends_on": [
+        "M8"
+      ],
+      "status": "done",
+      "criteria": [
+        {
+          "text": "Baseline backend and frontend tests re-run and recorded before changes",
+          "verified": true,
+          "proof": "Baseline recorded: backend 564 passed, 6 skipped, 7 warnings in 12.46s; frontend       Tests  28 passed (28)"
+        },
+        {
+          "text": "ADR-008 design token system and reusable components on React 19 + Vite, no stack change",
+          "verified": true,
+          "proof": "Tokens in frontend/src/index.css (surfaces, hairlines, text, single accent #F05A28, semantic ok/warn/bad, Geist + Geist Mono); shared components SiteHeader, StepRail, BackendStatus; no new npm dependencies; React 19 + Vite unchanged."
+        },
+        {
+          "text": "Product landing page per FR-19: navigation, hero, functional primary/secondary actions, real-component product visual, workflow and capability sections, smooth entry into the app",
+          "verified": true,
+          "proof": "frontend/src/components/Landing.tsx: framed nav with section anchors and 'Open analyzer'; hero with headline, lede, 'Analyze dependencies' (#/analyze) and 'How it works' (#how-it-works); product readout built from interface table/diff components labelled Example; sections How it works, Evidence, Isolation, closing CTA; hash route transition into the app (App.tsx). Verified by App.test.tsx and browser screenshots."
+        },
+        {
+          "text": "Redesigned application covers the existing working journey against current APIs with no fake controls",
+          "verified": true,
+          "proof": "ManifestAnalyzer stages Manifest -> Dependency health -> Recommendations -> Plan and diff -> Approval -> Validation -> Export all call existing APIs; browser journey completed end to end with real backend and a 200 artifact download. Validation and export disabled until approval (tests added)."
+        },
+        {
+          "text": "FR-21 content discipline: no internal development content; verified results distinguished from AI/heuristic suggestions",
+          "verified": true,
+          "proof": "Removed milestone labels, architecture list, DB path and engine diagnostics from UI; backend user-facing strings mentioning M3/M4 reworded; App.test asserts no internal terms render. Recommendation Basis column distinguishes Registry-checked, Rule-based, Model registry-checked and Model version rejected; landing Evidence section explains verified vs advisory."
+        },
+        {
+          "text": "Real-browser screenshots at 1440px and 390px reviewed and defects fixed; NFR-11/NFR-12 checks",
+          "verified": true,
+          "proof": "Screenshots at 1440 and 390 reviewed over several iterations; fixed: headline wrap, hero dead space, readout wrapping, orange overuse, raw backend summaries, muddy download block, mobile table column overflow, hero overflow found with Tab test. Focus ring verified; reduced-motion rule in index.css; overflowX 0 at both widths."
+        },
+        {
+          "text": "Frontend tests, lint and build pass; backend suite unchanged",
+          "verified": true,
+          "proof": "Frontend 33/33, tsc and build OK, lint 0 errors. Backend 564 passed/6 skipped; backend change limited to five user-facing strings and two test assertions on that wording (listed as deviation)."
+        }
+      ],
+      "evidence": [
+        {
+          "at": "2026-11-11T10:27:14Z",
+          "cmd": "python3 -m pytest -q -o addopts='' -p no:cacheprovider ; (cd frontend && npx vitest run)",
+          "result": "Baseline before M9 changes: backend 564 passed, 6 skipped, 7 warnings in 12.46s; frontend       Tests  28 passed (28)",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-11T15:17:25Z",
+          "cmd": "python3 -m pytest -q -o addopts='' -p no:cacheprovider",
+          "result": "564 passed, 6 skipped (Docker-dependent), 0 failed. Two assertions updated (tests/test_deterministic_fallback.py:217, tests/test_ground_truth_validator.py:353) to match product wording that removed 'M4' from user-facing explanation strings (FR-21).",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-11T15:17:25Z",
+          "cmd": "cd frontend && npx vitest run",
+          "result": "6 files, 33 passed, 0 failed (28 baseline tests updated to new copy/markup; 5 added: approval gating for validation and export, integrity-failed plan cannot be approved, landing routing, no internal development terms in rendered UI).",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-11T15:17:25Z",
+          "cmd": "cd frontend && npx tsc -b && npx oxlint src && npm run build",
+          "result": "tsc clean; oxlint 0 errors, 1 warning (react set-state-in-effect on async health probe); vite build OK: 278.66 kB JS (82.39 kB gzip), 25.84 kB CSS.",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-11T15:17:25Z",
+          "cmd": "node cdp.mjs journey.json (headless Chrome via DevTools protocol, 1440x900 and 390x844, live backend on 127.0.0.1:8000)",
+          "result": "Full journey clicked through in a real browser at both widths: analyze sample requirements.txt -> 6 dependencies -> recommendations (rule-based, Ollama offline) -> plan with 3 upgrades and verified patch integrity -> approve -> validation NOT_RUNNABLE (no Docker) -> export with 5 artifacts; GET patch download returned HTTP 200. document scrollWidth - innerWidth = 0 at both widths. Screenshots in docs/aidlc/reports/m9-screens/.",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-11T15:17:25Z",
+          "cmd": "node cdp.mjs focus.json (real Tab key events)",
+          "result": "Focused links show 2px solid rgb(240,90,40) outline via :focus-visible; overflowX 0 after hero light-layer fix.",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-11T15:17:25Z",
+          "cmd": "python3 .agents/skills/ai-dlc-engineering/scripts/scan_secrets.py .",
+          "result": "PASS: 0 finding(s)",
+          "file": null,
+          "sha256": null
+        }
+      ],
+      "approval": {
+        "at": "2026-11-11T15:21:08Z",
+        "note": "approved at terminal",
+        "actor": "human-tty"
+      },
+      "rework": 0,
+      "started": "2026-11-11T10:27:00Z",
+      "note": null
+    },
+    {
+      "id": "M10",
+      "title": "Repository-first backend integration and end-to-end completion",
+      "depends_on": [
+        "M9"
+      ],
+      "status": "awaiting_approval",
+      "criteria": [
+        {
+          "text": "POST /repositories/analyze performs FR-1R/FR-2R on a real public GitHub repo with NFR-9 limits enforced during acquisition and NFR-10/T-15..T-18 mitigations",
+          "verified": true,
+          "proof": "repository_service: strict URL parser, global-IP resolution check, api.github.com pre-check (exists/public/size, same-host redirects only), hardened git flags + empty env, RLIMIT_FSIZE + 250 ms watchdog + timeout, discovery with exclusions/depth/size caps; live clone of pallets/itsdangerous, microblog, expressjs/cors; 45 tests."
+        },
+        {
+          "text": "Server-authoritative RunStore and server-recorded approval; validation, apply and export return 409 without approval (FR-15/FR-16)",
+          "verified": true,
+          "proof": "RunStore (SQLite dua_runs/dua_run_manifests/dua_proposals/dua_approvals); recommendations and plans built only from server-held analysis; approval bound to diff SHA-256; validation, export (409) and apply (403) refuse without approval; execution must belong to proposal; tests in test_runs_api and updated API tests."
+        },
+        {
+          "text": "PyPI large-metadata fix and registry error taxonomy (FR-17)",
+          "verified": true,
+          "proof": "JSON API retained; on 413 falls back to PEP 691 Simple API (16 MB cap) / npm abbreviated metadata; new TOO_LARGE and TIMEOUT statuses; bounded retry with backoff on transient failures; numpy/pandas/boto3/typescript verified live."
+        },
+        {
+          "text": "Host-header validation implemented and tested (NFR-1R)",
+          "verified": true,
+          "proof": "RequestProtectionMiddleware: loopback Host only (400), Origin allowlist + X-DUA-Client + JSON content type on mutating requests (403/415); 20 tests in tests/test_request_protection.py; frontend sends the header."
+        },
+        {
+          "text": "Workspace-based validation with honest statuses and offline Python/npm staging per ADR-007; unverified parts reported as limitations (FR-18)",
+          "verified": true,
+          "proof": "Validation passes the root-relative repository workspace; staging via pip download --only-binary and npm --package-lock-only/ci with --ignore-scripts, empty env, pinned registries, byte cap; container dependency_install step; honest staging diagnostics in UI. Limitation: container-side install not executed locally (Docker absent)."
+        },
+        {
+          "text": "Redesigned frontend is repository-first and completes GitHub URL to downloaded artifacts (FR-19/FR-20)",
+          "verified": true,
+          "proof": "Analyzer opens on repository URL with examples; Manifests stage with repository summary, per-file table, review-only pyproject, skipped list; approval recorded via POST /proposals/{id}/approve; browser journeys at 1440 and 390 reach download."
+        },
+        {
+          "text": "Browser-level end-to-end run with responsive corrections",
+          "verified": true,
+          "proof": "Headless Chrome runs of both repository journeys; fixed: workspace path rejected by sandbox boundary, empty-plan wording, npm demo repo had no upgrades; overflow 0; screenshots in docs/aidlc/reports/m10-screens/."
+        },
+        {
+          "text": "Full backend and frontend suites green per NFR-7R",
+          "verified": true,
+          "proof": "Backend 667 passed / 6 skipped; frontend 38 passed. Changed existing assertions are listed in the M10 report deviations."
+        }
+      ],
+      "evidence": [
+        {
+          "at": "2026-11-12T04:33:12Z",
+          "cmd": "python3 -m pytest -q -o addopts='' -p no:cacheprovider",
+          "result": "667 passed, 6 skipped (Docker), 0 failed. New: test_repository_service (45), test_runs_api (13), test_request_protection (20), test_dependency_staging (25).",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-12T04:33:12Z",
+          "cmd": "cd frontend && npx vitest run && npx tsc -b && npx oxlint src && npm run build",
+          "result": "38 passed; tsc clean; lint 0 errors, 1 warning; build OK.",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-12T04:33:12Z",
+          "cmd": "python3 -c acquire_repository('https://github.com/pallets/itsdangerous') + discover_manifests",
+          "result": "Live clone 1.8 s, 414 KB, 79 files, .git removed, pyproject.toml discovered; 7 malicious URL forms rejected.",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-12T04:33:12Z",
+          "cmd": "PyPIRegistryClient/NpmRegistryClient live lookups",
+          "result": "numpy 2.5.4 (138 versions), pandas 3.1.1, boto3 1.44.0 (2151 versions) via PEP 691 fallback after JSON API exceeded 2 MB; typescript 7.0.2 via npm abbreviated metadata; unknown package -> NOT_FOUND.",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-12T04:33:12Z",
+          "cmd": "DependencyStagingManager.prepare_staging_cache live (host side)",
+          "result": "Python: requests/flask/numpy -> 13 cp311 manylinux aarch64 wheels, 14.8 MB, 3.6 s, sha256 recorded; -e . and pycrypto (sdist-only) -> UNSTAGEABLE. npm: 490 packages, 205 MB, 25.7 s, lockfile + integrity-checked cache; github: spec -> UNSTAGEABLE. Container-side offline install NOT executed (no Docker).",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-12T04:33:13Z",
+          "cmd": "node cdp.mjs repo.json / repo390.json (headless Chrome, live backend + GitHub + registries)",
+          "result": "1440: miguelgrinberg/microblog -> 1 manifest, 54 packages, 46 upgrades -> recommendations -> plan -> server-recorded approval -> validation NOT_RUNNABLE (no Docker) -> export, patch download HTTP 200. 390: expressjs/cors -> package.json 8 packages, 5 upgrades -> same journey, download HTTP 200. overflowX 0 at both widths; focus ring verified.",
+          "file": null,
+          "sha256": null
+        }
+      ],
+      "approval": null,
+      "rework": 0,
+      "started": "2026-11-11T15:21:20Z",
+      "note": null
     }
   ],
   "notes": [
@@ -984,7 +1186,21 @@
       "text": "Trust-boundary defects in the 2.0 baseline: client-supplied validation_status accepted by upgrade_planner (TRUSTED_VALIDATION_STATUSES); approval is a client-side boolean (isApproved) and /plan/apply is never called by the UI; export is not gated on approval; validation route does not pass source_workspace so sandbox validation is syntax-only; dependency_staging is a stub returning NOT_REQUIRED; registry_client 2 MB response cap fails large packages (e.g. numpy). Owner decision: baseline is not production-ready.",
       "status": "open",
       "at": "2026-11-11T08:11:38Z"
+    },
+    {
+      "id": "N6",
+      "kind": "risk",
+      "text": "Correction to v2.0 completion report (Security review): Origin validation, Content-Type enforcement and X-DUA-Client anti-CSRF header checks (NFR-1, T-2) are NOT implemented in src/; only CORSMiddleware exists (src/api/main.py). The report's 'verified by tests' claim for these was wrong. To be implemented and tested in M10 together with Host-header validation.",
+      "status": "open",
+      "at": "2026-11-11T10:29:23Z"
+    },
+    {
+      "id": "N7",
+      "kind": "decision",
+      "text": "M10 post-submission audit (2026-11-12, before commit): added unit-test guard against live package downloads, live Docker staging integration tests (tests/test_docker_staging_integration.py) wired into CI with DUA_REQUIRE_DOCKER=1, frontend CI job, UI marking of offline-catalog and failed registry lookups, quiet git clone. M10 remains awaiting human G4 approval.",
+      "status": "open",
+      "at": "2026-11-12T04:43:41Z"
     }
   ],
-  "head": "f64ba39f15c8f73be2cb7b225a52e110716cf53ed18b0c8dfef00db84759db35"
+  "head": "65e9c462c1b5bc00a54fa86e59f510214e704dcc0f05d663387f70f54d89992c"
 }

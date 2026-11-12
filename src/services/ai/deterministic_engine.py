@@ -166,7 +166,7 @@ class DeterministicRecommendationEngine(AIRecommendationProvider):
                 candidate = cand_cand
                 category, priority, explanation, breaking_changes = self._classify_upgrade(dep, candidate)
                 if specifier_str.startswith("==") or specifier_str.startswith("==="):
-                    explanation = f"Exact pin bump from '{dep.current_version}' to '{candidate}'. Requires manifest pin update in M4. {explanation}".strip()
+                    explanation = f"Exact pin bump from '{dep.current_version}' to '{candidate}'. The exact pin in the manifest will be updated. {explanation}".strip()
             else:
                 return PackageUpgradeRecommendation(
                     package_name=dep.name,
@@ -246,7 +246,7 @@ class DeterministicRecommendationEngine(AIRecommendationProvider):
             return (
                 RecommendationCategory.CAUTION,
                 RecommendationPriority.CRITICAL,
-                f"Package '{dep.name}' is deprecated or yanked upstream ({reason}). Upgrade to '{candidate}' is urgently recommended in M4.",
+                f"Package '{dep.name}' is deprecated or yanked upstream ({reason}). Upgrading to '{candidate}' is strongly recommended.",
                 f"Critical advisory: {reason}. Review migration guide.",
             )
 
@@ -254,7 +254,7 @@ class DeterministicRecommendationEngine(AIRecommendationProvider):
             return (
                 RecommendationCategory.CAUTION,
                 RecommendationPriority.HIGH,
-                f"Major version bump for '{dep.name}' from {curr} to {candidate}. Requires breaking change testing in M4.",
+                f"Major version bump for '{dep.name}' from {curr} to {candidate}. Review breaking changes and run your tests before merging.",
                 f"Major version jump ({curr} -> {candidate}). Backwards-incompatible API changes are likely.",
             )
 

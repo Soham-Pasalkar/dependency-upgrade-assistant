@@ -44,6 +44,11 @@ class Settings(BaseSettings):
         description="Allowed origins for Cross-Origin Resource Sharing",
     )
 
+    ALLOWED_HOSTS: List[str] = Field(
+        default_factory=lambda: ["localhost", "127.0.0.1", "::1"],
+        description="Host header values the API answers to (DNS-rebinding protection)",
+    )
+
     # Ollama Local AI Settings
     OLLAMA_BASE_URL: str = Field(default="http://127.0.0.1:11434", description="Base URL of the Ollama server")
     OLLAMA_DEFAULT_MODEL: str = Field(default="llama3:latest", description="Default model tag for Ollama")
@@ -55,7 +60,7 @@ class Settings(BaseSettings):
     DOCKER_MAX_MEMORY_MB: int = Field(default=512, description="Maximum RAM cap per container")
     DOCKER_MAX_CPUS: float = Field(default=1.0, description="Maximum CPU limit per container")
 
-    @field_validator("CORS_ORIGINS", mode="before")
+    @field_validator("CORS_ORIGINS", "ALLOWED_HOSTS", mode="before")
     @classmethod
     def parse_cors_origins(cls, value: Union[str, List[str]]) -> List[str]:
         if isinstance(value, str):

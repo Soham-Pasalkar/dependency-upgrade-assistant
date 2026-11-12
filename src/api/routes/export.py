@@ -26,6 +26,8 @@ from src.services.sandbox_service import (
     get_sandbox_service,
 )
 from src.services.secret_scanner import SecretLeakageError
+from src.services.approval_service import ApprovalError, require_approved_proposal
+from src.services.run_store import RunStore, get_run_store
 
 logger = logging.getLogger("dua.api.export")
 
@@ -47,6 +49,7 @@ async def create_export(
     exporter: Annotated[ArtifactExporter, Depends(get_artifact_exporter)],
     registry: Annotated[ProposalRegistry, Depends(get_proposal_registry)],
     sandbox: Annotated[SandboxService, Depends(get_sandbox_service)],
+    store: Annotated[RunStore, Depends(get_run_store)],
 ) -> ExportMetadataResponse:
     """Construct verified deliverable bundle for a proposal and optional validation run."""
     if not request.proposal_id:
@@ -63,6 +66,14 @@ async def create_export(
             detail=f"Proposal '{request.proposal_id}' was not found or has expired.",
         )
 
+    # 1b. Server-recorded approval of this exact diff is mandatory (FR-16)
+    try:
+        approved = await run_in_threadpool(
+            require_approved_proposal, request.proposal_id, store, registry, "export"
+        )
+    except ApprovalError as err:
+        raise HTTPException(status_code=err.status_code, detail=err.message)
+
     # 2. Retrieve optional validation report
     validation_report = None
     if request.execution_id:
@@ -72,6 +83,11 @@ async def create_export(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Validation execution '{request.execution_id}' was not found.",
             )
+        if validation_report.proposal_id != request.proposal_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This validation run belongs to a different plan.",
+            )
 
     # 3. Export deliverables in worker thread pool
     try:
@@ -79,7 +95,7 @@ async def create_export(
             exporter.export_proposal,
             proposal=stored_proposal.proposal,
             validation_report=validation_report,
-            run_id=request.run_id,
+            run_id=approved.binding.run_id,
             custom_notes=request.custom_notes,
         )
         return bundle.to_response()

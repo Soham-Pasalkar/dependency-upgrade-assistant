@@ -27,13 +27,13 @@ describe('SandboxValidation Component', () => {
 
     render(<SandboxValidation manifestType="requirements.txt" />);
 
-    expect(screen.getByText('Sandboxed Container Validation')).toBeInTheDocument();
-    expect(screen.getAllByText('--network none').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByTestId('sandbox-validation-section')).toBeInTheDocument();
+    expect(screen.getByText('none')).toBeInTheDocument();
     expect(screen.getByText('1000:1000 (non-root)')).toBeInTheDocument();
     expect(screen.getByText('--cap-drop=ALL')).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(screen.getByText(/Docker Offline/i)).toBeInTheDocument();
+      expect(screen.getByText(/Docker not available/i)).toBeInTheDocument();
     });
   });
 
@@ -47,7 +47,7 @@ describe('SandboxValidation Component', () => {
     render(<SandboxValidation manifestType="requirements.txt" />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Docker Engine Active \(v26\.1\.0\)/i)).toBeInTheDocument();
+      expect(screen.getByText(/Docker available \(26\.1\.0\)/i)).toBeInTheDocument();
     });
   });
 
@@ -77,7 +77,7 @@ describe('SandboxValidation Component', () => {
 
     vi.mocked(apiClient.executeValidation).mockResolvedValueOnce(mockReport);
 
-    render(<SandboxValidation manifestType="requirements.txt" />);
+    render(<SandboxValidation manifestType="requirements.txt" isApproved />);
 
     fireEvent.click(screen.getByTestId('btn-run-validation'));
 
@@ -85,13 +85,11 @@ describe('SandboxValidation Component', () => {
       expect(screen.getByTestId('validation-results')).toBeInTheDocument();
     });
 
-    expect(screen.getByTestId('validation-status-badge')).toHaveTextContent('NOT RUNNABLE');
-    expect(screen.getByTestId('validation-summary-text')).toHaveTextContent(
-      'Docker sandbox unavailable: Docker daemon is not running.'
-    );
-    expect(screen.getByTestId('validation-logs-text')).toHaveTextContent(
-      '[DIAGNOSTIC] Docker daemon is not running.'
-    );
+    expect(screen.getByTestId('validation-status-badge')).toHaveTextContent('Not runnable');
+    expect(screen.getByTestId('validation-summary-text')).toHaveTextContent('nothing was executed');
+    // Nothing ran, so there is no container output to show and no pass is implied.
+    expect(screen.queryByTestId('validation-logs-section')).not.toBeInTheDocument();
+    expect(screen.queryByText('Passed')).not.toBeInTheDocument();
   });
 
   it('executes validation and displays PASSED status with command breakdown', async () => {
@@ -143,7 +141,7 @@ describe('SandboxValidation Component', () => {
 
     vi.mocked(apiClient.executeValidation).mockResolvedValueOnce(mockReport);
 
-    render(<SandboxValidation manifestType="requirements.txt" />);
+    render(<SandboxValidation manifestType="requirements.txt" isApproved />);
 
     fireEvent.click(screen.getByTestId('btn-run-validation'));
 
@@ -151,7 +149,7 @@ describe('SandboxValidation Component', () => {
       expect(screen.getByTestId('validation-results')).toBeInTheDocument();
     });
 
-    expect(screen.getByTestId('validation-status-badge')).toHaveTextContent('PASSED');
+    expect(screen.getByTestId('validation-status-badge')).toHaveTextContent('Passed');
     expect(screen.getByTestId('validation-commands-table')).toBeInTheDocument();
     expect(screen.getByText('py_compile')).toBeInTheDocument();
     expect(screen.getByText('pytest')).toBeInTheDocument();
@@ -204,7 +202,7 @@ describe('SandboxValidation Component', () => {
     );
 
     expect(screen.getByTestId('validation-approval-gate-badge')).toHaveTextContent(
-      'Proposal Review Pending'
+      'Approval required'
     );
 
     rerender(
@@ -216,7 +214,17 @@ describe('SandboxValidation Component', () => {
     );
 
     expect(screen.getByTestId('validation-approval-gate-badge')).toHaveTextContent(
-      'Proposal Human-Approved'
+      'Plan approved'
     );
+  });
+
+  it('keeps validation locked until the plan is approved', async () => {
+    vi.mocked(apiClient.getSandboxStatus).mockResolvedValueOnce({ is_available: true, version: '26.0.0', error_message: null });
+    render(<SandboxValidation manifestType="requirements.txt" isApproved={false} />);
+    const runBtn = screen.getByTestId('btn-run-validation');
+    expect(runBtn).toBeDisabled();
+    fireEvent.click(runBtn);
+    expect(apiClient.executeValidation).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText(/Docker available/i)).toBeInTheDocument());
   });
 });

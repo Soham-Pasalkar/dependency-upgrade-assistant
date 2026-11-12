@@ -27,6 +27,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 8.0
 DEFAULT_CACHE_TTL_SECONDS = 300.0  # 5 minutes
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024  # 2 MB limit
+# Bounded fallback for very large projects (numpy, boto3): PEP 691 Simple JSON / npm abbreviated metadata.
+MAX_LARGE_RESPONSE_BYTES = 16 * 1024 * 1024
+PEP691_ACCEPT = "application/vnd.pypi.simple.v1+json"
+NPM_ABBREVIATED_ACCEPT = "application/vnd.npm.install-v1+json"
+TRANSIENT_RETRIES = 2
+RETRY_BACKOFF_SECONDS = 0.3
+TRANSIENT_STATUS_CODES = {500, 502, 503, 504}
 
 
 @dataclass
@@ -132,6 +139,7 @@ def _safe_fetch_json(
     max_bytes: int,
     allowed_hosts: Set[str],
     max_redirects: int = 3,
+    headers: Optional[Dict[str, str]] = None,
 ) -> Tuple[int, Optional[Dict[str, Any]], Optional[str]]:
     """Fetch JSON with bounded streaming, strict redirect validation, and size capping.
     
@@ -145,7 +153,12 @@ def _safe_fetch_json(
             return 400, None, f"Untrusted registry URL or redirect target: '{current_url}' (SSRF protection)"
 
         try:
-            resp = session.get(current_url, timeout=timeout, stream=True, allow_redirects=False)
+            if headers:
+                resp = session.get(current_url, timeout=timeout, stream=True, allow_redirects=False, headers=headers)
+            else:
+                resp = session.get(current_url, timeout=timeout, stream=True, allow_redirects=False)
+        except requests.Timeout as err:
+            return 504, None, f"Registry request timed out: {err}"
         except Exception as err:
             return 500, None, f"Network error connecting to registry: {err}"
 
@@ -185,6 +198,76 @@ def _safe_fetch_json(
             return 502, None, f"Invalid JSON received from registry: {jerr}"
 
     return 400, None, "Too many redirects"
+
+
+def _fetch_json_with_retry(
+    session: requests.Session,
+    url: str,
+    timeout: float,
+    max_bytes: int,
+    allowed_hosts: Set[str],
+    headers: Optional[Dict[str, str]] = None,
+    retries: int = TRANSIENT_RETRIES,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Tuple[int, Optional[Dict[str, Any]], Optional[str]]:
+    """Bounded retry with exponential backoff for transient network and 5xx failures only."""
+    attempt = 0
+    while True:
+        status_code, data, err = _safe_fetch_json(
+            session=session, url=url, timeout=timeout, max_bytes=max_bytes,
+            allowed_hosts=allowed_hosts, headers=headers,
+        )
+        transient = status_code in TRANSIENT_STATUS_CODES and data is None
+        if not transient or attempt >= retries:
+            return status_code, data, err
+        sleep(RETRY_BACKOFF_SECONDS * (2 ** attempt))
+        attempt += 1
+
+
+def _parse_pep691_project(data: Dict[str, Any]) -> Tuple[Optional[str], List[str], bool, Optional[str]]:
+    """Derive (latest, versions, latest_yanked, yanked_reason) from a PEP 691 project response."""
+    from packaging.version import InvalidVersion, Version
+
+    versions: List[str] = [str(v) for v in (data.get("versions") or [])]
+    files = data.get("files") or []
+    files_by_version: Dict[str, List[Dict[str, Any]]] = {}
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        name = str(f.get("filename") or "")
+        for v in versions:
+            if f"-{v}-" in name or f"-{v}." in name or name.endswith(f"-{v}.tar.gz") or name.endswith(f"-{v}.zip"):
+                files_by_version.setdefault(v, []).append(f)
+                break
+
+    def fully_yanked(v: str) -> Tuple[bool, Optional[str]]:
+        vf = files_by_version.get(v) or []
+        if not vf:
+            return False, None
+        if all(bool(x.get("yanked")) for x in vf):
+            reason = next((x.get("yanked") for x in vf if isinstance(x.get("yanked"), str)), None)
+            return True, reason or "Yanked on PyPI"
+        return False, None
+
+    parsed: List[Tuple[Version, str]] = []
+    for v in versions:
+        try:
+            parsed.append((Version(v), v))
+        except InvalidVersion:
+            continue
+    parsed.sort()
+    latest: Optional[str] = None
+    for ver, raw in reversed(parsed):
+        if ver.is_prerelease or ver.is_devrelease:
+            continue
+        if fully_yanked(raw)[0]:
+            continue
+        latest = raw
+        break
+    if latest is None and parsed:
+        latest = parsed[-1][1]
+    yanked, reason = fully_yanked(latest) if latest else (False, None)
+    return latest, versions, yanked, reason
 
 
 class PyPIRegistryClient:
@@ -234,13 +317,45 @@ class PyPIRegistryClient:
 
     def _fetch_from_pypi(self, package_name: str, url: str) -> RegistryPackageMetadata:
         try:
-            status_code, data, err_msg = _safe_fetch_json(
+            status_code, data, err_msg = _fetch_json_with_retry(
                 session=self._session,
                 url=url,
                 timeout=self.timeout,
                 max_bytes=self.max_response_bytes,
                 allowed_hosts=self.ALLOWED_HOSTS,
             )
+
+            if status_code == 413:
+                # Very large projects exceed the JSON API cap: use the leaner PEP 691 Simple API.
+                simple_url = f"https://pypi.org/simple/{urllib.parse.quote(package_name)}/"
+                s_status, s_data, s_err = _fetch_json_with_retry(
+                    session=self._session,
+                    url=simple_url,
+                    timeout=self.timeout,
+                    max_bytes=max(self.max_response_bytes, MAX_LARGE_RESPONSE_BYTES),
+                    allowed_hosts=self.ALLOWED_HOSTS,
+                    headers={"Accept": PEP691_ACCEPT},
+                )
+                if s_status == 200 and s_data is not None and "versions" in s_data:
+                    latest_ver, versions, yanked, reason = _parse_pep691_project(s_data)
+                    return RegistryPackageMetadata(
+                        package_name=package_name,
+                        latest_version=latest_ver,
+                        available_versions=versions,
+                        status=RegistryLookupStatus.SUCCESS,
+                        is_deprecated_or_yanked=yanked,
+                        deprecation_message=reason,
+                    )
+                if s_status == 404:
+                    status_code, err_msg = 404, None
+                else:
+                    return RegistryPackageMetadata(
+                        package_name=package_name,
+                        latest_version=None,
+                        available_versions=[],
+                        status=RegistryLookupStatus.TOO_LARGE,
+                        error_message=err_msg or s_err or "PyPI metadata is too large to process",
+                    )
 
             if status_code == 200 and data is not None:
                 info = data.get("info", {})
@@ -273,19 +388,17 @@ class PyPIRegistryClient:
                     status=RegistryLookupStatus.NOT_FOUND,
                     error_message=f"Package '{package_name}' not found on PyPI",
                 )
-            elif status_code == 413:
-                return RegistryPackageMetadata(
-                    package_name=package_name,
-                    latest_version=None,
-                    available_versions=[],
-                    status=RegistryLookupStatus.NETWORK_ERROR,
-                    error_message=err_msg or "PyPI response exceeded size limit",
-                )
             elif status_code == 429:
                 return self._fallback_local(
                     package_name,
                     RegistryLookupStatus.RATE_LIMITED,
                     "PyPI rate limit exceeded (HTTP 429)",
+                )
+            elif status_code == 504:
+                return self._fallback_local(
+                    package_name,
+                    RegistryLookupStatus.TIMEOUT,
+                    err_msg or "PyPI did not respond in time",
                 )
             else:
                 return self._fallback_local(
@@ -379,13 +492,23 @@ class NpmRegistryClient:
 
     def _fetch_from_npm(self, package_name: str, url: str) -> RegistryPackageMetadata:
         try:
-            status_code, data, err_msg = _safe_fetch_json(
+            status_code, data, err_msg = _fetch_json_with_retry(
                 session=self._session,
                 url=url,
                 timeout=self.timeout,
                 max_bytes=self.max_response_bytes,
                 allowed_hosts=self.ALLOWED_HOSTS,
             )
+            if status_code == 413:
+                # Full packuments of large packages exceed the cap: request abbreviated install metadata.
+                status_code, data, err_msg = _fetch_json_with_retry(
+                    session=self._session,
+                    url=url,
+                    timeout=self.timeout,
+                    max_bytes=max(self.max_response_bytes, MAX_LARGE_RESPONSE_BYTES),
+                    allowed_hosts=self.ALLOWED_HOSTS,
+                    headers={"Accept": NPM_ABBREVIATED_ACCEPT},
+                )
 
             if status_code == 200 and data is not None:
                 dist_tags = data.get("dist-tags", {})
@@ -425,8 +548,16 @@ class NpmRegistryClient:
                     package_name=package_name,
                     latest_version=None,
                     available_versions=[],
-                    status=RegistryLookupStatus.NETWORK_ERROR,
-                    error_message=err_msg or "npm response exceeded size limit",
+                    status=RegistryLookupStatus.TOO_LARGE,
+                    error_message=err_msg or "npm metadata is too large to process",
+                )
+            elif status_code == 504:
+                return RegistryPackageMetadata(
+                    package_name=package_name,
+                    latest_version=None,
+                    available_versions=[],
+                    status=RegistryLookupStatus.TIMEOUT,
+                    error_message=err_msg or "npm registry did not respond in time",
                 )
             elif status_code == 429:
                 return RegistryPackageMetadata(

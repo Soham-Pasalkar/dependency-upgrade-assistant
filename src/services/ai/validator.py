@@ -233,7 +233,7 @@ class RegistryGroundTruthValidator:
                 updated_priority = RecommendationPriority.MEDIUM
             pin_note = (
                 f"Upgrade target '{cand}' bumps exact pin '{specifier_str}'. "
-                f"Will require updating the manifest pin in M4."
+                f"The exact pin in the manifest will be updated."
             )
             if pin_note not in updated_explanation:
                 updated_explanation = f"{pin_note} {updated_explanation}".strip()

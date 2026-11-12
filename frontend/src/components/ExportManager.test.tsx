@@ -60,17 +60,17 @@ describe('ExportManager Component', () => {
   it('renders section title, zero-credential badge, and disabled state when no proposalId', () => {
     render(<ExportManager proposalId={null} />);
 
-    expect(screen.getByText('Deliverables Export & Checksum Verification')).toBeInTheDocument();
-    expect(screen.getByTestId('zero-secret-badge')).toHaveTextContent('Zero Credential Leakage Verified');
+    expect(screen.getByTestId('export-deliverables-section')).toBeInTheDocument();
+    expect(screen.getByTestId('zero-secret-badge')).toHaveTextContent('scanned for secrets');
     expect(screen.getByTestId('generate-export-button')).toBeDisabled();
-    expect(screen.getByText(/Generate an upgrade proposal above/i)).toBeInTheDocument();
+    expect(screen.getByText(/Build an upgrade plan first/i)).toBeInTheDocument();
   });
 
   it('renders validation status badge truthfully when supplied', () => {
-    render(<ExportManager proposalId="prop_1" validationStatus="NOT_RUNNABLE" />);
+    render(<ExportManager proposalId="prop_1" validationStatus="NOT_RUNNABLE" isApproved />);
 
     const badge = screen.getByTestId('export-val-status');
-    expect(badge).toHaveTextContent('Validation: NOT_RUNNABLE');
+    expect(badge).toHaveTextContent('Validation not runnable');
   });
 
   it('triggers createExport on button click and displays artifact items with checksums', async () => {
@@ -81,6 +81,7 @@ describe('ExportManager Component', () => {
         proposalId="prop_test_456"
         executionId="exec_test_789"
         validationStatus="PASSED"
+        isApproved
       />
     );
 
@@ -100,7 +101,7 @@ describe('ExportManager Component', () => {
 
     expect(screen.getByText('requirements.txt-upgrade.patch')).toBeInTheDocument();
     expect(screen.getByText('summary.json')).toBeInTheDocument();
-    expect(screen.getByText('requirements.txt-upgrade-bundle.zip')).toBeInTheDocument();
+    expect(screen.getAllByText('requirements.txt-upgrade-bundle.zip').length).toBeGreaterThanOrEqual(1);
 
     const patchDownloadBtn = screen.getByTestId('download-button-patch');
     expect(patchDownloadBtn).toHaveAttribute('download', 'requirements.txt-upgrade.patch');
@@ -115,7 +116,7 @@ describe('ExportManager Component', () => {
       new Error('Export generation failed: Pre-export secret verification failed')
     );
 
-    render(<ExportManager proposalId="prop_secret_leak" />);
+    render(<ExportManager proposalId="prop_secret_leak" isApproved />);
 
     fireEvent.click(screen.getByTestId('generate-export-button'));
 
@@ -132,11 +133,11 @@ describe('ExportManager Component', () => {
     vi.mocked(apiClient.createExport).mockResolvedValueOnce(mockExportResponse);
     Object.assign(navigator, {
       clipboard: {
-        writeText: vi.fn(),
+        writeText: vi.fn().mockResolvedValue(undefined),
       },
     });
 
-    render(<ExportManager proposalId="prop_test_456" />);
+    render(<ExportManager proposalId="prop_test_456" isApproved />);
 
     fireEvent.click(screen.getByTestId('generate-export-button'));
 
@@ -150,7 +151,13 @@ describe('ExportManager Component', () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
       'a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef0'
     );
-    expect(screen.getByText('✓ Copied')).toBeInTheDocument();
+    expect(await screen.findByText('Copied')).toBeInTheDocument();
+  });
+
+  it('keeps export locked until the plan is approved', () => {
+    render(<ExportManager proposalId="prop_test_456" isApproved={false} />);
+    expect(screen.getByTestId('generate-export-button')).toBeDisabled();
+    expect(screen.getByText(/Approve the plan to enable export/i)).toBeInTheDocument();
+    expect(apiClient.createExport).not.toHaveBeenCalled();
   });
 });
-

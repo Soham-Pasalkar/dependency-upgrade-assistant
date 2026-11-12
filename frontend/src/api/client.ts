@@ -7,7 +7,14 @@ import { config } from '../config';
 export type Ecosystem = 'python' | 'npm';
 export type DependencyType = 'runtime' | 'development';
 export type DependencyStatus = 'UP_TO_DATE' | 'UPGRADE_AVAILABLE' | 'PRESERVED';
-export type RegistryLookupStatus = 'SUCCESS' | 'NOT_FOUND' | 'RATE_LIMITED' | 'NETWORK_ERROR' | 'SKIPPED';
+export type RegistryLookupStatus =
+  | 'SUCCESS'
+  | 'NOT_FOUND'
+  | 'RATE_LIMITED'
+  | 'NETWORK_ERROR'
+  | 'SKIPPED'
+  | 'TOO_LARGE'
+  | 'TIMEOUT';
 
 export type RecommendationCategory =
   | 'RECOMMENDED'
@@ -197,6 +204,7 @@ export async function analyzeManifest(
     const response = await fetch(url, {
       method: 'POST',
       headers: {
+        'X-DUA-Client': 'web',
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
@@ -246,6 +254,7 @@ export async function uploadManifest(
     const response = await fetch(url, {
       method: 'POST',
       headers: {
+        'X-DUA-Client': 'web',
         'Accept': 'application/json',
       },
       body: formData,
@@ -323,6 +332,7 @@ export async function generateRecommendations(
     const response = await fetch(url, {
       method: 'POST',
       headers: {
+        'X-DUA-Client': 'web',
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
@@ -442,6 +452,7 @@ export async function generateUpgradePlan(
     const response = await fetch(url, {
       method: 'POST',
       headers: {
+        'X-DUA-Client': 'web',
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
@@ -505,6 +516,7 @@ export async function applyUpgradeProposal(
     const response = await fetch(url, {
       method: 'POST',
       headers: {
+        'X-DUA-Client': 'web',
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
@@ -644,6 +656,7 @@ export async function executeValidation(
     const response = await fetch(url, {
       method: 'POST',
       headers: {
+        'X-DUA-Client': 'web',
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
@@ -747,6 +760,7 @@ export async function cancelValidationExecution(
     const response = await fetch(url, {
       method: 'POST',
       headers: {
+        'X-DUA-Client': 'web',
         'Accept': 'application/json',
       },
     });
@@ -816,6 +830,7 @@ export async function createExport(request: ExportRequest): Promise<ExportMetada
     const response = await fetch(url, {
       method: 'POST',
       headers: {
+        'X-DUA-Client': 'web',
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
@@ -873,3 +888,157 @@ export function getArtifactDownloadUrl(exportId: string, artifactType: ArtifactT
   return `${config.apiBaseUrl}/api/export/${encodeURIComponent(exportId)}/download/${encodeURIComponent(artifactType)}`;
 }
 
+
+
+// ============================================================================
+// Server-held analysis runs, repositories and approvals
+// ============================================================================
+
+export interface RepositoryInfo {
+  full_name: string;
+  url: string;
+  commit_sha?: string | null;
+  default_branch?: string | null;
+  description?: string | null;
+  files_scanned: number;
+  bytes_on_disk: number;
+}
+
+export interface RunManifest {
+  index: number;
+  path: string;
+  manifest_type: string;
+  kind: 'requirements' | 'pyproject' | 'package_json';
+  ecosystem?: Ecosystem | null;
+  plannable: boolean;
+  note?: string | null;
+  error?: string | null;
+  analysis?: ManifestAnalysisResponse | null;
+  recommendations?: RecommendationBatchResponse | null;
+  proposal_id?: string | null;
+}
+
+export interface RunResponse {
+  run_id: string;
+  source: 'github' | 'manifest';
+  created_at: number;
+  repository?: RepositoryInfo | null;
+  manifests: RunManifest[];
+  skipped: string[];
+  has_workspace: boolean;
+}
+
+export interface ApprovalResponse {
+  proposal_id: string;
+  run_id: string;
+  diff_sha256: string;
+  approved: boolean;
+  approved_at?: number | null;
+  note?: string | null;
+}
+
+function detailMessage(data: unknown, fallback: string): string {
+  if (data && typeof data === 'object' && 'detail' in data) {
+    const detail = (data as { detail: unknown }).detail;
+    if (typeof detail === 'string') return detail;
+    if (detail && typeof detail === 'object' && 'message' in detail) {
+      return String((detail as { message: unknown }).message);
+    }
+  }
+  return fallback;
+}
+
+async function postJson<T>(path: string, body: unknown, fallback: string): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${config.apiBaseUrl}${path}`, {
+      method: 'POST',
+      headers: {
+        'X-DUA-Client': 'web',
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(body ?? {}),
+    });
+  } catch {
+    throw new ApiError('The analysis service could not be reached. Check that it is running.');
+  }
+  const text = await response.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+  if (!response.ok) {
+    const details =
+      data && typeof data === 'object' && 'detail' in data && typeof (data as { detail: unknown }).detail === 'object'
+        ? (data as { detail: unknown }).detail
+        : data;
+    throw new ApiError(detailMessage(data, `${fallback} (${response.status})`), response.status, details);
+  }
+  return data as T;
+}
+
+/** Clone and analyze a public GitHub repository on the server. */
+export function analyzeRepository(url: string): Promise<RunResponse> {
+  return postJson<RunResponse>('/api/repositories/analyze', { url }, 'Repository analysis failed');
+}
+
+/** Analyze a pasted or uploaded manifest and keep the result on the server. */
+export function createManifestRun(manifestType: string, content: string): Promise<RunResponse> {
+  return postJson<RunResponse>(
+    '/api/runs/manifest',
+    { manifest_type: manifestType, content },
+    'Manifest analysis failed'
+  );
+}
+
+/** Generate recommendations from the analysis the server already holds. */
+export function generateRunRecommendations(
+  runId: string,
+  index: number,
+  options: { preferred_model?: string | null; force_deterministic?: boolean } = {}
+): Promise<RecommendationBatchResponse> {
+  return postJson<RecommendationBatchResponse>(
+    `/api/runs/${encodeURIComponent(runId)}/manifests/${index}/recommendations`,
+    options,
+    'Recommendation generation failed'
+  );
+}
+
+/** Build an upgrade plan from server-held recommendations. */
+export function generateRunPlan(
+  runId: string,
+  index: number,
+  selectedPackages?: string[] | null
+): Promise<UpgradeProposalResponse> {
+  return postJson<UpgradeProposalResponse>(
+    `/api/runs/${encodeURIComponent(runId)}/manifests/${index}/plan`,
+    selectedPackages ? { selected_packages: selectedPackages } : {},
+    'Upgrade plan generation failed'
+  );
+}
+
+/** SHA-256 of the exact diff text the reviewer saw. */
+export async function sha256Hex(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/** Record explicit approval of the reviewed diff on the server. */
+export async function approveProposal(
+  proposalId: string,
+  unifiedDiff: string,
+  note?: string
+): Promise<ApprovalResponse> {
+  const diff_sha256 = await sha256Hex(unifiedDiff);
+  return postJson<ApprovalResponse>(
+    `/api/proposals/${encodeURIComponent(proposalId)}/approve`,
+    { diff_sha256, note: note || null },
+    'Approval failed'
+  );
+}

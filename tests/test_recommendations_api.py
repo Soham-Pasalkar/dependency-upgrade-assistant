@@ -296,7 +296,11 @@ def test_recommendations_route_does_not_block_event_loop(sample_manifest_analysi
     app.dependency_overrides[get_recommendation_service] = lambda: mock_service
 
     async def run_concurrent():
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://localhost",
+            headers={"Origin": "http://localhost:5173", "X-DUA-Client": "web"},
+        ) as ac:
             payload = {
                 "manifest_analysis": sample_manifest_analysis.model_dump(),
                 "force_deterministic": False,

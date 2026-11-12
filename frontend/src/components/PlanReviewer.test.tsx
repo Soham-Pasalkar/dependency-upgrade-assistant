@@ -59,12 +59,11 @@ describe('PlanReviewer Component', () => {
       />
     );
 
-    expect(screen.getByTestId('proposal-id-badge')).toHaveTextContent('prop_unit_test_123');
     expect(screen.getAllByText('requirements.txt').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('Total Planned')).toBeInTheDocument();
+    expect(screen.getByText('Total planned')).toBeInTheDocument();
     expect(screen.getAllByText('1').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('✓ Verified')).toBeInTheDocument();
-    expect(screen.getByTestId('approval-status-badge')).toHaveTextContent('Pending Review');
+    expect(screen.getByText('Verified')).toBeInTheDocument();
+    expect(screen.getByTestId('approval-status-badge')).toHaveTextContent('Awaiting review');
   });
 
   it('renders planned upgrade items table with versions and rationale', () => {
@@ -82,7 +81,7 @@ describe('PlanReviewer Component', () => {
     expect(row).toHaveTextContent('2.28.0');
     expect(row).toHaveTextContent('2.32.3');
     expect(row).toHaveTextContent('Security update addressing CVE-2023-32681');
-    expect(row).toHaveTextContent('UPGRADE');
+    expect(row).toHaveTextContent('Upgrade');
   });
 
   it('renders unified diff lines and toggles diff visibility', () => {
@@ -142,10 +141,26 @@ describe('PlanReviewer Component', () => {
       />
     );
 
-    expect(screen.getByTestId('approval-status-badge')).toHaveTextContent('✓ Human Approved');
+    expect(screen.getByTestId('approval-status-badge')).toHaveTextContent('Approved');
     expect(screen.getByTestId('approval-confirmed-banner')).toHaveTextContent(
-      'Reviewer Note: "Approved in sprint review"'
+      'Approved in sprint review'
     );
     expect(screen.queryByTestId('confirm-approval-btn')).not.toBeInTheDocument();
+  });
+
+  it('does not allow approving a patch that failed integrity checks', () => {
+    render(
+      <PlanReviewer
+        proposal={{
+          ...mockProposal,
+          integrity: { ...mockProposal.integrity, is_valid: false, checks_failed: ['applicability_check'] },
+        }}
+        onApprove={vi.fn()}
+        isApproved={false}
+      />
+    );
+    expect(screen.getByText('Failed')).toBeInTheDocument();
+    expect(screen.queryByTestId('confirm-approval-btn')).not.toBeInTheDocument();
+    expect(screen.getByText(/cannot be approved/i)).toBeInTheDocument();
   });
 });

@@ -655,3 +655,27 @@ Long-running analysis and validation tasks must execute reliably regardless of f
 | **NFR-6** | Accessible UI | `frontend/src/` | Automated a11y testing verifying WCAG AA compliance. |
 | **NFR-7** | Brownfield Test Preservation | All existing test suites | Full execution of all 146 existing tests via pytest. |
 | **NFR-8** | Audit Trail Verification | `.aidlc/` and `scripts/aidlc.py` | Automated execution of `aidlc.py verify` in CI. |
+
+## Revision 2 delta — Inception round 2 (2026-11-11)
+Additive; the architecture above remains the baseline. Legacy Streamlit (`src/app.py`, `src/pipeline/`) is untouched.
+
+| Area | Change | Reused |
+|------|--------|--------|
+| Run state | New `src/services/run_store.py` on SQLite (additive tables `runs`, `run_manifests`, `plan_approvals`); routes take run/proposal IDs; server values override client values (ADR-005) | `src/api/database.py`, `proposal_registry.py` |
+| Repository acquisition | New `src/services/repository_service.py` + `src/api/routes/repositories.py` (`POST /repositories/analyze`, `GET /runs/{id}`); GitHub metadata pre-check, hardened clone, NFR-9 limits, TTL cleanup via `pending_cleanups` (ADR-006) | `git_service.py` URL validation, `workspace_manager.py`, `analysis/manifest_scanner.py` (extended for `package.json`, limits) |
+| Analysis | Each discovered manifest analysed via existing `manifest_service` and `recommendation_service` | Existing deterministic analysis and Ollama/fallback |
+| Registry | `registry_client.py`: PEP 691 Simple JSON for PyPI versions, bounded streaming, typed error taxonomy, retry with backoff | Existing cache and safe-fetch |
+| Approval | `POST /plan/{proposal_id}/approve` records diff hash; validation, apply and export check it (409 otherwise); execution bound to proposal | `plan.py`, `export.py`, `validation.py` |
+| Validation | Route passes repository workspace copy with applied changes to `sandbox_service`; `dependency_staging.py` implements offline staging (ADR-007); new result statuses | `container_config.py` hardening unchanged, `snapshot_manager.py` |
+| Security middleware | Host-header validation added beside existing Origin/Content-Type/`X-DUA-Client` checks | Existing middleware |
+| Frontend (delivered first, M9) | Landing page plus application shell sharing one token system; journey components on existing APIs, then repository-first in M10; `ManifestAnalyzer` split into steps; manual manifest path kept (ADR-008) | `frontend/src/api/client.ts` |
+
+### Failure modes (Revision 2)
+- GitHub API unreachable or rate-limited → analysis refused with a rate-limit/network error; no clone attempted.
+- Clone timeout or limit breach → workspace deleted; specific error returned.
+- Registry too-large/timeout → per-package error status; other packages still analysed.
+- Docker unavailable → `NOT_RUNNABLE`, never a pass.
+- Backend restart → runs readable from SQLite; expired workspaces cleaned on startup.
+
+### Decision records (Revision 2)
+ADR-005 server-authoritative run state; ADR-006 hardened clone; ADR-007 offline dependency staging; ADR-008 frontend design system.

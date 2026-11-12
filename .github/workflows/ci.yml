@@ -61,3 +61,38 @@ jobs:
       - name: Run Sandboxed Validation Integration Tests
         run: |
           pytest -v tests/test_sandbox_security.py tests/test_sandbox_runner.py tests/test_validation_api.py
+
+      - name: Run offline staging and container install integration tests (Python and npm)
+        env:
+          DUA_REQUIRE_DOCKER: "1"
+        run: |
+          pytest -v -rA -s tests/test_docker_staging_integration.py tests/test_dependency_staging.py
+
+  frontend:
+    name: Frontend tests, lint and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build

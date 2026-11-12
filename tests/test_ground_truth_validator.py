@@ -350,7 +350,7 @@ def test_validator_handles_exact_pin_bump_with_caution(validator):
     assert validated.validation_status == ValidationStatus.VALIDATED
     assert validated.candidate_version == "2.32.3"
     assert validated.category == RecommendationCategory.CAUTION
-    assert "M4" in validated.explanation
+    assert "The exact pin in the manifest will be updated" in validated.explanation
     assert "==2.25.0" in validated.explanation
 
 

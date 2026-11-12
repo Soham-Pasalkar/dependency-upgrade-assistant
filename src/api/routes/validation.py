@@ -13,6 +13,12 @@ from src.models.sandbox import (
     ValidationReportResponse,
 )
 from src.services.sandbox_service import SandboxService, get_sandbox_service
+from src.services.approval_service import ApprovalError, require_approved_proposal
+from src.services.proposal_registry import ProposalRegistry, get_proposal_registry
+from src.services.run_store import RunStore, get_run_store
+from pathlib import Path
+
+from src.api.config import settings
 
 logger = logging.getLogger("dua.api.validation")
 
@@ -49,10 +55,37 @@ async def get_sandbox_status(
 async def execute_validation(
     request: SandboxExecutionRequest,
     service: Annotated[SandboxService, Depends(get_sandbox_service)],
+    store: Annotated[RunStore, Depends(get_run_store)],
+    registry: Annotated[ProposalRegistry, Depends(get_proposal_registry)],
 ) -> ValidationReportResponse:
-    """Initiate and await sandboxed validation for a proposal or snapshot."""
+    """Initiate and await sandboxed validation for an approved proposal."""
     try:
-        report = await run_in_threadpool(service.execute_validation, request)
+        approved = await run_in_threadpool(
+            require_approved_proposal, request.proposal_id, store, registry, "run validation"
+        )
+    except ApprovalError as err:
+        raise HTTPException(status_code=err.status_code, detail=err.message)
+
+    # Repository runs validate the real workspace with the approved change applied (FR-18).
+    source_workspace = None
+    workspace_dir = await run_in_threadpool(store.workspace_dir, approved.binding.run_id)
+    if workspace_dir:
+        if not Path(workspace_dir).is_dir():
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="The repository copy has expired. Analyze the repository again to validate.",
+            )
+        # The sandbox boundary check takes a path relative to the server workspace root.
+        try:
+            source_workspace = str(Path(workspace_dir).resolve().relative_to(settings.resolved_workspace_root))
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The repository copy is outside the workspace area and cannot be validated.",
+            )
+
+    try:
+        report = await run_in_threadpool(service.execute_validation, request, source_workspace)
         return report
     except ValueError as err:
         err_msg = str(err)

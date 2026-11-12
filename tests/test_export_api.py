@@ -6,6 +6,8 @@ from typing import Generator
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.approval_helpers import approve_registered_proposal
+
 from src.api.main import app
 from src.models.export import ArtifactType
 from src.models.manifest import DependencyType, Ecosystem
@@ -82,6 +84,7 @@ def sample_registered_proposal() -> str:
         requires_human_approval=True,
     )
     proposal_id = registry.store(proposal)
+    approve_registered_proposal(proposal_id)
     return proposal_id
 
 
@@ -249,6 +252,7 @@ def test_export_with_secret_leakage_returns_422(client: TestClient):
         status=ProposalStatus.READY_FOR_REVIEW,
     )
     prop_id = registry.store(leaked_proposal)
+    approve_registered_proposal(prop_id)
 
     resp = client.post("/api/export", json={"proposal_id": prop_id})
     assert resp.status_code == 422

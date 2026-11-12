@@ -14,6 +14,7 @@ Journey verified:
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import zipfile
@@ -60,23 +61,24 @@ def test_complete_e2e_journey_python_requirements(client: TestClient):
     """Verify complete 10-step upgrade lifecycle for a Python requirements.txt manifest."""
     # Step 1 & 2: Manifest Ingestion and Dependency Analysis
     analysis_resp = client.post(
-        "/api/manifest/analyze",
+        "/api/runs/manifest",
         json={
             "manifest_type": "requirements.txt",
             "content": PYTHON_MANIFEST,
         },
     )
     assert analysis_resp.status_code == 200
-    analysis_data = analysis_resp.json()
+    run_data = analysis_resp.json()
+    run_id = run_data["run_id"]
+    analysis_data = run_data["manifests"][0]["analysis"]
     assert analysis_data["ecosystem"] == "python"
     assert analysis_data["total_dependencies"] == 3
     assert len(analysis_data["dependencies"]) == 3
 
     # Step 3: Upgrade Recommendations Generation
     recs_resp = client.post(
-        "/api/recommendations/generate",
+        f"/api/runs/{run_id}/manifests/0/recommendations",
         json={
-            "manifest_analysis": analysis_data,
             "force_deterministic": True,
         },
     )
@@ -86,15 +88,7 @@ def test_complete_e2e_journey_python_requirements(client: TestClient):
     recommendations = recs_data["recommendations"]
 
     # Step 4 & 5: Upgrade Plan & Patch Synthesis
-    plan_resp = client.post(
-        "/api/plan/generate",
-        json={
-            "manifest_type": "requirements.txt",
-            "original_content": PYTHON_MANIFEST,
-            "recommendations": recommendations,
-            "file_path": "requirements.txt",
-        },
-    )
+    plan_resp = client.post(f"/api/runs/{run_id}/manifests/0/plan", json={})
     assert plan_resp.status_code == 200
     proposal = plan_resp.json()
     proposal_id = proposal["proposal_id"]
@@ -118,6 +112,16 @@ def test_complete_e2e_journey_python_requirements(client: TestClient):
     assert "approval" in unapproved_resp.json()["detail"].lower()
 
     # Step 7 & 8: Sandboxed Validation Execution & Reporting
+    # Validation is refused until the server has recorded approval of this exact diff.
+    refused = client.post("/api/validation/execute", json={"proposal_id": proposal_id})
+    assert refused.status_code == 409
+    approve_resp = client.post(
+        f"/api/proposals/{proposal_id}/approve",
+        json={"diff_sha256": hashlib.sha256(proposal["unified_diff"].encode("utf-8")).hexdigest()},
+    )
+    assert approve_resp.status_code == 200
+    assert approve_resp.json()["approved"] is True
+
     val_resp = client.post(
         "/api/validation/execute",
         json={
@@ -218,22 +222,23 @@ def test_complete_e2e_journey_npm_package_json(client: TestClient):
     """Verify complete 10-step upgrade lifecycle for a Node.js package.json manifest."""
     # Step 1 & 2: Ingest and Analyze Node.js Manifest
     analysis_resp = client.post(
-        "/api/manifest/analyze",
+        "/api/runs/manifest",
         json={
             "manifest_type": "package.json",
             "content": PACKAGE_JSON_MANIFEST,
         },
     )
     assert analysis_resp.status_code == 200
-    analysis_data = analysis_resp.json()
+    run_data = analysis_resp.json()
+    run_id = run_data["run_id"]
+    analysis_data = run_data["manifests"][0]["analysis"]
     assert analysis_data["ecosystem"] == "npm"
     assert analysis_data["total_dependencies"] == 3
 
     # Step 3: Recommendations Generation
     recs_resp = client.post(
-        "/api/recommendations/generate",
+        f"/api/runs/{run_id}/manifests/0/recommendations",
         json={
-            "manifest_analysis": analysis_data,
             "force_deterministic": True,
         },
     )
@@ -242,15 +247,7 @@ def test_complete_e2e_journey_npm_package_json(client: TestClient):
     recommendations = recs_data["recommendations"]
 
     # Step 4 & 5: Upgrade Plan & Patch Synthesis
-    plan_resp = client.post(
-        "/api/plan/generate",
-        json={
-            "manifest_type": "package.json",
-            "original_content": PACKAGE_JSON_MANIFEST,
-            "recommendations": recommendations,
-            "file_path": "package.json",
-        },
-    )
+    plan_resp = client.post(f"/api/runs/{run_id}/manifests/0/plan", json={})
     assert plan_resp.status_code == 200
     proposal = plan_resp.json()
     proposal_id = proposal["proposal_id"]
@@ -268,6 +265,16 @@ def test_complete_e2e_journey_npm_package_json(client: TestClient):
     assert unapproved_resp.status_code == 403
 
     # Step 7 & 8: Sandboxed Validation
+    # Validation is refused until the server has recorded approval of this exact diff.
+    refused = client.post("/api/validation/execute", json={"proposal_id": proposal_id})
+    assert refused.status_code == 409
+    approve_resp = client.post(
+        f"/api/proposals/{proposal_id}/approve",
+        json={"diff_sha256": hashlib.sha256(proposal["unified_diff"].encode("utf-8")).hexdigest()},
+    )
+    assert approve_resp.status_code == 200
+    assert approve_resp.json()["approved"] is True
+
     val_resp = client.post(
         "/api/validation/execute",
         json={

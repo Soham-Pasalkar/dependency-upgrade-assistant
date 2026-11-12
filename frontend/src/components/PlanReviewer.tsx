@@ -6,187 +6,184 @@ interface PlanReviewerProps {
   onApprove: (approvalNote?: string) => void;
   isApproved: boolean;
   approvalNote?: string;
+  isApproving?: boolean;
+  approvalError?: string | null;
+  stageIndex?: string;
 }
+
+const ACTION_LABEL: Record<string, string> = {
+  UPGRADE: 'Upgrade',
+  RETAIN: 'Keep',
+  REJECT_CONFLICT: 'Conflict',
+  REJECT_UNSUPPORTED: 'Not managed',
+  REJECT_STALE: 'Stale',
+};
+
+const lineClass = (line: string) => {
+  if (line.startsWith('+++') || line.startsWith('---')) return 'd-file';
+  if (line.startsWith('@@')) return 'd-hunk';
+  if (line.startsWith('+')) return 'd-add';
+  if (line.startsWith('-')) return 'd-del';
+  return 'd-ctx';
+};
 
 export const PlanReviewer: React.FC<PlanReviewerProps> = ({
   proposal,
   onApprove,
   isApproved,
   approvalNote,
+  isApproving = false,
+  approvalError = null,
+  stageIndex = '05',
 }) => {
   const [isChecked, setIsChecked] = useState<boolean>(isApproved);
   const [noteInput, setNoteInput] = useState<string>(approvalNote || '');
   const [isDiffExpanded, setIsDiffExpanded] = useState<boolean>(true);
 
+  const changes = proposal.plan_items.filter((i) => i.action === 'UPGRADE');
+  const integrity = proposal.integrity;
+  const canApprove = integrity.is_valid && proposal.total_planned > 0;
+  const diffLines = proposal.unified_diff ? proposal.unified_diff.replace(/\n$/, '').split('\n') : [];
+
   const handleConfirmApproval = () => {
-    if (!isChecked) return;
+    if (!isChecked || !canApprove) return;
     onApprove(noteInput.trim() || undefined);
   };
 
-  const renderDiffLines = (diff: string) => {
-    if (!diff) return <div className="diff-empty text-muted">No differences detected.</div>;
-
-    const lines = diff.split('\n');
-    return lines.map((line, idx) => {
-      let lineClass = 'diff-line-context';
-      if (line.startsWith('+') && !line.startsWith('+++')) {
-        lineClass = 'diff-line-add';
-      } else if (line.startsWith('-') && !line.startsWith('---')) {
-        lineClass = 'diff-line-del';
-      } else if (line.startsWith('@@')) {
-        lineClass = 'diff-line-hunk';
-      } else if (line.startsWith('---') || line.startsWith('+++')) {
-        lineClass = 'diff-line-header';
-      }
-
-      return (
-        <div key={idx} className={`diff-line ${lineClass}`}>
-          <span className="diff-line-num">{idx + 1}</span>
-          <span className="diff-line-content">{line}</span>
-        </div>
-      );
-    });
-  };
-
   return (
-    <div className="plan-reviewer-card" data-testid="plan-reviewer-section">
-      <div className="plan-header">
-        <div className="plan-title-group">
-          <h3 className="section-title">Upgrade Plan &amp; Diff Review</h3>
-          <p className="section-description">
-            Inspect deterministic dependency changes, verify unified patch integrity, and record
-            explicit human approval before sandboxed testing.
-          </p>
+    <div className="stage-body" data-testid="plan-reviewer-section">
+      <dl className="tally tally-compact">
+        <div>
+          <dt>File</dt>
+          <dd className="mono">{proposal.file_path}</dd>
         </div>
+        <div className="tone-warn">
+          <dt>Total planned</dt>
+          <dd>{proposal.total_planned}</dd>
+        </div>
+        <div className="tone-muted">
+          <dt>Unchanged</dt>
+          <dd>{proposal.total_unchanged}</dd>
+        </div>
+        <div className={integrity.is_valid ? 'tone-ok' : 'tone-bad'}>
+          <dt>Patch integrity</dt>
+          <dd>{integrity.is_valid ? 'Verified' : 'Failed'}</dd>
+        </div>
+      </dl>
 
-        <div className="plan-badges">
-          <span className="badge-proposal-id font-mono" data-testid="proposal-id-badge">
-            {proposal.proposal_id}
-          </span>
-          <span
-            className={`status-badge ${isApproved ? 'status-approved' : 'status-review'}`}
-            data-testid="approval-status-badge"
-          >
-            {isApproved ? '✓ Human Approved' : 'Pending Review'}
-          </span>
-        </div>
-      </div>
-
-      {/* Metrics Summary Strip */}
-      <div className="plan-metrics-grid">
-        <div className="plan-metric-card">
-          <span className="metric-label">Target Manifest</span>
-          <span className="metric-value font-mono">{proposal.file_path}</span>
-        </div>
-        <div className="plan-metric-card">
-          <span className="metric-label">Total Planned</span>
-          <span className="metric-value text-emerald">{proposal.total_planned}</span>
-        </div>
-        <div className="plan-metric-card">
-          <span className="metric-label">Unchanged</span>
-          <span className="metric-value text-muted">{proposal.total_unchanged}</span>
-        </div>
-        <div className="plan-metric-card">
-          <span className="metric-label">Patch Integrity</span>
-          <span
-            className={`metric-value ${
-              proposal.integrity.is_valid ? 'text-emerald' : 'text-rose'
-            }`}
-          >
-            {proposal.integrity.is_valid ? '✓ Verified' : '⚠ Invalid'}
-          </span>
-        </div>
-      </div>
-
-      {/* Planned Upgrade Items Table */}
-      {proposal.plan_items.length > 0 && (
-        <div className="plan-items-section">
-          <h4 className="subheading">Planned Package Modifications</h4>
-          <div className="artifacts-table-container">
-            <table className="artifacts-table" aria-label="Planned upgrade items">
-              <thead>
-                <tr>
-                  <th scope="col">Package</th>
-                  <th scope="col">Current Version</th>
-                  <th scope="col">Target Version</th>
-                  <th scope="col">Specifier Transition</th>
-                  <th scope="col">Action</th>
-                  <th scope="col">Rationale</th>
+      {changes.length > 0 && (
+        <div className="table-scroll">
+          <table className="data-table" aria-label="Planned changes">
+            <thead>
+              <tr>
+                <th scope="col">Package</th>
+                <th scope="col" className="opt">From</th>
+                <th scope="col">To</th>
+                <th scope="col" className="opt">Specifier</th>
+                <th scope="col">Action</th>
+                <th scope="col" className="opt">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {proposal.plan_items.map((item, idx) => (
+                <tr key={`${item.package_name}-${idx}`} data-testid={`plan-item-${item.package_name}`}>
+                  <td className="mono strong">{item.package_name}</td>
+                  <td className="mono dim opt">{item.current_version || '—'}</td>
+                  <td className="mono">{item.target_version || '—'}</td>
+                  <td className="mono dim opt">
+                    {item.declared_specifier || 'none'} <span aria-hidden="true">›</span>
+                    <span className="visually-hidden"> to </span> {item.proposed_specifier || 'none'}
+                  </td>
+                  <td>
+                    <span className={`state state-act-${item.action.toLowerCase()}`}>
+                      {ACTION_LABEL[item.action] || item.action}
+                    </span>
+                  </td>
+                  <td className="dim wrap opt">{item.rationale}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {proposal.plan_items.map((item, idx) => (
-                  <tr key={`${item.package_name}-${idx}`} data-testid={`plan-item-${item.package_name}`}>
-                    <td className="font-mono text-bold">{item.package_name}</td>
-                    <td className="font-mono">{item.current_version || '—'}</td>
-                    <td className="font-mono text-emerald font-bold">
-                      {item.target_version || '—'}
-                    </td>
-                    <td className="font-mono">
-                      <code>{item.declared_specifier || 'none'}</code> &rarr;{' '}
-                      <code>{item.proposed_specifier || 'none'}</code>
-                    </td>
-                    <td>
-                      <span className={`artifact-badge badge-${item.action.toLowerCase()}`}>
-                        {item.action}
-                      </span>
-                    </td>
-                    <td className="text-secondary">{item.rationale}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
-      {/* Unified Diff Viewer */}
-      <div className="diff-viewer-section" data-testid="unified-diff-viewer">
-        <div className="diff-header">
-          <span className="diff-title">Unified Patch Diff (<code>{proposal.file_path}</code>)</span>
+      <div className="diff" data-testid="unified-diff-viewer">
+        <div className="diff-bar">
+          <span className="mono">{proposal.file_path}</span>
+          <span className="diff-stats mono">
+            <span className="d-add-text">+{diffLines.filter((l) => l.startsWith('+') && !l.startsWith('+++')).length}</span>{' '}
+            <span className="d-del-text">−{diffLines.filter((l) => l.startsWith('-') && !l.startsWith('---')).length}</span>
+          </span>
           <button
             type="button"
-            className="btn-icon"
+            className="link-button"
             onClick={() => setIsDiffExpanded(!isDiffExpanded)}
+            aria-expanded={isDiffExpanded}
             data-testid="toggle-diff-btn"
           >
-            {isDiffExpanded ? 'Collapse Diff' : 'Expand Diff'}
+            {isDiffExpanded ? 'Collapse' : 'Expand'}
           </button>
         </div>
-
         {isDiffExpanded && (
-          <div className="diff-content-box" data-testid="diff-content">
-            {renderDiffLines(proposal.unified_diff)}
+          <div className="diff-body" data-testid="diff-content" tabIndex={0} aria-label="Unified diff">
+            {diffLines.length === 0 ? (
+              <p className="diff-empty">No changes. Every package is already at its recommended version.</p>
+            ) : (
+              diffLines.map((line, idx) => (
+                <div key={idx} className={`diff-line ${lineClass(line)}`}>
+                  <span className="diff-num" aria-hidden="true">{idx + 1}</span>
+                  <span className="diff-text">{line}</span>
+                </div>
+              ))
+            )}
           </div>
         )}
       </div>
 
-      {/* Explicit Human Approval Gate */}
-      <div className="approval-gate-card" data-testid="human-approval-gate">
-        <div className="approval-gate-header">
-          <span className="gate-icon">🛡</span>
-          <div className="gate-header-text">
-            <h4>Human-in-the-Loop Review Gate</h4>
-            <p>
-              Security policy requires explicit human developer confirmation before any dependency
-              modifications can be tested or exported.
+      {(integrity.checks_failed.length > 0 || integrity.errors.length > 0) && (
+        <div className="notice notice-bad" role="alert">
+          <p className="notice-title">The patch did not pass its checks</p>
+          <ul className="notice-list">
+            {[...integrity.checks_failed, ...integrity.errors].map((m, i) => (
+              <li key={i}>{m}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div id="stage-approval" className="approval" data-testid="human-approval-gate">
+        <div className="approval-head">
+          <span className="stage-index mono">{stageIndex}</span>
+          <div>
+            <h3 className="approval-title" tabIndex={-1} data-stage-heading>
+              Approval
+            </h3>
+            <p className="stage-desc">
+              Validation and export stay locked until you approve this exact diff. Approval is recorded on the
+              server against the diff's checksum.
             </p>
           </div>
+          <span
+            className={`state ${isApproved ? 'state-up_to_date' : canApprove ? 'state-upgrade_available' : 'tone-muted'}`}
+            data-testid="approval-status-badge"
+          >
+            {isApproved ? 'Approved' : canApprove ? 'Awaiting review' : 'Nothing to approve'}
+          </span>
         </div>
 
         {isApproved ? (
-          <div className="approval-confirmed-box" data-testid="approval-confirmed-banner">
-            <span className="confirmed-icon">✓</span>
-            <div className="confirmed-details">
-              <strong>Human Confirmation Recorded</strong>
-              <p className="note-text">
-                {noteInput ? `Reviewer Note: "${noteInput}"` : 'Explicit authorization confirmed.'}
-              </p>
-            </div>
-          </div>
+          <p className="approval-done" data-testid="approval-confirmed-banner">
+            Approval recorded{noteInput ? <> with note <q>{noteInput}</q></> : ''}. You can now validate and export this change.
+          </p>
+        ) : !canApprove ? (
+          <p className="hint">
+            {proposal.total_planned === 0
+              ? 'There is nothing to approve: the plan contains no changes.'
+              : 'This plan cannot be approved because its patch failed integrity checks.'}
+          </p>
         ) : (
           <div className="approval-form">
-            <label className="checkbox-label" htmlFor="approval-confirmation-checkbox">
+            <label className="check" htmlFor="approval-confirmation-checkbox">
               <input
                 id="approval-confirmation-checkbox"
                 type="checkbox"
@@ -194,32 +191,46 @@ export const PlanReviewer: React.FC<PlanReviewerProps> = ({
                 onChange={(e) => setIsChecked(e.target.checked)}
                 data-testid="approval-checkbox"
               />
-              <span>I have inspected the planned changes and approve proceeding with this upgrade proposal.</span>
+              <span>I have read the diff above and approve these changes.</span>
             </label>
-
-            <div className="approval-input-row">
-              <input
-                type="text"
-                className="approval-note-input"
-                placeholder="Optional reviewer notes or confirmation audit comment..."
-                value={noteInput}
-                onChange={(e) => setNoteInput(e.target.value)}
-                data-testid="approval-note-input"
-              />
+            <div className="approval-row">
+              <label className="field">
+                <span className="visually-hidden">Approval note (optional)</span>
+                <input
+                  type="text"
+                  className="input"
+                  placeholder="Note for the report (optional)"
+                  value={noteInput}
+                  onChange={(e) => setNoteInput(e.target.value)}
+                  data-testid="approval-note-input"
+                />
+              </label>
               <button
                 type="button"
-                className="btn-primary btn-approve"
+                className="btn btn-primary"
                 onClick={handleConfirmApproval}
-                disabled={!isChecked}
+                disabled={!isChecked || isApproving}
+                aria-busy={isApproving}
                 data-testid="confirm-approval-btn"
               >
-                Confirm Human Approval
+                {isApproving ? (
+                  <>
+                    <span className="spinner" aria-hidden="true" /> Recording approval
+                  </>
+                ) : (
+                  'Approve changes'
+                )}
               </button>
             </div>
+            {approvalError && (
+              <div className="notice notice-bad" role="alert" data-testid="approval-error">
+                <p className="notice-title">Approval was not recorded</p>
+                <p>{approvalError}</p>
+              </div>
+            )}
           </div>
         )}
       </div>
     </div>
   );
 };
-

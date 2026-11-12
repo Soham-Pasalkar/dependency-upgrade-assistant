@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 import threading
 import time
@@ -23,6 +24,7 @@ from src.sandbox.container_config import (
     sanitize_resource_limits,
 )
 from src.sandbox.dependency_staging import DependencyStagingManager, StagingResult
+from src.api.config import settings
 from src.sandbox.image_catalog import (
     get_default_image_for_ecosystem,
     get_image_digest,
@@ -44,6 +46,28 @@ from src.sandbox.workspace_boundary import validate_trusted_workspace_path
 from src.services.proposal_registry import ProposalRegistry, get_proposal_registry
 
 logger = logging.getLogger(__name__)
+
+
+
+STAGED_SITE = "/workspace/working/.dua_site"
+
+
+def with_staged_site_packages(test_command: List[str]) -> List[str]:
+    """Run pytest with the offline-installed packages importable (the container has no env overrides)."""
+    args = list(test_command)
+    if args[:3] == ["python", "-m", "pytest"]:
+        args = args[3:]
+    elif args and args[0] == "pytest":
+        args = args[1:]
+    else:
+        return test_command
+    code = (
+        "import runpy, sys; "
+        f"sys.path.insert(0, {STAGED_SITE!r}); "
+        f"sys.argv = ['pytest'] + {args!r}; "
+        "runpy.run_module('pytest', run_name='__main__', alter_sys=True)"
+    )
+    return ["python", "-c", code]
 
 
 class SandboxService:
@@ -259,6 +283,11 @@ class SandboxService:
         try:
             staging_result = DependencyStagingManager.prepare_staging_cache(
                 ecosystem=ecosystem,
+                manifest_content=proposal.proposed_content if proposal else None,
+                manifest_rel_path=(proposal.file_path if proposal else None),
+                source_workspace=(Path(settings.resolved_workspace_root) / validated_source_ws
+                                  if validated_source_ws and not Path(validated_source_ws).is_absolute()
+                                  else validated_source_ws),
             )
             staging_status = staging_result.status
         except Exception as stg_exc:
@@ -292,6 +321,17 @@ class SandboxService:
                 container_user=security_config.user,
             )
 
+            staged = bool(staging_result and staging_result.status == "STAGED")
+            manifest_rel = (proposal.file_path if proposal else None) or manifest_type
+            manifest_dir = str(Path(manifest_rel).parent) if manifest_rel else "."
+            if staging_result is not None and staging_result.message:
+                diagnostics.append(f"Dependency staging: {staging_result.message}")
+                diagnostics.extend(f"Dependency staging: {d}" for d in staging_result.diagnostics[:6])
+            if staged and staging_result.npm_cache_dir and staging_result.lockfile_path:
+                # npm needs a writable cache: copy it into the ephemeral snapshot with the generated lockfile.
+                shutil.copytree(staging_result.npm_cache_dir, snapshot.path / ".dua_npm_cache", symlinks=False)
+                shutil.copyfile(staging_result.lockfile_path, snapshot.path / manifest_dir / "package-lock.json")
+
             # 5. Explicit Test Discovery (WP7)
             discovery: TestDiscoveryResult = TestDiscoveryManager.discover_tests(
                 snapshot_dir=snapshot.path,
@@ -305,6 +345,13 @@ class SandboxService:
             commands_to_run: List[tuple[str, List[str], str]] = []
 
             if "node" in ecosystem or "npm" in ecosystem or manifest_type == "package.json":
+                if staged:
+                    commands_to_run.append((
+                        "dependency_install",
+                        ["npm", "ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
+                         "--cache", "/workspace/working/.dua_npm_cache", "--prefix", manifest_dir],
+                        "Offline install of the proposed versions from the integrity-checked lockfile.",
+                    ))
                 # Node.js validation flow: syntax check first
                 commands_to_run.append((
                     "syntax_check",
@@ -319,15 +366,26 @@ class SandboxService:
                     ))
             else:
                 # Python validation flow: bytecode compilation first
+                if staged:
+                    commands_to_run.append((
+                        "dependency_install",
+                        ["python", "-m", "pip", "install", "--no-index", "--find-links", "/cache/python",
+                         "--no-cache-dir", "--disable-pip-version-check", "--target", "/workspace/working/.dua_site",
+                         "-r", manifest_rel],
+                        "Offline install of the proposed versions from staged, hash-recorded wheels.",
+                    ))
                 commands_to_run.append((
                     "py_compile",
-                    ["python", "-m", "compileall", "-q", "."],
+                    ["python", "-m", "compileall", "-q", "-x", r"(^|/)\.dua_", "."],
                     "Python bytecode syntax compilation.",
                 ))
                 if discovery.has_runnable_tests:
+                    test_cmd = discovery.test_command
+                    if staged:
+                        test_cmd = with_staged_site_packages(test_cmd)
                     commands_to_run.append((
                         "pytest",
-                        discovery.test_command,
+                        test_cmd,
                         discovery.description,
                     ))
 

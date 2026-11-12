@@ -19,6 +19,9 @@ from src.models.plan import (
 from src.services.patch_validator import PatchValidator
 from src.services.proposal_registry import RegistryCapacityExceededError
 from src.services.upgrade_planner import HumanApprovalRequiredError, UpgradePlannerService
+from src.services.approval_service import ApprovalError, require_approved_proposal
+from src.services.proposal_registry import get_proposal_registry
+from src.services.run_store import get_run_store
 
 logger = logging.getLogger("dua.api.plan")
 
@@ -121,6 +124,14 @@ async def apply_upgrade_proposal(
     planner: Annotated[UpgradePlannerService, Depends(get_upgrade_planner)],
 ) -> WorkspaceApplyResponse:
     """Apply an approved upgrade proposal to the target workspace under human confirmation."""
+    if request.approved:
+        try:
+            await run_in_threadpool(
+                require_approved_proposal, request.proposal_id, get_run_store(), get_proposal_registry(),
+                "change the workspace",
+            )
+        except ApprovalError as err:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=err.message)
     try:
         response = await run_in_threadpool(planner.apply_workspace_mutation, request)
         return response
