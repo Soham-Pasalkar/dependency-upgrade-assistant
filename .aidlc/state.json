@@ -3,13 +3,13 @@
   "project": "Dependency Upgrade Assistant 2.0",
   "tier": 3,
   "mode": "brownfield",
-  "phase": "construction",
+  "phase": "operations",
   "config": {
     "strict_approvals": true,
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-12T06:39:14Z",
+  "updated": "2026-11-12T06:47:46Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -1160,7 +1160,7 @@
       "depends_on": [
         "M10"
       ],
-      "status": "in_progress",
+      "status": "done",
       "criteria": [
         {
           "text": "F13: server-determined validation image and test command; no client-supplied command or image; validation configuration bound into the approval fingerprint and re-verified at approval, validation and export; no-op or substituted commands can never yield PASSED; missing, skipped, failed and passed tests distinguishable",
@@ -1194,8 +1194,8 @@
         },
         {
           "text": "Full backend and frontend suites, lint and build pass; Docker integration tests run in CI on the M11 commit",
-          "verified": false,
-          "proof": null
+          "verified": true,
+          "proof": "Local: backend 759 passed/9 skipped (live Docker), frontend 41 passed, build OK. CI run 43170075051 on d8cb3b3 succeeded in all 7 jobs, including live Docker staging integration (3/3) in the dedicated Docker job."
         }
       ],
       "evidence": [
@@ -1233,9 +1233,20 @@
           "result": "GitHub URL miguelgrinberg/microblog -> 54 packages -> recommendations -> plan -> server-recorded approval -> validation NOT_RUNNABLE (no Docker) -> export -> patch download HTTP 200; overflowX 0. Validation request now sends only proposal_id.",
           "file": null,
           "sha256": null
+        },
+        {
+          "at": "2026-11-12T06:45:42Z",
+          "cmd": "GitHub Actions run 43170075051 on d8cb3b3d9648443688713d3d78c75d68ff4d84a9",
+          "result": "success, 7/7 jobs. Python 3.11-3.14: 767 passed, 1 skipped (macOS-only test). Python 3.10: 765 passed, 3 skipped (macOS-only + 2 live staging tests: runner Docker check timed out; matrix jobs allow skips). Docker job (DUA_REQUIRE_DOCKER=1): sandbox suites 74 passed; staging suites 45 passed incl. live test_docker_staging_integration 3/3 - Python offline pip install + pytest PASSED, failing fixture reported FAILED, npm ci --offline --ignore-scripts + npm test PASSED. Frontend: 41 passed, lint 0 errors 1 warning, build OK, npm ci 0 vulnerabilities.",
+          "file": null,
+          "sha256": null
         }
       ],
-      "approval": null,
+      "approval": {
+        "at": "2026-11-12T06:47:46Z",
+        "note": "approved at terminal",
+        "actor": "human-tty"
+      },
       "rework": 0,
       "started": "2026-11-12T06:16:31Z",
       "note": null
@@ -1299,5 +1310,5 @@
       "at": "2026-11-12T05:40:30Z"
     }
   ],
-  "head": "ba923e9b388a9ce7d66f75c763ef389765355bab2dc00fb52192bd8a85560d9f"
+  "head": "ada5982bfcc7bd1255383d0b9dd1cb174d0eaf0ee223d506a6771dcabcdbfa92"
 }
