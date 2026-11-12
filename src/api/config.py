@@ -78,6 +78,19 @@ class Settings(BaseSettings):
     DOCKER_MAX_MEMORY_MB: int = Field(default=512, description="Maximum RAM cap per container")
     DOCKER_MAX_CPUS: float = Field(default=1.0, description="Maximum CPU limit per container")
 
+    # Dependency resolver limits (M12, NFR-13). Server-controlled with hard ceilings: a value outside
+    # 1..ceiling fails settings validation, so the application refuses to start. No value disables a limit.
+    RESOLVER_TIMEOUT_SECONDS: int = Field(
+        default=180, ge=1, le=600, description="Per-run budget T; the job deadline is 2T (ADR-012)"
+    )
+    RESOLVER_MEMORY_MB: int = Field(default=1024, ge=1, le=4096, description="Memory limit per resolver container")
+    RESOLVER_CPUS: float = Field(default=1.0, ge=1, le=4, description="CPU limit per resolver container")
+    RESOLVER_PIDS_LIMIT: int = Field(default=256, ge=1, le=1024, description="Process limit per resolver container")
+    RESOLVER_TMPFS_MB: int = Field(default=512, ge=1, le=2048, description="Scratch tmpfs size per resolver container")
+    RESOLVER_MAX_CONCURRENT: int = Field(default=2, ge=1, le=4, description="Concurrent resolution jobs")
+    RESOLVER_MAX_REPORT_MB: int = Field(default=10, ge=1, le=50, description="Maximum resolver report size on stdout")
+    RESOLVER_MAX_PACKAGES: int = Field(default=500, ge=1, le=2000, description="Maximum selected packages per run")
+
     @field_validator("CORS_ORIGINS", "ALLOWED_HOSTS", "DEV_FRONTEND_PORTS", mode="before")
     @classmethod
     def parse_cors_origins(cls, value: Union[str, List[str]]) -> List[str]:

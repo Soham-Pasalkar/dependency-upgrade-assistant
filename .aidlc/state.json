@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-12T17:18:05Z",
+  "updated": "2026-11-12T17:25:17Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -1330,7 +1330,22 @@
           "proof": null
         }
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "at": "2026-11-12T17:25:17Z",
+          "cmd": "python3 -m pytest -q -o addopts=\"\" -p no:cacheprovider tests/test_resolution_config.py tests/test_resolution_store.py tests/test_resolution_input.py tests/test_resolution_fingerprint.py",
+          "result": "P1/P2 local (macOS arm64, Python 3.14.3, no Docker): 134 passed, 0 failed. Covers config ceilings, additive migration of an M11-era DB, job compare-and-set, atomic success+evidence, input classification, per-role fingerprints. Not CI-verified yet; no criterion complete.",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-12T17:25:17Z",
+          "cmd": "python3 -m pytest -q -o addopts=\"\" -p no:cacheprovider",
+          "result": "Full backend regression after P1/P2, local: 893 passed, 9 skipped (all 9 need live Docker), 0 failed. Baseline before M12: 759 passed, 9 skipped. No existing test modified.",
+          "file": null,
+          "sha256": null
+        }
+      ],
       "approval": null,
       "rework": 0,
       "started": "2026-11-12T17:18:05Z",
@@ -1395,5 +1410,5 @@
       "at": "2026-11-12T05:40:30Z"
     }
   ],
-  "head": "faa3657b73fb60c21bc16929838ae4f00b406b7446fd15a06acad530ec753ff8"
+  "head": "5bac362b3d0b204eef55cae16d9952cf2ec0e18904b2399de3c6a12aca6ff4f1"
 }

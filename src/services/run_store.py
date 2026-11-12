@@ -20,6 +20,12 @@ from src.models.manifest import ManifestAnalysisResponse
 from src.models.plan import UpgradeProposalResponse
 from src.models.recommendation import RecommendationBatchResponse
 from src.models.run import RepositoryInfo, RunManifest, RunResponse
+from src.resolution.models import (
+    JobStatus,
+    ResolutionReport,
+    ResolutionRole,
+    ResolutionStatus,
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS dua_runs (
@@ -58,6 +64,34 @@ CREATE TABLE IF NOT EXISTS dua_approvals (
     note TEXT,
     approved_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dua_jobs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK(kind IN ('resolution')),
+    subject_id TEXT NOT NULL REFERENCES dua_proposals(proposal_id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK(status IN
+        ('QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED','TIMED_OUT','INTERRUPTED')),
+    current_role TEXT,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    started_at REAL,
+    deadline_at REAL,
+    finished_at REAL,
+    error_code TEXT,
+    error_message TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS dua_jobs_one_active
+    ON dua_jobs(kind, subject_id) WHERE status IN ('QUEUED', 'RUNNING');
+CREATE TABLE IF NOT EXISTS dua_resolutions (
+    id TEXT PRIMARY KEY,
+    proposal_id TEXT NOT NULL REFERENCES dua_proposals(proposal_id) ON DELETE CASCADE,
+    job_id TEXT REFERENCES dua_jobs(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK(role IN ('original', 'proposed')),
+    fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL,
+    report_json TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS dua_resolutions_latest ON dua_resolutions(proposal_id, role, created_at);
 """
 
 
@@ -66,6 +100,7 @@ MIGRATIONS = (
     ("dua_proposals", "proposal_json", "ALTER TABLE dua_proposals ADD COLUMN proposal_json TEXT"),
     ("dua_proposals", "consumed_at", "ALTER TABLE dua_proposals ADD COLUMN consumed_at REAL"),
     ("dua_approvals", "validation_fingerprint", "ALTER TABLE dua_approvals ADD COLUMN validation_fingerprint TEXT"),
+    ("dua_approvals", "resolution_fingerprint", "ALTER TABLE dua_approvals ADD COLUMN resolution_fingerprint TEXT"),
 )
 
 
@@ -113,6 +148,41 @@ class ApprovalRecord:
     note: Optional[str]
     approved_at: float
     validation_fingerprint: Optional[str] = None
+    resolution_fingerprint: Optional[str] = None
+
+
+@dataclass
+class JobRecord:
+    id: str
+    kind: str
+    subject_id: str
+    status: JobStatus
+    created_at: float
+    current_role: Optional[str] = None
+    cancel_requested: bool = False
+    started_at: Optional[float] = None
+    deadline_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+@dataclass
+class StoredResolution:
+    id: str
+    proposal_id: str
+    job_id: Optional[str]
+    role: ResolutionRole
+    fingerprint: str
+    status: ResolutionStatus
+    report: ResolutionReport
+    created_at: float
+
+
+# Columns a job transition may set; anything else is rejected (no dynamic SQL from callers).
+_JOB_UPDATABLE = frozenset(
+    {"current_role", "started_at", "deadline_at", "finished_at", "error_code", "error_message"}
+)
 
 
 class RunStore:
@@ -269,17 +339,23 @@ class RunStore:
         )
 
     def record_approval(
-        self, proposal_id: str, diff_sha256: str, note: Optional[str], validation_fingerprint: Optional[str] = None
+        self,
+        proposal_id: str,
+        diff_sha256: str,
+        note: Optional[str],
+        validation_fingerprint: Optional[str] = None,
+        resolution_fingerprint: Optional[str] = None,
     ) -> ApprovalRecord:
         now = time.time()
         with self._conn() as c:
             c.execute(
-                "INSERT OR REPLACE INTO dua_approvals"
-                " (proposal_id, diff_sha256, note, approved_at, validation_fingerprint) VALUES (?,?,?,?,?)",
-                (proposal_id, diff_sha256, note, now, validation_fingerprint),
+                "INSERT OR REPLACE INTO dua_approvals (proposal_id, diff_sha256, note, approved_at,"
+                " validation_fingerprint, resolution_fingerprint) VALUES (?,?,?,?,?,?)",
+                (proposal_id, diff_sha256, note, now, validation_fingerprint, resolution_fingerprint),
             )
         return ApprovalRecord(proposal_id=proposal_id, diff_sha256=diff_sha256, note=note, approved_at=now,
-                              validation_fingerprint=validation_fingerprint)
+                              validation_fingerprint=validation_fingerprint,
+                              resolution_fingerprint=resolution_fingerprint)
 
     def get_approval(self, proposal_id: str) -> Optional[ApprovalRecord]:
         with self._conn() as c:
@@ -289,6 +365,132 @@ class RunStore:
         return ApprovalRecord(
             proposal_id=row["proposal_id"], diff_sha256=row["diff_sha256"], note=row["note"], approved_at=row["approved_at"],
             validation_fingerprint=row["validation_fingerprint"],
+            resolution_fingerprint=row["resolution_fingerprint"],
+        )
+
+    # -- resolution jobs (M12, ADR-012) ----------------------------------------
+    def create_job(self, kind: str, subject_id: str) -> Optional[JobRecord]:
+        """Create a QUEUED job, or return None if one is already active for the subject."""
+        job = JobRecord(id=uuid.uuid4().hex, kind=kind, subject_id=subject_id, status=JobStatus.QUEUED,
+                        created_at=time.time())
+        try:
+            with self._conn() as c:
+                c.execute(
+                    "INSERT INTO dua_jobs (id, kind, subject_id, status, created_at) VALUES (?,?,?,?,?)",
+                    (job.id, kind, subject_id, job.status.value, job.created_at),
+                )
+        except sqlite3.IntegrityError:
+            if self.active_job(kind, subject_id) is not None:
+                return None
+            raise
+        return job
+
+    def get_job(self, job_id: str) -> Optional[JobRecord]:
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM dua_jobs WHERE id=?", (job_id,)).fetchone()
+        return self._job_from_row(row) if row else None
+
+    def active_job(self, kind: str, subject_id: str) -> Optional[JobRecord]:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM dua_jobs WHERE kind=? AND subject_id=? AND status IN ('QUEUED','RUNNING')",
+                (kind, subject_id),
+            ).fetchone()
+        return self._job_from_row(row) if row else None
+
+    def transition_job(self, job_id: str, expected, new_status: JobStatus, **fields) -> bool:
+        """Compare-and-set: move the job to new_status only if it is still in one of the expected states."""
+        expected = tuple(JobStatus(s).value for s in (expected if isinstance(expected, (tuple, list)) else (expected,)))
+        unknown = set(fields) - _JOB_UPDATABLE
+        if unknown:
+            raise ValueError(f"not updatable: {sorted(unknown)}")
+        sets = ["status=?"] + [f"{k}=?" for k in fields]
+        params = [JobStatus(new_status).value, *fields.values(), job_id, *expected]
+        with self._conn() as c:
+            cur = c.execute(
+                f"UPDATE dua_jobs SET {', '.join(sets)} WHERE id=? AND status IN ({','.join('?' * len(expected))})",
+                params,
+            )
+            return cur.rowcount == 1
+
+    def request_job_cancel(self, job_id: str) -> bool:
+        with self._conn() as c:
+            cur = c.execute(
+                "UPDATE dua_jobs SET cancel_requested=1 WHERE id=? AND status IN ('QUEUED','RUNNING')", (job_id,)
+            )
+            return cur.rowcount == 1
+
+    def interrupt_active_jobs(self, now: Optional[float] = None) -> List[str]:
+        """Start-up recovery: QUEUED or RUNNING jobs become INTERRUPTED. Never stores evidence."""
+        now = now or time.time()
+        with self._conn() as c:
+            ids = [r["id"] for r in c.execute("SELECT id FROM dua_jobs WHERE status IN ('QUEUED','RUNNING')")]
+            for job_id in ids:
+                c.execute(
+                    "UPDATE dua_jobs SET status='INTERRUPTED', finished_at=?, error_code='interrupted'"
+                    " WHERE id=? AND status IN ('QUEUED','RUNNING')",
+                    (now, job_id),
+                )
+        return ids
+
+    # -- resolution evidence (M12, ADR-011); written only by the supervisor ---------------
+    def record_resolution(self, proposal_id: str, job_id: Optional[str], report: ResolutionReport) -> str:
+        with self._conn() as c:
+            return self._insert_resolution(c, proposal_id, job_id, report)
+
+    def complete_job_with_evidence(self, job_id: str, proposal_id: str, report: ResolutionReport) -> bool:
+        """Atomically mark a RUNNING job SUCCEEDED and store its proposed-role evidence (ADR-012).
+
+        If the job is no longer RUNNING (cancelled, timed out or interrupted), nothing is written.
+        """
+        if report.role != ResolutionRole.PROPOSED:
+            raise ValueError("only proposed-role evidence completes a job")
+        with self._conn() as c:
+            cur = c.execute(
+                "UPDATE dua_jobs SET status='SUCCEEDED', finished_at=?, current_role=NULL"
+                " WHERE id=? AND status='RUNNING' AND cancel_requested=0",
+                (time.time(), job_id),
+            )
+            if cur.rowcount != 1:
+                return False
+            self._insert_resolution(c, proposal_id, job_id, report)
+        return True
+
+    def latest_resolution(self, proposal_id: str, role: ResolutionRole) -> Optional[StoredResolution]:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM dua_resolutions WHERE proposal_id=? AND role=?"
+                " ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (proposal_id, ResolutionRole(role).value),
+            ).fetchone()
+        if not row:
+            return None
+        return StoredResolution(
+            id=row["id"], proposal_id=row["proposal_id"], job_id=row["job_id"], role=ResolutionRole(row["role"]),
+            fingerprint=row["fingerprint"], status=ResolutionStatus(row["status"]),
+            report=ResolutionReport.model_validate_json(row["report_json"]), created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _insert_resolution(c: sqlite3.Connection, proposal_id: str, job_id: Optional[str],
+                           report: ResolutionReport) -> str:
+        rid = uuid.uuid4().hex
+        c.execute(
+            "INSERT INTO dua_resolutions (id, proposal_id, job_id, role, fingerprint, status, report_json, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (rid, proposal_id, job_id, report.role.value, report.fingerprint, report.status.value,
+             report.model_dump_json(), time.time()),
+        )
+        return rid
+
+    @staticmethod
+    def _job_from_row(row: sqlite3.Row) -> JobRecord:
+        return JobRecord(
+            id=row["id"], kind=row["kind"], subject_id=row["subject_id"], status=JobStatus(row["status"]),
+            created_at=row["created_at"], current_role=row["current_role"],
+            cancel_requested=bool(row["cancel_requested"]), started_at=row["started_at"],
+            deadline_at=row["deadline_at"], finished_at=row["finished_at"], error_code=row["error_code"],
+            error_message=row["error_message"],
         )
 
     # -- retention (M11, F9) -------------------------------------------------
