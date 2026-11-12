@@ -446,6 +446,21 @@ class RunStore:
         with self._conn() as c:
             return self._insert_resolution(c, proposal_id, job_id, report)
 
+    def record_job_evidence(self, job_id: str, proposal_id: str, report: ResolutionReport) -> bool:
+        """Store a completed run's evidence only while its job is still RUNNING and not cancelled.
+
+        A worker that outlived its job (interrupted by a restart, cancelled, timed out) cannot write.
+        """
+        with self._conn() as c:
+            cur = c.execute(
+                "UPDATE dua_jobs SET current_role=current_role WHERE id=? AND status='RUNNING' AND cancel_requested=0",
+                (job_id,),
+            )
+            if cur.rowcount != 1:
+                return False
+            self._insert_resolution(c, proposal_id, job_id, report)
+        return True
+
     def complete_job_with_evidence(self, job_id: str, proposal_id: str, report: ResolutionReport) -> bool:
         """Atomically mark a RUNNING job SUCCEEDED and store its proposed-role evidence (ADR-012).
 

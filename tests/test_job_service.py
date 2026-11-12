@@ -249,6 +249,23 @@ def test_restart_interrupts_jobs_without_evidence(client):
     assert service.get(queued.id).status == JobStatus.INTERRUPTED
 
 
+def test_stale_worker_after_restart_writes_nothing(client):
+    holder = {}
+
+    def restart_mid_run(role, manifest):
+        if role == "original":
+            service.recover()  # a new process starts and interrupts this job while its run is in flight
+        return None
+    service, pypi, runtime = install_service(restart_mid_run)
+    plan = make_plan(client)
+    real = service._pool.submit
+    service._pool.submit = lambda fn, job_id: holder.setdefault("job", job_id) and real(fn, job_id)
+    job = wait_for_job(service.submit(plan["proposal_id"]).job.id)
+    assert job.status == JobStatus.INTERRUPTED and runtime.runs == ["original"]
+    assert service.store.latest_resolution(plan["proposal_id"], ResolutionRole.ORIGINAL) is None
+    assert service.store.latest_resolution(plan["proposal_id"], ResolutionRole.PROPOSED) is None
+
+
 def test_unsupported_input_is_answered_without_a_job(client):
     service, pypi, runtime = install_service()
     plan = make_plan(client, content=PACKAGE_JSON, manifest_type="package.json")

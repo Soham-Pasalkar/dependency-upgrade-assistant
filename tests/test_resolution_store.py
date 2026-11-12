@@ -110,6 +110,26 @@ def test_no_evidence_when_cancel_requested(store, proposal):
     assert store.latest_resolution(proposal, ResolutionRole.PROPOSED) is None
 
 
+@pytest.mark.parametrize("end_state", [JobStatus.CANCELLED, JobStatus.TIMED_OUT, JobStatus.INTERRUPTED])
+def test_run_evidence_requires_a_running_job(store, proposal, end_state):
+    job = store.create_job("resolution", proposal)
+    store.transition_job(job.id, JobStatus.QUEUED, JobStatus.RUNNING)
+    original = _report(role=ResolutionRole.ORIGINAL)
+    assert store.record_job_evidence(job.id, proposal, original)
+    store.transition_job(job.id, JobStatus.RUNNING, end_state)
+    assert not store.record_job_evidence(job.id, proposal, original)
+    rows = [store.latest_resolution(proposal, ResolutionRole.ORIGINAL)]
+    assert len([r for r in rows if r]) == 1
+
+
+def test_run_evidence_refused_after_cancel_request(store, proposal):
+    job = store.create_job("resolution", proposal)
+    store.transition_job(job.id, JobStatus.QUEUED, JobStatus.RUNNING)
+    store.request_job_cancel(job.id)
+    assert not store.record_job_evidence(job.id, proposal, _report(role=ResolutionRole.ORIGINAL))
+    assert store.latest_resolution(proposal, ResolutionRole.ORIGINAL) is None
+
+
 def test_only_proposed_evidence_completes_a_job(store, proposal):
     job = store.create_job("resolution", proposal)
     store.transition_job(job.id, JobStatus.QUEUED, JobStatus.RUNNING)

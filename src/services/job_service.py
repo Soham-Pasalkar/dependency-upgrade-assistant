@@ -297,7 +297,10 @@ class ResolutionJobService:
                     report = report.model_copy(update={"warnings": report.warnings + denials[:20]})
                     logger.warning("job %s %s egress denials: %s", job_id, role, denials[:5])
                 if ctx.role == ResolutionRole.ORIGINAL:
-                    self.store.record_resolution(job.subject_id, job_id, report)
+                    if not self.store.record_job_evidence(job_id, job.subject_id, report):
+                        # Cancelled, or no longer this worker's job (e.g. interrupted by a restart).
+                        self._finish(job_id, JobStatus.CANCELLED, "cancelled", "Cancelled.")
+                        return
                     original_report = report
                 else:
                     report = apply_comparison(report, compare(original_report, report, o_ctx, p_ctx))
