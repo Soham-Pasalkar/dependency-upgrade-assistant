@@ -20,6 +20,7 @@ import {
 } from '../api/client';
 import { SandboxValidation } from './SandboxValidation';
 import { PlanReviewer } from './PlanReviewer';
+import { CompatibilityPanel } from './CompatibilityPanel';
 import { ExportManager } from './ExportManager';
 import { StepRail, type RailStep } from './StepRail';
 
@@ -154,6 +155,8 @@ export const ManifestAnalyzer: React.FC = () => {
   const [proposal, setProposal] = useState<UpgradeProposalResponse | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [isApproved, setIsApproved] = useState<boolean>(false);
+  // M12: approval is offered only when the server reports verified COMPATIBLE evidence.
+  const [compatEligible, setCompatEligible] = useState<boolean>(false);
   const [approvalNote, setApprovalNote] = useState<string>('');
 
   const [validationReport, setValidationReport] = useState<ValidationReportResponse | null>(null);
@@ -203,6 +206,7 @@ export const ManifestAnalyzer: React.FC = () => {
     setProposal(null);
     setPlanError(null);
     setIsApproved(false);
+    setCompatEligible(false);
     setApprovalNote('');
     setValidationReport(null);
     setExportData(null);
@@ -323,6 +327,7 @@ export const ManifestAnalyzer: React.FC = () => {
     setRecsError(null);
     setProposal(null);
     setIsApproved(false);
+    setCompatEligible(false);
     setValidationReport(null);
     setExportData(null);
     try {
@@ -357,6 +362,7 @@ export const ManifestAnalyzer: React.FC = () => {
       const plan = await generateRunPlan(run.run_id, activeIndex);
       setProposal(plan);
       setIsApproved(false);
+      setCompatEligible(false);
       setApprovalNote('');
       setApprovalError(null);
       pendingScroll.current = 'stage-plan';
@@ -1284,6 +1290,12 @@ export const ManifestAnalyzer: React.FC = () => {
               isApproving={isApproving}
               approvalError={approvalError}
               stageIndex="06"
+              approvalEligible={compatEligible}
+              compatibility={
+                proposal.proposal_id ? (
+                  <CompatibilityPanel proposalId={proposal.proposal_id} onEligibilityChange={setCompatEligible} />
+                ) : null
+              }
             />
           )}
         </section>

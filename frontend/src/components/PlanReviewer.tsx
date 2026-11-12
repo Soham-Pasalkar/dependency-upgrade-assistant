@@ -9,6 +9,10 @@ interface PlanReviewerProps {
   isApproving?: boolean;
   approvalError?: string | null;
   stageIndex?: string;
+  /** Compatibility panel rendered above the approval gate (M12). */
+  compatibility?: React.ReactNode;
+  /** True only when the server reports verified COMPATIBLE evidence for this plan. Defaults to false. */
+  approvalEligible?: boolean;
 }
 
 const ACTION_LABEL: Record<string, string> = {
@@ -35,6 +39,8 @@ export const PlanReviewer: React.FC<PlanReviewerProps> = ({
   isApproving = false,
   approvalError = null,
   stageIndex = '05',
+  compatibility = null,
+  approvalEligible = false,
 }) => {
   const [isChecked, setIsChecked] = useState<boolean>(isApproved);
   const [noteInput, setNoteInput] = useState<string>(approvalNote || '');
@@ -46,7 +52,7 @@ export const PlanReviewer: React.FC<PlanReviewerProps> = ({
   const diffLines = proposal.unified_diff ? proposal.unified_diff.replace(/\n$/, '').split('\n') : [];
 
   const handleConfirmApproval = () => {
-    if (!isChecked || !canApprove) return;
+    if (!isChecked || !canApprove || !approvalEligible) return;
     onApprove(noteInput.trim() || undefined);
   };
 
@@ -151,6 +157,8 @@ export const PlanReviewer: React.FC<PlanReviewerProps> = ({
         </div>
       )}
 
+      {compatibility}
+
       <div id="stage-approval" className="approval" data-testid="human-approval-gate">
         <div className="approval-head">
           <span className="stage-index mono">{stageIndex}</span>
@@ -167,7 +175,7 @@ export const PlanReviewer: React.FC<PlanReviewerProps> = ({
             className={`state ${isApproved ? 'state-up_to_date' : canApprove ? 'state-upgrade_available' : 'tone-muted'}`}
             data-testid="approval-status-badge"
           >
-            {isApproved ? 'Approved' : canApprove ? 'Awaiting review' : 'Nothing to approve'}
+            {isApproved ? 'Approved' : !canApprove ? 'Nothing to approve' : approvalEligible ? 'Awaiting review' : 'Locked'}
           </span>
         </div>
 
@@ -180,6 +188,10 @@ export const PlanReviewer: React.FC<PlanReviewerProps> = ({
             {proposal.total_planned === 0
               ? 'There is nothing to approve: the plan contains no changes.'
               : 'This plan cannot be approved because its patch failed integrity checks.'}
+          </p>
+        ) : !approvalEligible ? (
+          <p className="hint" data-testid="approval-locked">
+            Approval unlocks when the compatibility check verifies that the complete proposed dependency set resolves.
           </p>
         ) : (
           <div className="approval-form">

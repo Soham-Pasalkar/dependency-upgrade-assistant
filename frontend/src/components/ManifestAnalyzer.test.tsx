@@ -12,6 +12,22 @@ vi.mock('../api/client', async () => {
     generateRunRecommendations: vi.fn(),
     generateRunPlan: vi.fn(),
     approveProposal: vi.fn(),
+    // M12: the server reports verified COMPATIBLE evidence for the plan, so approval is offered.
+    getResolution: vi.fn().mockResolvedValue({
+      proposal_id: 'prop_1',
+      status: 'COMPATIBLE',
+      approval_eligible: true,
+      disclosure: 'Compatible means the complete dependency set resolves successfully.',
+      job: null,
+      proposed: {
+        policy_version: 'dua-resolution/1', role: 'proposed', status: 'COMPATIBLE', fingerprint: 'f'.repeat(64),
+        resolver: 'pip 24.0', image: 'python:3.11-slim@sha256:x', target: { python: '3.11.18', machine: 'x86_64' },
+        packages: [], conflicts: [], unsupported: [], warnings: [], created_at: 1,
+        comparison: { available: true, introduced: [] },
+      },
+      original: null,
+      comparison: { available: true, introduced: [] },
+    }),
     getSandboxStatus: vi.fn().mockResolvedValue({ is_available: false, version: null, error_message: 'no docker' }),
     getAiStatus: vi.fn().mockResolvedValue({
       is_available: false,

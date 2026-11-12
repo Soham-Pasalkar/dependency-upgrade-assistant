@@ -56,6 +56,7 @@ describe('PlanReviewer Component', () => {
         proposal={mockProposal}
         onApprove={vi.fn()}
         isApproved={false}
+        approvalEligible
       />
     );
 
@@ -106,6 +107,27 @@ describe('PlanReviewer Component', () => {
     expect(screen.getByTestId('diff-content')).toBeInTheDocument();
   });
 
+  it('keeps approval locked until compatibility is verified', () => {
+    render(<PlanReviewer proposal={mockProposal} onApprove={vi.fn()} isApproved={false} />);
+    expect(screen.getByTestId('approval-status-badge')).toHaveTextContent('Locked');
+    expect(screen.getByTestId('approval-locked')).toBeInTheDocument();
+    expect(screen.queryByTestId('confirm-approval-btn')).not.toBeInTheDocument();
+  });
+
+  it('renders the compatibility panel above the approval gate', () => {
+    render(
+      <PlanReviewer
+        proposal={mockProposal}
+        onApprove={vi.fn()}
+        isApproved={false}
+        compatibility={<div data-testid="compat-slot" />}
+      />
+    );
+    const slot = screen.getByTestId('compat-slot');
+    const gate = screen.getByTestId('human-approval-gate');
+    expect(slot.compareDocumentPosition(gate) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('enforces human confirmation checkbox before enabling approval button', () => {
     const handleApprove = vi.fn();
     render(
@@ -113,6 +135,7 @@ describe('PlanReviewer Component', () => {
         proposal={mockProposal}
         onApprove={handleApprove}
         isApproved={false}
+        approvalEligible
       />
     );
 

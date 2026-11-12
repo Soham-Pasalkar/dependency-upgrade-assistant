@@ -935,6 +935,8 @@ export interface ApprovalResponse {
   approved: boolean;
   approved_at?: number | null;
   note?: string | null;
+  resolution_fingerprint?: string | null;
+  resolution_status?: string | null;
 }
 
 function detailMessage(data: unknown, fallback: string): string {
@@ -1041,4 +1043,142 @@ export async function approveProposal(
     { diff_sha256, note: note || null },
     'Approval failed'
   );
+}
+
+// ---------------------------------------------------------------------------------------------
+// M12 compatibility resolution (FR-28 to FR-30, FR-32). All values are produced by the server's
+// supervisor; the client only displays them and never sends a status or fingerprint back.
+// ---------------------------------------------------------------------------------------------
+
+export type ResolutionStatus =
+  | 'COMPATIBLE'
+  | 'CONFLICT'
+  | 'UNSUPPORTED'
+  | 'RESOLUTION_FAILED'
+  | 'RESOLVER_UNAVAILABLE'
+  | 'UNKNOWN';
+
+export type JobStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'TIMED_OUT' | 'INTERRUPTED';
+
+export interface UploadDate {
+  filename?: string | null;
+  value?: string | null;
+  available: boolean;
+  source?: string | null;
+  endpoint?: string | null;
+  retrieved_at?: string | null;
+  reason?: string | null;
+}
+
+export interface ResolvedPackage {
+  name: string;
+  version: string;
+  direct: boolean;
+  requested_extras: string[];
+  constraints: string[];
+  filename?: string | null;
+  sha256?: string | null;
+  upload: UploadDate;
+  introduced?: boolean | null;
+}
+
+export interface ResolutionComparison {
+  available: boolean;
+  reason?: string | null;
+  introduced: string[];
+}
+
+export interface ResolutionReport {
+  policy_version: string;
+  role: 'original' | 'proposed';
+  status: ResolutionStatus;
+  fingerprint: string;
+  resolver?: string | null;
+  image?: string | null;
+  target: Record<string, string>;
+  packages: ResolvedPackage[];
+  conflicts: { summary: string; causes: string[] }[];
+  unsupported: { reason: string; message: string; line_number?: number | null; source: string; text?: string | null }[];
+  warnings: string[];
+  comparison?: ResolutionComparison | null;
+  disclosure?: string | null;
+  failure?: string | null;
+  created_at: number;
+}
+
+export interface JobView {
+  id: string;
+  status: JobStatus;
+  current_role?: 'original' | 'proposed' | null;
+  cancel_requested: boolean;
+  created_at: number;
+  started_at?: number | null;
+  deadline_at?: number | null;
+  finished_at?: number | null;
+  error_code?: string | null;
+  error_message?: string | null;
+}
+
+export interface ResolutionView {
+  proposal_id: string;
+  status: ResolutionStatus;
+  reason?: string | null;
+  approval_eligible: boolean;
+  job?: JobView | null;
+  proposed?: ResolutionReport | null;
+  original?: ResolutionReport | null;
+  comparison?: ResolutionComparison | null;
+  disclosure: string;
+}
+
+export interface ResolveResponse {
+  job?: JobView | null;
+  resolution: ResolutionView;
+}
+
+async function getJson<T>(path: string, fallback: string): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${config.apiBaseUrl}${path}`, {
+      headers: { 'X-DUA-Client': 'web', Accept: 'application/json' },
+    });
+  } catch {
+    throw new ApiError('The analysis service could not be reached. Check that it is running.');
+  }
+  const text = await response.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+  if (!response.ok) {
+    throw new ApiError(detailMessage(data, `${fallback} (${response.status})`), response.status, data);
+  }
+  return data as T;
+}
+
+/** Start the server-side compatibility check for a plan. */
+export function startResolution(proposalId: string): Promise<ResolveResponse> {
+  return postJson<ResolveResponse>(
+    `/api/proposals/${encodeURIComponent(proposalId)}/resolve`,
+    {},
+    'The compatibility check could not be started'
+  );
+}
+
+/** Current compatibility status, evidence and comparison for a plan. */
+export function getResolution(proposalId: string): Promise<ResolutionView> {
+  return getJson<ResolutionView>(
+    `/api/proposals/${encodeURIComponent(proposalId)}/resolution`,
+    'Compatibility status could not be loaded'
+  );
+}
+
+export function getResolutionJob(jobId: string): Promise<JobView> {
+  return getJson<JobView>(`/api/jobs/${encodeURIComponent(jobId)}`, 'Job status could not be loaded');
+}
+
+export function cancelResolutionJob(jobId: string): Promise<JobView> {
+  return postJson<JobView>(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {}, 'The check could not be cancelled');
 }

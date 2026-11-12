@@ -1021,3 +1021,14 @@
 
 .staging-line { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
 .tag-warn { border-color: rgba(217, 168, 78, 0.45); color: var(--warn); }
+
+/* M12 compatibility panel: existing tokens only. */
+.compat { display: grid; gap: 16px; padding: 20px 0; border-top: 1px solid var(--line); }
+.compat-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.compat-title { font-size: 16px; font-weight: 500; color: var(--text); }
+.compat-progress { display: flex; align-items: center; gap: 12px; color: var(--text-2); flex-wrap: wrap; }
+.compat-result { display: grid; gap: 14px; }
+.compat-disclosure { border-left-color: var(--warn); color: var(--text-2); max-width: 80ch; }
+.compat-details summary { cursor: pointer; color: var(--text); padding: 6px 0; }
+.compat-details summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.compat-introduced td:first-child { color: var(--warn); }
