@@ -1,0 +1,3 @@
+# Recorded PyPI and pip bytes. Their SHA-256 values are checked by the tests; never normalize them.
+pypi/** binary
+reports/** binary

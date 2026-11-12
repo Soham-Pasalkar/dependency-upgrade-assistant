@@ -1,0 +1,19 @@
+Collecting numpy==2.1.0
+  Using cached numpy-2.1.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (60 kB)
+Collecting scipy==1.10.0
+  Using cached scipy-1.10.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (58 kB)
+INFO: pip is looking at multiple versions of scipy to determine which version is compatible with other requirements. This could take a while.
+
+The conflict is caused by:
+    The user requested numpy==2.1.0
+    scipy 1.10.0 depends on numpy<1.27.0 and >=1.19.5
+
+Additionally, some packages in these conflicts have no matching distributions available for your environment:
+    numpy
+
+To fix this you could try to:
+1. loosen the range of package versions you've specified
+2. remove package versions to allow pip to attempt to solve the dependency conflict
+
+ERROR: Cannot install numpy==2.1.0 and scipy==1.10.0 because these package versions have conflicting dependencies.
+ERROR: ResolutionImpossible: for help visit https://pip.pypa.io/en/latest/topics/dependency-resolution/#dealing-with-dependency-conflicts

@@ -73,7 +73,8 @@ class ConflictDiagnostic(BaseModel):
 class UploadDate(BaseModel):
     """FR-32c: upload time of the exact selected file, or an explicit 'date unavailable'."""
 
-    value: Optional[str] = Field(default=None, description="RFC 3339 UTC timestamp as published by PyPI")
+    filename: Optional[str] = Field(default=None, description="Exact distribution file the date belongs to")
+    value: Optional[str] = Field(default=None, description="Upload time normalized to UTC (RFC 3339, 'Z')")
     available: bool = False
     source: Optional[str] = Field(default=None, description="'pep700-simple-json' or 'pypi-json-api'")
     endpoint: Optional[str] = None
@@ -90,6 +91,9 @@ class ResolvedPackage(BaseModel):
     version: str
     direct: bool
     requested_extras: List[str] = Field(default_factory=list)
+    constraints: List[str] = Field(
+        default_factory=list, description="Specifiers that applied to this package (input and Requires-Dist)"
+    )
     filename: Optional[str] = None
     sha256: Optional[str] = None
     upload: UploadDate = Field(default_factory=UploadDate)
@@ -121,4 +125,5 @@ class ResolutionReport(BaseModel):
     warnings: List[str] = Field(default_factory=list)
     comparison: Optional[Comparison] = None
     disclosure: Optional[str] = None
+    failure: Optional[str] = Field(default=None, description="Reason code and detail when not COMPATIBLE")
     created_at: float

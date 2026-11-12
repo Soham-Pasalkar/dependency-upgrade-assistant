@@ -1,0 +1,13 @@
+Collecting requests==2.32.3 (from requests[socks]==2.32.3)
+  Using cached requests-2.32.3-py3-none-any.whl.metadata (4.6 kB)
+Collecting charset-normalizer<4,>=2 (from requests==2.32.3->requests[socks]==2.32.3)
+  Using cached charset_normalizer-3.5.2-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (46 kB)
+Collecting idna<4,>=2.5 (from requests==2.32.3->requests[socks]==2.32.3)
+  Using cached idna-3.20-py3-none-any.whl.metadata (7.2 kB)
+Collecting urllib3<3,>=1.21.1 (from requests==2.32.3->requests[socks]==2.32.3)
+  Using cached urllib3-2.8.0-py3-none-any.whl.metadata (7.4 kB)
+Collecting certifi>=2017.4.17 (from requests==2.32.3->requests[socks]==2.32.3)
+  Using cached certifi-2026.10.23-py3-none-any.whl.metadata (2.5 kB)
+Collecting PySocks!=1.5.7,>=1.5.6 (from requests[socks]==2.32.3)
+  Using cached PySocks-1.7.1-py3-none-any.whl.metadata (13 kB)
+Would install PySocks-1.7.1 certifi-2026.10.23 charset-normalizer-3.5.2 idna-3.20 requests-2.32.3 urllib3-2.8.0

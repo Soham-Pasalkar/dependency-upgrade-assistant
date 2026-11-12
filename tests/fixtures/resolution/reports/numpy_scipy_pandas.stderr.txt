@@ -1,0 +1,13 @@
+Collecting numpy==1.24.0
+  Using cached numpy-1.24.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (5.6 kB)
+Collecting scipy==1.10.0
+  Using cached scipy-1.10.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (58 kB)
+Collecting pandas==1.5.3
+  Using cached pandas-1.5.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (11 kB)
+Collecting python-dateutil>=2.8.1 (from pandas==1.5.3)
+  Using cached python_dateutil-4.0.0-py3-none-any.whl.metadata (7.3 kB)
+Collecting pytz>=2020.1 (from pandas==1.5.3)
+  Using cached pytz-2026.6-py2.py3-none-any.whl.metadata (22 kB)
+Collecting tzdata (from python-dateutil>=2.8.1->pandas==1.5.3)
+  Using cached tzdata-2026.6-py2.py3-none-any.whl.metadata (1.4 kB)
+Would install numpy-1.24.0 pandas-1.5.3 python-dateutil-4.0.0 pytz-2026.6 scipy-1.10.0 tzdata-2026.6

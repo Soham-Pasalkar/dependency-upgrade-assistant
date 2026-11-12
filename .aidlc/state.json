@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-12T17:25:17Z",
+  "updated": "2026-11-12T17:51:50Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -1344,6 +1344,27 @@
           "result": "Full backend regression after P1/P2, local: 893 passed, 9 skipped (all 9 need live Docker), 0 failed. Baseline before M12: 759 passed, 9 skipped. No existing test modified.",
           "file": null,
           "sha256": null
+        },
+        {
+          "at": "2026-11-12T17:28:35Z",
+          "cmd": "GitHub Actions CI run 43269423709 on commit 9818881a2bf0f11ae470c5cf9dc1e5f94e65ff4b",
+          "result": "success, all 7 jobs: pytest Python 3.10-3.14 each 901 passed, 1 skipped; Docker job 74 + 45 passed (existing sandbox suites; no M12 live tests exist yet); frontend 41 passed. https://github.com/Soham-Pasalkar/dependency-upgrade-assistant/actions/runs/43269423709. P1/P2 only; no criterion complete.",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-12T17:51:50Z",
+          "cmd": "python3 -m pytest -q -o addopts=\"\" -p no:cacheprovider tests/test_resolution_verifier.py tests/test_resolution_comparison.py tests/test_upload_dates.py tests/test_resolution_metadata_client.py",
+          "result": "P3 local (macOS arm64, Python 3.14.3, no Docker; recorded pip output and recorded PyPI responses, no live resolver): 198 passed, 0 failed. Mutation check: 6 safeguards each caught when disabled.",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-12T17:51:50Z",
+          "cmd": "python3 -m pytest -q -o addopts=\"\" -p no:cacheprovider",
+          "result": "Full backend regression after P3, local: 1091 passed, 9 skipped (all 9 need live Docker), 0 failed. No existing test modified.",
+          "file": null,
+          "sha256": null
         }
       ],
       "approval": null,
@@ -1410,5 +1431,5 @@
       "at": "2026-11-12T05:40:30Z"
     }
   ],
-  "head": "5bac362b3d0b204eef55cae16d9952cf2ec0e18904b2399de3c6a12aca6ff4f1"
+  "head": "29984efaa80bebeaf23f11a800f92820e888f8dedf4244d84fd725f85cadc4e2"
 }

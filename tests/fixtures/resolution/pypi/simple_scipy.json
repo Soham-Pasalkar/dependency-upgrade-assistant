@@ -1,0 +1,389 @@
+{
+ "files": [
+  {
+   "core-metadata": {
+    "sha256": "f43893c8aa53ccea3f65912a17c2a538b1b1fa9914df5a1dcf8d2d8fd35cb95b"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "f43893c8aa53ccea3f65912a17c2a538b1b1fa9914df5a1dcf8d2d8fd35cb95b"
+   },
+   "filename": "scipy-1.10.0-cp310-cp310-macosx_10_15_x86_64.whl",
+   "hashes": {
+    "sha256": "b901b423c91281a974f6cd1c36f5c6c523e665b5a6d5e80fcb2334e14670eefd"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 35087572,
+   "upload-time": "2023-01-03T22:34:14.343706Z",
+   "url": "https://files.pythonhosted.org/packages/45/4e/250f55436fe2cec3db808ca6befa16d294935a21ed2b9dc03d0238ead769/scipy-1.10.0-cp310-cp310-macosx_10_15_x86_64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "f43893c8aa53ccea3f65912a17c2a538b1b1fa9914df5a1dcf8d2d8fd35cb95b"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "f43893c8aa53ccea3f65912a17c2a538b1b1fa9914df5a1dcf8d2d8fd35cb95b"
+   },
+   "filename": "scipy-1.10.0-cp310-cp310-macosx_12_0_arm64.whl",
+   "hashes": {
+    "sha256": "16ba05d3d1b9f2141004f3f36888e05894a525960b07f4c2bfc0456b955a00be"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 28767166,
+   "upload-time": "2023-01-03T22:34:19.712294Z",
+   "url": "https://files.pythonhosted.org/packages/5e/e3/ac8daa4adf427ef0f9913350e74b985ecd838ad32eafc3aa844f0760e839/scipy-1.10.0-cp310-cp310-macosx_12_0_arm64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "edc7f770fa72e0755b1c1a1fc7c93da949f5a0f780db6912d0aa6b2bfa362dc9"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "edc7f770fa72e0755b1c1a1fc7c93da949f5a0f780db6912d0aa6b2bfa362dc9"
+   },
+   "filename": "scipy-1.10.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+   "hashes": {
+    "sha256": "151f066fe7d6653c3ffefd489497b8fa66d7316e3e0d0c0f7ff6acca1b802809"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 30880785,
+   "upload-time": "2023-01-03T22:34:23.948255Z",
+   "url": "https://files.pythonhosted.org/packages/5f/12/1f00e9b92ae6feb2da0d0ef1d1c5672903fc7f18e1c53123b69ebd65ecef/scipy-1.10.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "edc7f770fa72e0755b1c1a1fc7c93da949f5a0f780db6912d0aa6b2bfa362dc9"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "edc7f770fa72e0755b1c1a1fc7c93da949f5a0f780db6912d0aa6b2bfa362dc9"
+   },
+   "filename": "scipy-1.10.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+   "hashes": {
+    "sha256": "2f9ea0a37aca111a407cb98aa4e8dfde6e5d9333bae06dfa5d938d14c80bb5c3"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 34415334,
+   "upload-time": "2023-01-03T22:34:28.026183Z",
+   "url": "https://files.pythonhosted.org/packages/76/22/287d06df9b359ba6df3f986e83267f240132379e4181c43cead3c5d41227/scipy-1.10.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "bf46c98fddb9e89b074f58406b2a8114cd2c4e4e5de1abb04361edbaa90da2a9"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "bf46c98fddb9e89b074f58406b2a8114cd2c4e4e5de1abb04361edbaa90da2a9"
+   },
+   "filename": "scipy-1.10.0-cp310-cp310-win_amd64.whl",
+   "hashes": {
+    "sha256": "27e548276b5a88b51212b61f6dda49a24acf5d770dff940bd372b3f7ced8c6c2"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 42482989,
+   "upload-time": "2023-01-03T22:34:32.430815Z",
+   "url": "https://files.pythonhosted.org/packages/ec/97/719e7c5b5081524b056652eec1e31c08a54f262f00dae62089094bde66b3/scipy-1.10.0-cp310-cp310-win_amd64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "f43893c8aa53ccea3f65912a17c2a538b1b1fa9914df5a1dcf8d2d8fd35cb95b"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "f43893c8aa53ccea3f65912a17c2a538b1b1fa9914df5a1dcf8d2d8fd35cb95b"
+   },
+   "filename": "scipy-1.10.0-cp311-cp311-macosx_10_15_x86_64.whl",
+   "hashes": {
+    "sha256": "42ab8b9e7dc1ebe248e55f54eea5307b6ab15011a7883367af48dd781d1312e4"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 34984684,
+   "upload-time": "2023-01-03T22:34:36.731147Z",
+   "url": "https://files.pythonhosted.org/packages/7a/23/13579b64ab458782a43e11e1ad095488458b8df099063ae07773666adada/scipy-1.10.0-cp311-cp311-macosx_10_15_x86_64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "0ed8560fb304ed0177abbc1d55c3e0ffff18db60a002a7e29581900fc303189d"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "0ed8560fb304ed0177abbc1d55c3e0ffff18db60a002a7e29581900fc303189d"
+   },
+   "filename": "scipy-1.10.0-cp311-cp311-macosx_12_0_arm64.whl",
+   "hashes": {
+    "sha256": "e096b062d2efdea57f972d232358cb068413dc54eec4f24158bcbb5cb8bddfd8"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 28705456,
+   "upload-time": "2023-01-03T22:34:40.842962Z",
+   "url": "https://files.pythonhosted.org/packages/fc/c9/a58b6c6ade3e80f76b134632fad491438b78c844ee54e590c7b842cb9de3/scipy-1.10.0-cp311-cp311-macosx_12_0_arm64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "961627da12a3f38f5a4617e8e395c39540d18d1f544e352ab65c80205ea59c9d"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "961627da12a3f38f5a4617e8e395c39540d18d1f544e352ab65c80205ea59c9d"
+   },
+   "filename": "scipy-1.10.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+   "hashes": {
+    "sha256": "4df25a28bd22c990b22129d3c637fd5c3be4b7c94f975dca909d8bab3309b694"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 30677591,
+   "upload-time": "2023-01-03T22:34:44.765760Z",
+   "url": "https://files.pythonhosted.org/packages/d5/80/b23382de9c50509afd151d6876dca33cafef2237a36f74ac7f3bfc327fc2/scipy-1.10.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "edc7f770fa72e0755b1c1a1fc7c93da949f5a0f780db6912d0aa6b2bfa362dc9"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "edc7f770fa72e0755b1c1a1fc7c93da949f5a0f780db6912d0aa6b2bfa362dc9"
+   },
+   "filename": "scipy-1.10.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+   "hashes": {
+    "sha256": "2ad449db4e0820e4b42baccefc98ec772ad7818dcbc9e28b85aa05a536b0f1a2"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 34124731,
+   "upload-time": "2023-01-03T22:34:48.641469Z",
+   "url": "https://files.pythonhosted.org/packages/da/b8/03dae1cd4fa687d84cd60513aef17efecf7c277bc771bb96a1d8780dd734/scipy-1.10.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "bf46c98fddb9e89b074f58406b2a8114cd2c4e4e5de1abb04361edbaa90da2a9"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "bf46c98fddb9e89b074f58406b2a8114cd2c4e4e5de1abb04361edbaa90da2a9"
+   },
+   "filename": "scipy-1.10.0-cp311-cp311-win_amd64.whl",
+   "hashes": {
+    "sha256": "6faf86ef7717891195ae0537e48da7524d30bc3b828b30c9b115d04ea42f076f"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 42226259,
+   "upload-time": "2023-01-03T22:34:52.955781Z",
+   "url": "https://files.pythonhosted.org/packages/c3/c4/8efe05b8ee86c7276448ef54f71ddb194416b881bc7a0d3c353279eea6aa/scipy-1.10.0-cp311-cp311-win_amd64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "f43893c8aa53ccea3f65912a17c2a538b1b1fa9914df5a1dcf8d2d8fd35cb95b"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "f43893c8aa53ccea3f65912a17c2a538b1b1fa9914df5a1dcf8d2d8fd35cb95b"
+   },
+   "filename": "scipy-1.10.0-cp38-cp38-macosx_10_15_x86_64.whl",
+   "hashes": {
+    "sha256": "4bd0e3278126bc882d10414436e58fa3f1eca0aa88b534fcbf80ed47e854f46c"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 35037284,
+   "upload-time": "2023-01-03T22:34:57.497707Z",
+   "url": "https://files.pythonhosted.org/packages/a3/05/58699e7030b03ca34be52ba03d3f9403dc419b07fce6bdeb8bea09cf3fb0/scipy-1.10.0-cp38-cp38-macosx_10_15_x86_64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "f43893c8aa53ccea3f65912a17c2a538b1b1fa9914df5a1dcf8d2d8fd35cb95b"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "f43893c8aa53ccea3f65912a17c2a538b1b1fa9914df5a1dcf8d2d8fd35cb95b"
+   },
+   "filename": "scipy-1.10.0-cp38-cp38-macosx_12_0_arm64.whl",
+   "hashes": {
+    "sha256": "38bfbd18dcc69eeb589811e77fae552fa923067fdfbb2e171c9eac749885f210"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 28792828,
+   "upload-time": "2023-01-03T22:35:01.981319Z",
+   "url": "https://files.pythonhosted.org/packages/3c/85/3aa622ec7fd2efb41a59eacb4d503214d71e7c84a59caffe083599c51963/scipy-1.10.0-cp38-cp38-macosx_12_0_arm64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "edc7f770fa72e0755b1c1a1fc7c93da949f5a0f780db6912d0aa6b2bfa362dc9"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "edc7f770fa72e0755b1c1a1fc7c93da949f5a0f780db6912d0aa6b2bfa362dc9"
+   },
+   "filename": "scipy-1.10.0-cp38-cp38-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+   "hashes": {
+    "sha256": "0ab2a58064836632e2cec31ca197d3695c86b066bc4818052b3f5381bfd2a728"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 31018399,
+   "upload-time": "2023-01-03T22:35:05.969184Z",
+   "url": "https://files.pythonhosted.org/packages/74/44/694d9472d7edade2d95ace485740d00ec3621a53339650e8005ce25a9bc9/scipy-1.10.0-cp38-cp38-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "edc7f770fa72e0755b1c1a1fc7c93da949f5a0f780db6912d0aa6b2bfa362dc9"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "edc7f770fa72e0755b1c1a1fc7c93da949f5a0f780db6912d0aa6b2bfa362dc9"
+   },
+   "filename": "scipy-1.10.0-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+   "hashes": {
+    "sha256": "5cd7a30970c29d9768a7164f564d1fbf2842bfc77b7d114a99bc32703ce0bf48"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 34534555,
+   "upload-time": "2023-01-03T22:35:10.055567Z",
+   "url": "https://files.pythonhosted.org/packages/d9/9c/ed263f84bb54ce0a4b0774f8ef21b45a70d54196a1b4bca9bb7a3c837437/scipy-1.10.0-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "bf46c98fddb9e89b074f58406b2a8114cd2c4e4e5de1abb04361edbaa90da2a9"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "bf46c98fddb9e89b074f58406b2a8114cd2c4e4e5de1abb04361edbaa90da2a9"
+   },
+   "filename": "scipy-1.10.0-cp38-cp38-win_amd64.whl",
+   "hashes": {
+    "sha256": "9b878c671655864af59c108c20e4da1e796154bd78c0ed6bb02bc41c84625686"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 42202081,
+   "upload-time": "2023-01-03T22:35:14.294824Z",
+   "url": "https://files.pythonhosted.org/packages/f0/17/c26457e774951eb145db3eb69f9896d05a47900023e4e90c11d3e4cd7972/scipy-1.10.0-cp38-cp38-win_amd64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "f43893c8aa53ccea3f65912a17c2a538b1b1fa9914df5a1dcf8d2d8fd35cb95b"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "f43893c8aa53ccea3f65912a17c2a538b1b1fa9914df5a1dcf8d2d8fd35cb95b"
+   },
+   "filename": "scipy-1.10.0-cp39-cp39-macosx_10_15_x86_64.whl",
+   "hashes": {
+    "sha256": "3afcbddb4488ac950ce1147e7580178b333a29cd43524c689b2e3543a080a2c8"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 35152252,
+   "upload-time": "2023-01-03T22:35:18.406696Z",
+   "url": "https://files.pythonhosted.org/packages/9f/31/c78e7c54a62bd986051c76e18ca38dc962fdf4e4078485d4307d61339dc7/scipy-1.10.0-cp39-cp39-macosx_10_15_x86_64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "f43893c8aa53ccea3f65912a17c2a538b1b1fa9914df5a1dcf8d2d8fd35cb95b"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "f43893c8aa53ccea3f65912a17c2a538b1b1fa9914df5a1dcf8d2d8fd35cb95b"
+   },
+   "filename": "scipy-1.10.0-cp39-cp39-macosx_12_0_arm64.whl",
+   "hashes": {
+    "sha256": "6e4497e5142f325a5423ff5fda2fff5b5d953da028637ff7c704378c8c284ea7"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 28896651,
+   "upload-time": "2023-01-03T22:35:22.891196Z",
+   "url": "https://files.pythonhosted.org/packages/2b/54/7536dbfcbea26ca2c11d3c55b0c2d806d4349b5852318e12b98ffee27bd8/scipy-1.10.0-cp39-cp39-macosx_12_0_arm64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "961627da12a3f38f5a4617e8e395c39540d18d1f544e352ab65c80205ea59c9d"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "961627da12a3f38f5a4617e8e395c39540d18d1f544e352ab65c80205ea59c9d"
+   },
+   "filename": "scipy-1.10.0-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+   "hashes": {
+    "sha256": "441cab2166607c82e6d7a8683779cb89ba0f475b983c7e4ab88f3668e268c143"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 30953174,
+   "upload-time": "2023-01-03T22:35:26.865996Z",
+   "url": "https://files.pythonhosted.org/packages/f3/c7/16537a3e7178a08329d455d7b1c6f43177034e708a0c2517f9e308560019/scipy-1.10.0-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "edc7f770fa72e0755b1c1a1fc7c93da949f5a0f780db6912d0aa6b2bfa362dc9"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "edc7f770fa72e0755b1c1a1fc7c93da949f5a0f780db6912d0aa6b2bfa362dc9"
+   },
+   "filename": "scipy-1.10.0-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+   "hashes": {
+    "sha256": "0490dc499fe23e4be35b8b6dd1e60a4a34f0c4adb30ac671e6332446b3cbbb5a"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 34449528,
+   "upload-time": "2023-01-03T22:35:30.889896Z",
+   "url": "https://files.pythonhosted.org/packages/30/71/bb9e677e30c52f938ff71ba528915c579e794ac0f59804e06bfed3596dff/scipy-1.10.0-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "bf46c98fddb9e89b074f58406b2a8114cd2c4e4e5de1abb04361edbaa90da2a9"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "bf46c98fddb9e89b074f58406b2a8114cd2c4e4e5de1abb04361edbaa90da2a9"
+   },
+   "filename": "scipy-1.10.0-cp39-cp39-win_amd64.whl",
+   "hashes": {
+    "sha256": "954ff69d2d1bf666b794c1d7216e0a746c9d9289096a64ab3355a17c7c59db54"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 42503388,
+   "upload-time": "2023-01-03T22:35:35.484768Z",
+   "url": "https://files.pythonhosted.org/packages/b5/16/6261fb37606565833f7437692e57edd1f29f3e9dd3f3873720a2d25558b0/scipy-1.10.0-cp39-cp39-win_amd64.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": false,
+   "data-dist-info-metadata": false,
+   "filename": "scipy-1.10.0.tar.gz",
+   "hashes": {
+    "sha256": "c8b3cbc636a87a89b770c6afc999baa6bcbb01691b5ccbbc1b1791c7c0a07540"
+   },
+   "provenance": null,
+   "requires-python": "<3.12,>=3.8",
+   "size": 42398693,
+   "upload-time": "2023-01-03T22:37:50.970444Z",
+   "url": "https://files.pythonhosted.org/packages/d6/bd/2d13a273d95f7b7d9903c906c486040b0aebb85e008f93a5dd0891f21f1f/scipy-1.10.0.tar.gz",
+   "yanked": false
+  }
+ ],
+ "meta": {
+  "_last-serial": 42981724,
+  "api-version": "1.4"
+ },
+ "name": "scipy",
+ "project-status": {
+  "status": "active"
+ },
+ "versions": [
+  "1.10.0"
+ ]
+}
