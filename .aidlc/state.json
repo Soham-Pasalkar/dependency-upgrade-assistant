@@ -3,31 +3,31 @@
   "project": "Dependency Upgrade Assistant 2.0",
   "tier": 3,
   "mode": "brownfield",
-  "phase": "operations",
+  "phase": "construction",
   "config": {
     "strict_approvals": true,
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-12T06:47:46Z",
+  "updated": "2026-11-12T17:18:05Z",
   "gates": {
     "G1": {
       "name": "Requirements",
       "status": "approved",
-      "note": "approved at terminal",
-      "at": "2026-11-11T10:26:30Z"
+      "note": "Owner approval: M12 requirements Revision 4, including FR-32, are approved. The original manifest's complete resolved dependency set is the comparison baseline; introduced packages are reported only when both original and proposed resolutions are COMPATIBLE. The comparison is informational and does not add an approval gate. Upload dates must be verified against the exact selected distribution file. Compatibility is not a security endorsement. OSV and malware detection remain outside M12.",
+      "at": "2026-11-12T16:25:02Z"
     },
     "G2": {
       "name": "Architecture and threat model",
       "status": "approved",
-      "note": "approved at terminal",
-      "at": "2026-11-11T10:26:34Z"
+      "note": "Owner approval: M12 architecture Revision 4, ADR-009 through ADR-012, and the revised threat model are approved. T-35 is accepted at High inherent severity and Medium residual risk, with FR-32 compatibility disclosures and resolved-set review. COMPATIBLE means dependency resolution success, not package safety. Resolution failures must use trusted supervisor-generated evidence only. Unsupported configurations remain fail-closed. Docker isolation and network controls remain unverified until the required live integration tests pass.",
+      "at": "2026-11-12T16:59:28Z"
     },
     "G3": {
       "name": "Milestone plan",
       "status": "approved",
-      "note": "approved at terminal",
-      "at": "2026-11-12T06:16:16Z"
+      "note": "Owner approval: M12 construction is authorized against the approved requirements Revision 4, architecture Revision 4, threat model Revision 4, ADR-009 through ADR-012, and the registered 14 acceptance criteria. T-35 residual risk is accepted at Medium as approved at G2. CI work-in-progress pushes to the existing feature branch are authorized using normal pushes only. Test-only resolver fixtures are authorized provided they exercise the real supervisor verification and fingerprinting path. No security assertions may be weakened, deleted or skipped. M12 must demonstrate live Docker isolation and resolver integration in CI before relevant criteria are accepted.",
+      "at": "2026-11-12T17:17:42Z"
     },
     "G5": {
       "name": "Release",
@@ -1250,6 +1250,91 @@
       "rework": 0,
       "started": "2026-11-12T06:16:31Z",
       "note": null
+    },
+    {
+      "id": "M12",
+      "title": "Python Dependency Compatibility & Resolution Engine",
+      "depends_on": [
+        "M11"
+      ],
+      "status": "in_progress",
+      "criteria": [
+        {
+          "text": "C1 Real pip resolution, compatible and conflicting. Verified: `numpy==1.24.0`, `scipy==1.10.0`, `pandas==1.5.3` gives COMPATIBLE; `numpy==2.1.0` with `scipy==1.10.0` gives CONFLICT naming `scipy 1.10.0 depends on numpy<1.27.0` Evidence: `tests/test_resolution_live.py::test_numpy_scipy_compatible` and `::test_numpy_scipy_conflict`. Type: Integration. Docker: Yes.",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "C2 Transitive dependencies, markers, extras, constraints, `Requires-Python`. Verified: Transitive packages reported and verified; a marker-excluded dependency is absent; extras' dependencies present; a repository constraints file changes the outcome; a `Requires-Python` conflict gives CONFLICT; a transitive conflict between two direct dependencies is detected Evidence: `test_resolution_live.py::test_transitive`, `::test_markers`, `::test_extras`, `::test_constraints_file`, `::test_requires_python_conflict`, `::test_transitive_conflict`; supervisor closure unit tests on captured real reports (`tests/test_resolution_verifier.py`). Type: Integration + unit. Docker: Live: yes; unit: no.",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "C3 Prerelease and yanked policy. Verified: No prerelease unless pinned; a pinned prerelease is allowed; a yanked `==` pin resolves with a warning; yanked releases are not chosen for ranges Evidence: `test_resolution_live.py::test_prerelease_policy`, `::test_yanked_pin_warning`; unit tests on captured reports. Type: Integration + unit. Docker: Live: yes.",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "C4 Source-build handling. Verified: An sdist-only requirement (e.g. `pycrypto==2.6.1`) gives UNSUPPORTED `source_build_required`, never CONFLICT or COMPATIBLE; pip runs with `--only-binary=:all:`; no build backend runs (pip stderr has no build steps; the input mount stays unmodified); a conflict involving source-only releases gives UNSUPPORTED Evidence: `test_resolution_live.py::test_source_only_unsupported`; `tests/test_resolution_input.py`, `test_resolver_runtime.py::test_pip_args_binary_only`. Type: Integration + unit + security. Docker: Live: yes.",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "C5 Structured report and server-computed fingerprint. Verified: All report fields present; the fingerprint is computed by the supervisor; resolver stdout cannot set the status or fingerprint; **forgery tests:** a report claiming an unsatisfied `Requires-Dist` closure, wrong hashes, a non-allow-listed artifact host, extra packages, malformed JSON or excess size each give RESOLUTION_FAILED Evidence: `tests/test_resolution_verifier.py` (forgery matrix on captured real reports); `tests/test_resolution_fingerprint.py`. Type: Unit + security. Docker: No.",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "C6 Input-change invalidation. Verified: Changing the proposal diff, original or proposed manifest, constraints, image digest, pip policy arguments or allow-list version changes the fingerprint; stored evidence then counts as UNKNOWN and approval is blocked Evidence: `test_resolution_fingerprint.py` (one case per input); `tests/test_resolution_enforcement.py::test_stale_evidence_blocks`. Type: Unit + API. Docker: No.",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "C7 Fail-closed enforcement. Verified: 6 statuses × {approve, validate, apply, export}: only COMPATIBLE with a matching fingerprint passes; client-supplied status or fingerprint fields are ignored; pre-M12 plans are UNKNOWN and blocked; M11 validation-policy enforcement is unchanged; npm plans are UNSUPPORTED and blocked Evidence: `tests/test_resolution_enforcement.py` (matrix), existing M11 suites. Type: API + security. Docker: No.",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "C8 Egress isolation in the real Docker setup. Verified: From inside a resolver container built by the production runtime: direct TCP to a public IP fails; DNS lookup fails; `CONNECT` to a non-allow-listed host is refused and logged; `CONNECT` to 169.254.169.254, the Docker gateway, the host IP and an RFC 1918 address is refused; `CONNECT pypi.org:22` is refused; plain HTTP is refused; `CONNECT pypi.org:443` succeeds; the proxy is not reachable from a container on another network. Proxy unit tests: rebinding (the validated IP is used), allow-list, ports, methods, denial log format Evidence: `tests/test_egress_live.py` (Docker), `tests/test_egress_proxy.py` (unit). Type: Security integration + unit. Docker: Live: yes.",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "C9 Resource limits and timeout. Verified: Generated `docker run` arguments include non-root, read-only, capabilities dropped, no-new-privileges, `--init`, memory, CPU, processes, tmpfs size, read-only input mount, no writable host mount, no socket, internal network only, DNS disabled; timeout hierarchy (ADR-012): a run exceeding T gives TIMED_OUT and RESOLUTION_FAILED (`timeout`), with containers killed at the run deadline and no evidence for that run; a run-1 timeout prevents run 2; the job's terminal state is recorded by `started_at + 2T`; supervisor requests are bounded by the remaining run time; cleanup finishes within 30 s or the sweep removes leftovers; limit settings outside their ceilings are refused at startup Evidence: `tests/test_resolver_runtime.py` (args), `tests/test_resolution_config.py` (ceilings), `test_resolution_live.py::test_timeout_kills_containers`, `tests/test_job_service.py::test_timeout_hierarchy` (fake clock: run deadline, job deadline, run-2 budget shortened by slow setup). Type: Unit + integration. Docker: Live: yes.",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "C10 SQLite job lifecycle, cancellation and restart recovery. Verified: Two runs per job (original, then proposed), each with its own NFR-13 limits; cancel or timeout during either run stores no evidence for that run. Each state transition, with concurrent-transition rejection (compare-and-set); one active job per plan; pool bound; cancel: a QUEUED job is cancelled at once; a RUNNING job's watcher (≤ 1 s) kills the current container, skips the remaining run and records CANCELLED within 5 s, and removes the network; evidence is stored only for completed runs (an original row may remain, a proposed row never without SUCCEEDED); INTERRUPTED after a simulated restart with no evidence stored; startup sweep removes labelled leftovers but never a concurrently active job's resources; retention cascade Evidence: `tests/test_job_service.py` (unit, fake runner), `test_resolution_live.py::test_cancel_cleans_up`, `::test_restart_sweep`. Type: Unit + integration. Docker: Live: yes.",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "C11 Minimal UI integration. Verified: Compatibility panel states (checking, compatible, conflict, unsupported, failed, unavailable, unknown); cancel works; approval disabled with the reason; npm \"not yet supported\" message; no redesign Evidence: `frontend/src/components/*.test.tsx`; headless-Chrome journey (RESOLVER_UNAVAILABLE path locally; COMPATIBLE path requires Docker). Type: Component + end-to-end. Docker: E2E COMPATIBLE: yes.",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "C12 CI Docker integration. Verified: The CI Docker job runs `test_resolution_live.py` and `test_egress_live.py` with `DUA_REQUIRE_DOCKER=1` on the M12 commit; all jobs green Evidence: GitHub Actions run on the M12 commit. Type: CI. Docker: Yes.",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "C13 Documentation and backward compatibility. Verified: Revision 4 requirements, architecture, threat model and ADR-009 to ADR-012 match the implementation; supported and unsupported cases documented; pre-M12 records intact and UNKNOWN; additive migration tested on an M11-era database Evidence: `tests/test_resolution_migration.py`; `validate_artifacts.py`; reviewer check. Type: Unit + doc. Docker: No.",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "C14 Compatibility disclosure and resolved-set review (FR-32). Verified: (a) Every COMPATIBLE view and the Markdown export carry the disclosure \"resolves, not vetted or safe; DUA does not perform malware detection\", and no UI or export text claims safety. (b) A job runs the original then the proposed resolution under identical settings, storing separate evidence and fingerprints; introduced packages are exactly proposed set minus original set; when the original is not COMPATIBLE the comparison shows `comparison unavailable` with that status and nothing is flagged; the comparison never changes approval. (c) Upload date is the selected file's time matched by filename and SHA-256 (PEP 700 `upload-time`, else JSON API `upload_time_iso_8601`); source and retrieval time recorded; an unmatched file or missing time shows `date unavailable`; a multi-file version uses the selected file's time. (d) The complete list (name, version, direct or transitive, introduced, date) is in the UI and the export. Evidence: `tests/test_resolution_comparison.py` (set difference, unavailable cases, approval unaffected); `tests/test_upload_dates.py` (multi-file selection, PEP 700 and JSON API sources, no match, missing field, no fallback to other files); `tests/test_export_resolution.py`; component tests; `test_resolution_live.py::test_original_and_proposed_runs` (e.g. scipy upgrade introducing a new transitive package). Type: Unit + API + component + integration. Docker: Live: yes.",
+          "verified": false,
+          "proof": null
+        }
+      ],
+      "evidence": [],
+      "approval": null,
+      "rework": 0,
+      "started": "2026-11-12T17:18:05Z",
+      "note": null
     }
   ],
   "notes": [
@@ -1310,5 +1395,5 @@
       "at": "2026-11-12T05:40:30Z"
     }
   ],
-  "head": "ada5982bfcc7bd1255383d0b9dd1cb174d0eaf0ee223d506a6771dcabcdbfa92"
+  "head": "faa3657b73fb60c21bc16929838ae4f00b406b7446fd15a06acad530ec753ff8"
 }

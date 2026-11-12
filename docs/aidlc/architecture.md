@@ -719,3 +719,214 @@ This section is additive; the Revision 2 delta above still applies.
 
 ### Decision records
 No new ADR: F13 and F10 tighten ADR-005 (server-authoritative state). Retention follows the existing SQLite design.
+
+## Revision 4 delta — M12 Python dependency compatibility and resolution (2026-11-12)
+This section adds to Revisions 2 and 3, which still apply. It implements requirements Revision 4 (FR-22 to FR-32, NFR-13 to NFR-16; G1 approved, event 299).
+- **Validation stays synchronous.** The Revision 3 note "Direction for M12" proposed job-style execution for both resolution and validation. The owner limited jobs to resolution, so F11 remains a known limitation for validation.
+- **Status:** this is a design. Nothing in it is implemented or verified. Isolation, egress, limits and timeouts count as verified only when the M12 live Docker tests pass in CI.
+
+### Overview and trust split
+A resolution layer sits between plan generation and approval. It doesn't depend on Ollama, AI recommendations, frontend state or per-package recommendation logic.
+- **Resolver (untrusted output):** pip, binary-only (ADR-009), in a disposable container. It proposes a solution as JSON on stdout. No third-party code runs.
+- **Egress proxy (isolated):** the resolver's only route out, allow-listed to PyPI (ADR-010).
+- **Supervisor (trusted, in the application):**
+  - classifies the input and writes the sanitized inputs;
+  - starts, monitors and kills containers, and reads stdout under limits;
+  - verifies each solution against metadata it fetches itself (ADR-011);
+  - assigns statuses, computes fingerprints, derives upload dates and the comparison;
+  - stores the evidence.
+
+Only the supervisor writes `dua_resolutions`, `dua_jobs` transitions or approval records.
+
+### Authoritative evidence and informational results
+| Item | Kind | Used for |
+|------|------|----------|
+| `proposed` resolution record: status and fingerprint | **Authoritative** | Approval, validation, apply and export enforcement (FR-28) |
+| `original` resolution record | Informational | Baseline for the introduced-package comparison only (FR-32b) |
+| Introduced-package comparison | Informational | Review highlighting; never gates or overrides approval (ADR-011) |
+| Upload dates of selected files | Informational | Review display; never an input to status or fingerprint |
+| Compatibility disclosure | Informational, fixed server text | Shown with every COMPATIBLE result and in the export (FR-32a) |
+
+COMPATIBLE means the complete proposed dependency set resolves for the validation target. It does not mean the packages are vetted or safe. DUA does not perform malware detection, and vulnerability advisories (OSV) are deferred to M13.
+
+### Resolution flow
+```
+POST /api/proposals/{id}/resolve
+  │
+  ├─ input classification (python_input, synchronous)
+  │    ├─ npm / non-Python plan ─────────────► UNSUPPORTED report, both roles, no job (200)
+  │    ├─ Python with UNSUPPORTED items ─────► UNSUPPORTED report, both roles, no job (200)
+  │    └─ supported ─► dua_jobs QUEUED ──────► 202 {job_id}
+  │
+  worker (pool RESOLVER_MAX_CONCURRENT) claims job: RUNNING, deadline_at = start + 2T
+  │
+  ├─ setup: dua-res-<job> internal network + proxy (ADR-010)
+  ├─ run 1  role=original  : fresh container → stdout → verify → upload dates → store original row
+  ├─ run 2  role=proposed  : fresh container → stdout → verify → upload dates
+  ├─ comparison (only if both COMPATIBLE with identical common fingerprint elements)
+  ├─ one transaction: store proposed row (+ comparison) and set SUCCEEDED
+  └─ teardown (≤ 30 s, then sweep)
+```
+Run 2 always takes place unless the job was cancelled, timed out or failed. An original result of CONFLICT, UNSUPPORTED or RESOLUTION_FAILED doesn't stop it. Both runs use identical settings: image digest, target, pip arguments, prerelease and yanked policy, constraints and allow-list.
+
+### Input classification (`python_input`)
+- **Supported:** `requirements*.txt` lines with names, PEP 440 specifiers, PEP 508 markers, extras and `--hash`; repository-local `-c` files that are path-contained, size-capped and free of options and URLs.
+- **UNSUPPORTED, with a reason per item:**
+  - `pyproject.toml`-only projects;
+  - nested `-r`;
+  - editable, VCS, URL or local-path requirements;
+  - any other pip option;
+  - npm and other ecosystems (until M13).
+- **Inputs:** the supervisor writes the sanitized manifest and constraints to a per-run input directory, mounted read-only.
+
+### Network topology (ADR-010)
+```
+ ┌────────────── host (Docker engine) ───────────────────────────────────────────────┐
+ │  dua-res-<job>  (--internal, no gateway, /29 from a reserved pool)                │
+ │   ┌────────────────────┐     CONNECT host:443     ┌──────────────────────────┐    │
+ │   │ resolver  .3       │ ───────────────────────► │ proxy  .2 (binds .2:3128)│    │
+ │   │ (run 1, then run 2)│                          │ allow-list, own DNS,     │    │
+ │   │ --dns 127.0.0.1    │                          │ is_global, pinned IP     │    │
+ │   └────────────────────┘                          └────────────┬─────────────┘    │
+ │                                  dua-egress (dedicated user bridge; proxies only) │
+ └──────────────────────────────────────────────────────────── NAT ─┼────────────────┘
+                                                                     ▼
+                                   pypi.org:443, files.pythonhosted.org:443 (global IPs only)
+```
+- **Resolver:** one interface, on a network without a gateway. It has no DNS and no route to the Internet, host, LAN, Docker gateway, Docker API or metadata services.
+- **Proxy:** the only container on `dua-egress`. It listens only on its internal address, and refuses plain HTTP, other ports and methods, non-allow-listed hosts and non-global addresses. It logs each denial.
+- **Supervisor metadata fetches (TB-R4):** these use the existing hardened registry client from the host to fixed PyPI hosts over HTTPS, with bounded responses (16 MB cap for index pages; numpy measured 2.8 MB). They do not use the proxy.
+
+### Resolver container (ADR-009)
+- **Image:** the pinned validation image (`python:3.11-slim` by digest).
+- **Command:** `pip install --dry-run --ignore-installed --only-binary=:all: --isolated --report -`.
+- **Settings:**
+  - non-root, read-only root, `--cap-drop=ALL`, `no-new-privileges`, `--init`;
+  - NFR-13 memory, CPU, process and tmpfs limits;
+  - read-only input mount, and no writable host mount;
+  - no Docker socket, credentials or application environment;
+  - DNS disabled.
+- **Lifetime:** one fresh container per run, removed after it.
+- **Source-only:** requirements needing a source distribution are UNSUPPORTED (`source_build_required`).
+
+### Components
+| Component | Responsibility | Trust |
+|-----------|----------------|-------|
+| `src/resolution/models.py` | `ResolutionStatus`, `ResolutionRole`, `ResolutionReport`, `ResolvedPackage` (name, version, direct or transitive, introduced, upload date, date source), `ConflictDiagnostic`, `UnsupportedItem`, `Comparison` | — |
+| `src/resolution/python_input.py` | Input classification and sanitized input files | Trusted |
+| `src/resolution/resolver_runtime.py` | Docker orchestration: `dua-egress`, per-job network, proxy, per-run resolver containers, bounded stdout reader, kill at deadline, cleanup, labelled `dua-res-*` sweep | Trusted |
+| `src/resolution/egress_proxy.py` | stdlib asyncio `CONNECT` proxy run in the pinned image | Isolated |
+| `src/resolution/python_resolver.py` | pip invocation; exit code and stderr to candidate status; conflict-cause extraction | Trusted |
+| `src/resolution/verifier.py` | Report schema and size; PEP 691 index, PEP 658 metadata and JSON API fallback; hash and host checks; closure checks; source-only detection (ADR-011) | Trusted |
+| `src/resolution/fingerprint.py` | Per-role canonical inputs and SHA-256 (ADR-011) | Trusted |
+| `src/resolution/comparison.py` | Selected-file upload-date matching (filename and SHA-256; PEP 700, else JSON API) and the introduced-package set difference (ADR-011) | Trusted |
+| `src/services/job_service.py` | `dua_jobs` lifecycle, worker pool, deadlines, cancel watcher, startup recovery (ADR-012) | Trusted |
+| `src/services/run_store.py` (extended) | `dua_jobs`, `dua_resolutions`, `dua_approvals.resolution_fingerprint` | Trusted |
+| `src/services/approval_service.py` (extended) | `require_compatible_resolution` at approve, validate, apply and export, alongside the M11 checks | Trusted |
+| `src/services/exporter.py` (extended) | Markdown export section: status, disclosure, complete resolved list with versions, the introduced flag, and upload date or `date unavailable` | Trusted |
+| Frontend | Compatibility panel in the plan stage, using the existing design tokens (FR-30, FR-32) | — |
+
+### Data (additive migration)
+- **`dua_jobs`:** `id`, `kind` (`resolution`), `subject_id`, `status`, `created_at`, `started_at`, `deadline_at`, `finished_at`, `cancel_requested`, `error_code`, `error_message`. A partial unique index allows one active job per (kind, subject).
+- **`dua_resolutions`:** `id`, `proposal_id`, `job_id`, `role` (`original` or `proposed`), `fingerprint`, `status`, `report_json`, `created_at`. `report_json` holds the per-package upload date with its source, endpoint and retrieval time, plus the comparison on the proposed row. Only the supervisor inserts rows.
+- **`dua_approvals.resolution_fingerprint`:** new column, bound at approval.
+- **Retention:** cascades with the run (M11). Evidence expires with its plan (`PLAN_RETENTION_HOURS`).
+
+### API contract changes
+| Endpoint or model | Change |
+|-------------------|--------|
+| `POST /api/proposals/{id}/resolve` | New. 202 `{job_id}`, or 200 with an immediate UNSUPPORTED report (no job). 409 if a job is already active for the plan. |
+| `GET /api/jobs/{id}` | New. State, timestamps, current role, error. |
+| `POST /api/jobs/{id}/cancel` | New. Idempotent. |
+| `GET /api/proposals/{id}/resolution` | New. The current proposed status, both role reports, comparison, dates and disclosure. |
+| Approve, validate, apply, export | 409 `compatibility_not_verified` unless the latest `proposed` record is COMPATIBLE with a matching fingerprint. No override field exists. |
+| `ApprovalResponse` | New fields: `resolution_fingerprint`, `resolution_status`. |
+| Plan response | New field: `resolution_status`. |
+| Unchanged | M11 validation-policy fields and checks, request protections, retention. |
+
+### Timeout hierarchy and cancellation (ADR-012)
+One setting, `RESOLVER_TIMEOUT_SECONDS` = T (default 180, range 1..600), from which everything else is derived:
+
+| Level | Bound |
+|-------|-------|
+| Job | `started_at + 2T` (default 360 s, maximum 1200 s). Time spent QUEUED is excluded. |
+| Run | `min(run_start + T, job deadline)`. Covers the container, stdout read, verification and upload-date lookup. |
+| Container | Killed (SIGKILL) at the run deadline. |
+| Supervisor request | Each request uses `min(8 s, run deadline − now)`. |
+| Cleanup | 30 s after the terminal state is recorded, then the sweep |
+
+- **Run deadline missed:** the job becomes TIMED_OUT, with no evidence for that run. After run 1, run 2 is not started.
+- **Terminal state timing:** the terminal state is always recorded by the job deadline.
+- **Cancel:** QUEUED jobs are cancelled at once. For RUNNING jobs, a watcher checks at least once per second, kills the current container, abandons requests, skips the remaining run and records CANCELLED. The target is within 5 s.
+- **Restart:** QUEUED and RUNNING jobs become INTERRUPTED, then the sweep runs.
+
+These figures are design targets until M12 criteria 9 and 10 pass.
+
+### Fail-closed enforcement
+`approval_service.require_compatible_resolution` runs at approve, validate, apply and export:
+1. Recompute the proposed fingerprint from the stored proposal and current configuration.
+2. Require that the latest `proposed` record has an equal fingerprint and status COMPATIBLE.
+3. Require that the approval's `resolution_fingerprint` equals it (validate, apply and export).
+4. Apply the M11 validation-policy check unchanged.
+
+Statuses CONFLICT, UNKNOWN, UNSUPPORTED, RESOLUTION_FAILED and RESOLVER_UNAVAILABLE are blocked, with no acknowledgement override. Client-supplied resolution fields are ignored. Pre-M12 plans have no record, so they are UNKNOWN and blocked (FR-31).
+
+### UI integration (FR-30, FR-32)
+The plan stage gains a compatibility panel built with the approved design tokens, with no redesign. It shows:
+- status, a progress indicator for the current role, and a working cancel action;
+- resolver and target, and resolved and transitive counts;
+- conflicts, unsupported items with reasons, and warnings;
+- for COMPATIBLE, the fixed disclosure;
+- the complete resolved list with versions, introduced packages highlighted, and the upload date or `date unavailable`;
+- `comparison unavailable` with its reason when applicable;
+- the timestamp of each role record.
+
+Approval is disabled with the reason unless the status is COMPATIBLE. npm plans state that npm compatibility verification is not yet supported.
+
+### Failure modes
+| Situation | Result |
+|-----------|--------|
+| Docker, image, networks or proxy unavailable | Job FAILED; status RESOLVER_UNAVAILABLE |
+| Run or job deadline reached | TIMED_OUT; status RESOLUTION_FAILED (`timeout`); containers killed; no evidence for that run |
+| Source-only requirement | UNSUPPORTED (`source_build_required`), never CONFLICT |
+| Conflict among wheel versions, with no source-only alternatives | CONFLICT, with causes |
+| Report oversized or malformed; verification or metadata fetch fails | RESOLUTION_FAILED (`verification_failed` or `fetch_failed`) |
+| Original resolution not COMPATIBLE | Run 2 continues; comparison unavailable (`original_<status>`); approval depends only on run 2 |
+| Selected file not matched or no upload time | `date unavailable`, with a reason; status unaffected |
+| Egress denial | Recorded in warnings and logs; the run usually ends as RESOLUTION_FAILED |
+| Cancel | CANCELLED; status UNKNOWN unless earlier matching proposed evidence exists |
+| Restart | INTERRUPTED; sweep; no evidence for unfinished runs |
+| Cleanup fails | Logged; labelled sweep at start-up and before each job, removing only resources of jobs that are not QUEUED or RUNNING |
+
+### Known limitations
+- **Not yet verified:** the `--internal` network, proxy rules, limits and timeouts are designs until the live Docker tests (criteria 8 to 10) pass in CI. Docker Desktop on macOS still needs checking; CI on Linux is authoritative.
+- **Metadata vs runtime:** compatibility comes from metadata, not runtime behaviour. Sandbox validation remains the runtime check. For example, pandas 1.5.3 declares no upper bound on NumPy yet isn't binary-compatible with NumPy 2.
+- **Registry drift:** releases published between or after the two runs change results. Evidence is timestamped and expires.
+- **Cost:** each job makes two resolver runs and their metadata fetches.
+- **Coverage:** source-only packages can't be COMPATIBLE in M12, and npm can't be resolved until M13.
+- **Not a security verdict:** see T-35.
+
+### Decision records
+- [ADR-009](adr/ADR-009-isolated-binary-only-resolver-execution.md): isolated binary-only resolver execution.
+- [ADR-010](adr/ADR-010-controlled-registry-egress-through-an-allow-listin.md): controlled registry egress through an allow-listing proxy.
+- [ADR-011](adr/ADR-011-resolution-evidence-comparison-and-upload-date-met.md): resolution evidence, comparison and upload-date metadata.
+- [ADR-012](adr/ADR-012-sqlite-backed-resolution-jobs.md): SQLite-backed resolution jobs.
+
+### Traceability (Revision 4)
+| Requirement | Components | ADR | Threats |
+|-------------|------------|-----|---------|
+| FR-22 | `python_resolver`, `resolver_runtime` | ADR-009 | T-31 |
+| FR-23 | `python_input`, `verifier`, `python_resolver` | ADR-009, ADR-011 | T-31 |
+| FR-24 | `resolver_runtime` | ADR-009 | T-30, T-31, T-37 |
+| FR-25 | `egress_proxy`, `resolver_runtime` | ADR-010 | T-27, T-28, T-29, T-36, T-37 |
+| FR-26 | `python_input`, `fingerprint` | ADR-011 | T-33 |
+| FR-27 | `verifier`, `fingerprint`, `comparison` | ADR-011 | T-31, T-32, T-33, T-38 |
+| FR-28 | `approval_service` | ADR-011 | T-32, T-33 |
+| FR-29 | `job_service`, `run_store` | ADR-012 | T-30, T-34 |
+| FR-30 | Frontend panel | — | — |
+| FR-31 | `run_store` migration, `approval_service` | ADR-011 | T-33 |
+| FR-32 | `comparison`, `verifier`, `exporter`, `job_service`, frontend panel | ADR-011, ADR-012 | T-35 |
+| NFR-13 | `config`, `resolver_runtime`, `job_service` | ADR-009, ADR-012 | T-30 |
+| NFR-14 | `fingerprint` | ADR-011 | T-33 |
+| NFR-15 | `job_service`, `run_store` | ADR-012 | T-34 |
+| NFR-16 | `egress_proxy`, `resolver_runtime`, logging | ADR-010 | T-27, T-36 |

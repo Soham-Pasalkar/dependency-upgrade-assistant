@@ -147,3 +147,143 @@ Every fix has a regression test that fails before the fix. Docker-dependent evid
 ### Risks (Revision 3)
 - **API changes:** F13 removes client-supplied `custom_test_cmd` and `image_override`; F10 adds an explicit data-source field. These are documented, and the frontend is updated where it consumes them.
 - **No local Docker:** Docker evidence depends on CI and needs the owner's push authorization.
+
+## Revision 4 milestones — M12 (2026-11-12)
+This section adds to the earlier revisions, and M1 to M11 are unchanged. It implements requirements Revision 4 (G1, event 299) and architecture and threat model Revision 4 with ADR-009 to ADR-012 (G2, event 301). M12 is registered (event 302), depends on M11, and is not started. Construction requires G3 approval.
+
+| ID | Title | Depends on | Acceptance criteria | Test approach | Risk |
+|----|-------|------------|---------------------|---------------|------|
+| M12 | Python Dependency Compatibility & Resolution Engine | M11 | Criteria 1–14 below, each with named evidence | Unit, API, security, live-Docker integration in CI (Docker required), frontend, browser end-to-end | High: new network-egress boundary and evidence trust model |
+
+### M12 acceptance criteria and required evidence
+"Docker" means the test needs a live Docker daemon. In CI those tests run in the Docker job with `DUA_REQUIRE_DOCKER=1`, so they fail rather than skip. A criterion counts as met only when its listed evidence has passed.
+
+| # | Criterion | What is verified | Evidence (test) | Type | Docker |
+|---|-----------|------------------|-----------------|------|--------|
+| 1 | Real pip resolution, compatible and conflicting | `numpy==1.24.0`, `scipy==1.10.0`, `pandas==1.5.3` gives COMPATIBLE; `numpy==2.1.0` with `scipy==1.10.0` gives CONFLICT naming `scipy 1.10.0 depends on numpy<1.27.0` | `tests/test_resolution_live.py::test_numpy_scipy_compatible` and `::test_numpy_scipy_conflict` | Integration | Yes |
+| 2 | Transitive dependencies, markers, extras, constraints, `Requires-Python` | Transitive packages reported and verified; a marker-excluded dependency is absent; extras' dependencies present; a repository constraints file changes the outcome; a `Requires-Python` conflict gives CONFLICT; a transitive conflict between two direct dependencies is detected | `test_resolution_live.py::test_transitive`, `::test_markers`, `::test_extras`, `::test_constraints_file`, `::test_requires_python_conflict`, `::test_transitive_conflict`; supervisor closure unit tests on captured real reports (`tests/test_resolution_verifier.py`) | Integration + unit | Live: yes; unit: no |
+| 3 | Prerelease and yanked policy | No prerelease unless pinned; a pinned prerelease is allowed; a yanked `==` pin resolves with a warning; yanked releases are not chosen for ranges | `test_resolution_live.py::test_prerelease_policy`, `::test_yanked_pin_warning`; unit tests on captured reports | Integration + unit | Live: yes |
+| 4 | Source-build handling | An sdist-only requirement (e.g. `pycrypto==2.6.1`) gives UNSUPPORTED `source_build_required`, never CONFLICT or COMPATIBLE; pip runs with `--only-binary=:all:`; no build backend runs (pip stderr has no build steps; the input mount stays unmodified); a conflict involving source-only releases gives UNSUPPORTED | `test_resolution_live.py::test_source_only_unsupported`; `tests/test_resolution_input.py`, `test_resolver_runtime.py::test_pip_args_binary_only` | Integration + unit + security | Live: yes |
+| 5 | Structured report and server-computed fingerprint | All report fields present; the fingerprint is computed by the supervisor; resolver stdout cannot set the status or fingerprint; **forgery tests:** a report claiming an unsatisfied `Requires-Dist` closure, wrong hashes, a non-allow-listed artifact host, extra packages, malformed JSON or excess size each give RESOLUTION_FAILED | `tests/test_resolution_verifier.py` (forgery matrix on captured real reports); `tests/test_resolution_fingerprint.py` | Unit + security | No |
+| 6 | Input-change invalidation | Changing the proposal diff, original or proposed manifest, constraints, image digest, pip policy arguments or allow-list version changes the fingerprint; stored evidence then counts as UNKNOWN and approval is blocked | `test_resolution_fingerprint.py` (one case per input); `tests/test_resolution_enforcement.py::test_stale_evidence_blocks` | Unit + API | No |
+| 7 | Fail-closed enforcement | 6 statuses × {approve, validate, apply, export}: only COMPATIBLE with a matching fingerprint passes; client-supplied status or fingerprint fields are ignored; pre-M12 plans are UNKNOWN and blocked; M11 validation-policy enforcement is unchanged; npm plans are UNSUPPORTED and blocked | `tests/test_resolution_enforcement.py` (matrix), existing M11 suites | API + security | No |
+| 8 | Egress isolation in the real Docker setup | From inside a resolver container built by the production runtime: direct TCP to a public IP fails; DNS lookup fails; `CONNECT` to a non-allow-listed host is refused and logged; `CONNECT` to 169.254.169.254, the Docker gateway, the host IP and an RFC 1918 address is refused; `CONNECT pypi.org:22` is refused; plain HTTP is refused; `CONNECT pypi.org:443` succeeds; the proxy is not reachable from a container on another network. Proxy unit tests: rebinding (the validated IP is used), allow-list, ports, methods, denial log format | `tests/test_egress_live.py` (Docker), `tests/test_egress_proxy.py` (unit) | Security integration + unit | Live: yes |
+| 9 | Resource limits and timeout | Generated `docker run` arguments include non-root, read-only, capabilities dropped, no-new-privileges, `--init`, memory, CPU, processes, tmpfs size, read-only input mount, no writable host mount, no socket, internal network only, DNS disabled; timeout hierarchy (ADR-012): a run exceeding T gives TIMED_OUT and RESOLUTION_FAILED (`timeout`), with containers killed at the run deadline and no evidence for that run; a run-1 timeout prevents run 2; the job's terminal state is recorded by `started_at + 2T`; supervisor requests are bounded by the remaining run time; cleanup finishes within 30 s or the sweep removes leftovers; limit settings outside their ceilings are refused at startup | `tests/test_resolver_runtime.py` (args), `tests/test_resolution_config.py` (ceilings), `test_resolution_live.py::test_timeout_kills_containers`, `tests/test_job_service.py::test_timeout_hierarchy` (fake clock: run deadline, job deadline, run-2 budget shortened by slow setup) | Unit + integration | Live: yes |
+| 10 | SQLite job lifecycle, cancellation and restart recovery | Two runs per job (original, then proposed), each with its own NFR-13 limits; cancel or timeout during either run stores no evidence for that run. Each state transition, with concurrent-transition rejection (compare-and-set); one active job per plan; pool bound; cancel: a QUEUED job is cancelled at once; a RUNNING job's watcher (≤ 1 s) kills the current container, skips the remaining run and records CANCELLED within 5 s, and removes the network; evidence is stored only for completed runs (an original row may remain, a proposed row never without SUCCEEDED); INTERRUPTED after a simulated restart with no evidence stored; startup sweep removes labelled leftovers but never a concurrently active job's resources; retention cascade | `tests/test_job_service.py` (unit, fake runner), `test_resolution_live.py::test_cancel_cleans_up`, `::test_restart_sweep` | Unit + integration | Live: yes |
+| 11 | Minimal UI integration | Compatibility panel states (checking, compatible, conflict, unsupported, failed, unavailable, unknown); cancel works; approval disabled with the reason; npm "not yet supported" message; no redesign | `frontend/src/components/*.test.tsx`; headless-Chrome journey (RESOLVER_UNAVAILABLE path locally; COMPATIBLE path requires Docker) | Component + end-to-end | E2E COMPATIBLE: yes |
+| 12 | CI Docker integration | The CI Docker job runs `test_resolution_live.py` and `test_egress_live.py` with `DUA_REQUIRE_DOCKER=1` on the M12 commit; all jobs green | GitHub Actions run on the M12 commit | CI | Yes |
+| 13 | Documentation and backward compatibility | Revision 4 requirements, architecture, threat model and ADR-009 to ADR-012 match the implementation; supported and unsupported cases documented; pre-M12 records intact and UNKNOWN; additive migration tested on an M11-era database | `tests/test_resolution_migration.py`; `validate_artifacts.py`; reviewer check | Unit + doc | No |
+| 14 | Compatibility disclosure and resolved-set review (FR-32) | (a) Every COMPATIBLE view and the Markdown export carry the disclosure "resolves, not vetted or safe; DUA does not perform malware detection", and no UI or export text claims safety. (b) A job runs the original then the proposed resolution under identical settings, storing separate evidence and fingerprints; introduced packages are exactly proposed set minus original set; when the original is not COMPATIBLE the comparison shows `comparison unavailable` with that status and nothing is flagged; the comparison never changes approval. (c) Upload date is the selected file's time matched by filename and SHA-256 (PEP 700 `upload-time`, else JSON API `upload_time_iso_8601`); source and retrieval time recorded; an unmatched file or missing time shows `date unavailable`; a multi-file version uses the selected file's time. (d) The complete list (name, version, direct or transitive, introduced, date) is in the UI and the export. | `tests/test_resolution_comparison.py` (set difference, unavailable cases, approval unaffected); `tests/test_upload_dates.py` (multi-file selection, PEP 700 and JSON API sources, no match, missing field, no fallback to other files); `tests/test_export_resolution.py`; component tests; `test_resolution_live.py::test_original_and_proposed_runs` (e.g. scipy upgrade introducing a new transitive package) | Unit + API + component + integration | Live: yes |
+
+
+### Construction sequence (phases inside M12)
+M12 is a single milestone with one G4 review. The phases below order the work inside it. They are not separate milestones.
+
+| Phase | Work | Main modules | Depends on |
+|-------|------|--------------|------------|
+| P1 | Data models, additive schema migration, resolver settings and ceilings | `src/resolution/models.py`, `src/services/run_store.py` (`dua_jobs`, `dua_resolutions`, `dua_approvals.resolution_fingerprint`), `src/api/config.py` | — |
+| P2 | Input classification and per-role fingerprinting | `src/resolution/python_input.py`, `src/resolution/fingerprint.py` | P1 |
+| P3 | Trusted supervisor: report verification, PyPI metadata, upload dates, comparison logic, pip exit and stderr mapping | `src/resolution/verifier.py`, `src/resolution/comparison.py`, `src/resolution/python_resolver.py` | P1, P2 |
+| P4 | Egress proxy | `src/resolution/egress_proxy.py` | P1 |
+| P5 | Docker resolver runtime: networks, proxy and resolver containers, bounded stdout, kill at deadline, labelled sweep | `src/resolution/resolver_runtime.py` | P2, P4 |
+| P6 | SQLite job lifecycle: two sequential runs, deadlines, cancel, restart, evidence persistence, comparison wiring | `src/services/job_service.py` | P1, P3, P5 |
+| P7 | Fail-closed enforcement at approve, validate, apply and export | `src/services/approval_service.py`, the affected routes | P1, P2 |
+| P8 | Resolution API endpoints and Markdown export section | `src/api/routes/` (resolve, jobs, cancel, resolution), `src/services/exporter.py` | P6, P7 |
+| P9 | Frontend compatibility panel (existing design tokens, no redesign) | `frontend/src/` | P8 |
+| P10 | Live Docker test suites and CI wiring (`DUA_REQUIRE_DOCKER=1`) | `tests/test_resolution_live.py`, `tests/test_egress_live.py`, the CI workflow | P5, P6, P8 |
+| P11 | Documentation, full regression, security scans, milestone report | docs, `docs/aidlc/reports/M12.md` | All |
+
+**Changes from the suggested order, and why:**
+- **The supervisor (P3) comes before the Docker runtime (P5).** The supervisor is the trust anchor, and the runtime's output means nothing without it. It can be fully tested without Docker on captured real pip reports.
+- **The comparison's pure logic is built in P3,** next to the verifier it depends on. It is wired into jobs in P6.
+- **The proxy (P4) comes before the runtime (P5),** because the runtime starts it as part of every job.
+- **Enforcement (P7) lands before any new endpoint or UI (P8, P9),** so no resolution path is ever exposed without fail-closed checks.
+
+**Test fixtures:** real pip reports and PyPI index and metadata responses are captured once on the development host. They come from `pip install --dry-run --ignore-installed --only-binary=:all: --report`, which runs no package code. They are stored under `tests/fixtures/resolution/` with the command and date that produced them.
+
+### Acceptance criteria mapped to implementation and evidence
+None of these criteria is implemented or verified yet. "Docker CI" means the test runs in the CI Docker job with `DUA_REQUIRE_DOCKER=1`. Docker is not installed on the development machine, so all live evidence comes from CI.
+
+| # | Phase | Modules | Unit tests | Integration or API tests | Security tests | Docker CI tests | Completion evidence |
+|---|-------|---------|------------|--------------------------|----------------|-----------------|---------------------|
+| 1 | P3, P5, P6, P10 | `python_resolver`, `resolver_runtime`, `verifier` | Status mapping from captured compatible and conflict reports and stderr | — | — | `test_numpy_scipy_compatible`, `test_numpy_scipy_conflict` | Green CI Docker job on the M12 commit, with the conflict cause text asserted |
+| 2 | P2, P3, P10 | `python_input`, `verifier` | `test_resolution_verifier.py` closure: transitive, markers, extras, constraints, `Requires-Python` | — | — | `test_transitive`, `test_markers`, `test_extras`, `test_constraints_file`, `test_requires_python_conflict`, `test_transitive_conflict` | Unit and CI Docker results |
+| 3 | P2, P3, P10 | `python_input`, `verifier` | Prerelease and yanked handling on captured reports | — | — | `test_prerelease_policy`, `test_yanked_pin_warning` | Unit and CI Docker results |
+| 4 | P2, P3, P5, P10 | `python_input`, `python_resolver`, `resolver_runtime` | `test_resolution_input.py`; `test_pip_args_binary_only` | — | No build activity; input-directory checksum unchanged; no writable mount (`docker inspect`) | `test_source_only_unsupported` (`pycrypto==2.6.1`) | CI Docker result plus security assertions |
+| 5 | P3 | `verifier`, `fingerprint` | Forgery matrix (closure, hash, host, extra package, malformed, oversized); fingerprint tests | — | A fake resolver printing a fabricated all-COMPATIBLE report is rejected; only the supervisor inserts `dua_resolutions` | — | Unit results |
+| 6 | P2, P7 | `fingerprint`, `approval_service` | One test per fingerprint input | `test_stale_evidence_blocks` | — | — | Unit and API results |
+| 7 | P7 | `approval_service`, routes | — | 6 statuses × 4 actions matrix; pre-M12 plans UNKNOWN; npm UNSUPPORTED; M11 suites unchanged | Client-supplied status and fingerprint ignored | — | API results; full M11 regression green |
+| 8 | P4, P5, P10 | `egress_proxy`, `resolver_runtime` | `test_egress_proxy.py`: rebinding, allow-list checked before DNS, ports, methods, denial log | — | Proxy unreachable from another network | `test_egress_live.py`: direct TCP, DNS, disallowed host, 169.254.169.254, gateway, host IP, RFC 1918, port 22 and plain HTTP all refused; `pypi.org:443` allowed | CI Docker results; denial log lines captured |
+| 9 | P1, P5, P6, P10 | `config`, `resolver_runtime`, `job_service` | `test_resolver_runtime.py` (arguments), `test_resolution_config.py` (ceilings), `test_timeout_hierarchy` (fake clock) | — | No socket, credentials or writable mount in the arguments | `test_timeout_kills_containers` | Unit and CI Docker results |
+| 10 | P6, P10 | `job_service`, `run_store`, `resolver_runtime` | `test_job_service.py`: transitions, compare-and-set, one job per plan, pool, cancel, INTERRUPTED, evidence persistence, sweep scope | Retention cascade | — | `test_cancel_cleans_up`, `test_restart_sweep` | Unit and CI Docker results |
+| 11 | P8, P9 | Frontend, API | Component tests for every panel state, cancel, disabled approval, npm message | Browser journey (RESOLVER_UNAVAILABLE locally) | — | Browser journey to COMPATIBLE (Docker) | Component results; browser screenshots at 1440 px and 390 px |
+| 12 | P10 | CI workflow | — | — | — | All live suites with `DUA_REQUIRE_DOCKER=1` | GitHub Actions run ID on the M12 commit, all jobs green |
+| 13 | P1, P11 | `run_store`, docs | `test_resolution_migration.py` (M11-era database) | Pre-M12 plans UNKNOWN and intact | — | — | Unit results; `validate_artifacts.py`; documentation review |
+| 14 | P3, P6, P8, P9, P10 | `comparison`, `verifier`, `job_service`, `exporter`, frontend | `test_resolution_comparison.py`, `test_upload_dates.py` | `test_export_resolution.py`; approval unaffected by the comparison | Copy test: no safety claim in the UI or export | `test_original_and_proposed_runs` | Unit, API, component and CI Docker results |
+
+### Construction risks
+- **Existing approval-flow tests (M10 and M11):** once P7 lands, approval requires COMPATIBLE evidence. Tests that approve, validate, apply or export will get their evidence from the test fake runner, a setup change only. No assertion is loosened, deleted or skipped, and each such change is listed in the M12 report.
+- **No local Docker:** live criteria (1, 2, 3, 4, 8, 9, 10, 11 end-to-end, 12, 14) can be proven only in CI, which needs pushes of work-in-progress commits.
+- **Live test data:** live tests depend on PyPI's current data. The pinned package sets were chosen for stable historical versions, and results are recorded with timestamps.
+
+### Security test plan (T-31 and egress)
+1. **No third-party code execution:**
+   - pip arguments always include `--only-binary=:all:` (unit);
+   - a live run with an sdist-only requirement produces no build activity, and the input directory checksum is unchanged afterwards;
+   - the container has no writable host mount (`docker inspect` on the live container);
+   - the report arrives only on stdout.
+2. **Evidence cannot be forged from the resolver side:**
+   - The supervisor rejects manipulated reports: closure violation, hash mismatch, foreign host, extra package, schema or size violation.
+   - A test double for the resolver that prints a fabricated "all compatible" report is rejected unless it matches PyPI's metadata.
+   - The resolver has no access to the SQLite file, the application or the Docker socket (live inspect of mounts and environment).
+   - Only the supervisor inserts into `dua_resolutions` (grep test plus repository-layer test).
+3. **No host-side state change:** after a live resolution, the database and workspace checksums change only through supervisor writes (an evidence row), and nothing in the repository workspace changes.
+4. **Egress:** criterion 8 above, live and unit.
+
+### Test strategy
+- **Unit (no network):**
+  - supervisor verification on captured real pip reports (recorded once from real pip runs, stored under `tests/fixtures/resolution/` with their source command);
+  - conflict extraction from real stderr;
+  - input classification;
+  - fingerprint;
+  - enforcement matrix;
+  - job state machine;
+  - proxy logic with an injected resolver function and local sockets;
+  - Docker argument construction;
+  - configuration ceilings;
+  - migration.
+- **API:** plan → resolve → approve with a faked runner and faked metadata source, for every status.
+- **Live Docker (CI, required):** criteria 1–4 and 8–10.
+- **Frontend:** component tests, plus a browser journey on 5173/5174.
+- **Not mocked to get green:** compatibility claims in CI come only from live resolver runs plus supervisor verification against PyPI.
+
+### Risks
+- **Docker required:** no approvals without it (intended, fail closed).
+- **npm blocked until M13.**
+- **Source-only packages are UNSUPPORTED** (deliberate, ADR-009).
+- **Registry drift:** evidence carries a timestamp and expires.
+- **PyPI JSON metadata fallback:** for old wheels without PEP 658, verification uses release-level metadata, flagged with a warning.
+- **Two resolutions per job:** doubles resolver time and PyPI traffic per plan; the job's wall-clock bound is twice the run timeout.
+- **Registry drift between the two runs:** a release published between the original and proposed runs can change the comparison; both evidence records carry timestamps and the UI shows them.
+- **COMPATIBLE is not a security verdict:** T-35 accepted by the owner at G2 (event 301): High inherent severity, Medium residual risk, with the FR-32 safeguards. OSV advisories are deferred to M13.
+- **Docker Desktop:** `--internal` behaviour on macOS needs checking.
+- **Metadata compatibility is not runtime compatibility:** for example, pandas 1.5.3 declares no upper bound on NumPy yet isn't binary-compatible with NumPy 2. Sandbox validation remains the runtime check.
+
+### Migration
+Additive: the `dua_jobs` and `dua_resolutions` tables (with a `role` column: `original` or `proposed`) and the `dua_approvals.resolution_fingerprint` column. No rewrites. Pre-M12 records are UNKNOWN.
+
+### Traceability (requirements, architecture, threats, criteria)
+| Requirement | Architecture or ADR | Threats | Criteria |
+|-------------|---------------------|---------|----------|
+| FR-22 | `python_resolver`, ADR-009 | T-31 | 1, 2, 4 |
+| FR-23 | `python_input`, `verifier` | T-31 | 2, 4 |
+| FR-24 | `resolver_runtime`, ADR-009 | T-30, T-31, T-37 | 4, 9 |
+| FR-25, NFR-16 | `egress_proxy`, ADR-010 | T-27, T-28, T-29, T-36, T-37 | 8 |
+| FR-26 | `python_input`, ADR-011 | — | 2, 3 |
+| FR-27, NFR-14 | `verifier`, `fingerprint`, ADR-011 | T-31, T-32, T-33, T-38 | 5, 6 |
+| FR-28, FR-31 | `approval_service` | T-32, T-33 | 7, 13 |
+| FR-29, NFR-15 | `job_service`, ADR-012 | T-34 | 10 |
+| FR-30 | Frontend panel | — | 11 |
+| FR-32 | `comparison` (job runs original then proposed), `verifier` (upload dates), export, frontend panel; ADR-011, ADR-012 | T-35 | 14, 10, 5 |
+| NFR-13 | `config`, `resolver_runtime` | T-30 | 9 |
+| All | CI workflow | — | 12 |

@@ -78,3 +78,75 @@ Additive. T-1's mitigation was documented but not implemented in v2.0 (note N4);
 | T-24 | Registry to analysis | Bundled offline catalog versions presented as live registry facts, leading to stale or incorrect upgrades | Spoofing (data provenance) | Explicit `OFFLINE_CATALOG` status and `data_source`; `UNVERIFIED_OFFLINE` recommendations never planned; UI labels | Low |
 | T-25 | Host resources | Unbounded growth of exports and persisted runs exhausts disk | Denial of service | Deterministic retention (F8 and F9) that keeps unexpired and referenced work | Low |
 | T-26 | Host to github.com | DNS answer changes between the public-address check and git's own resolution (TOCTOU) | Spoofing | Fixed host, https with certificate validation, redirects disabled; documented residual (F12) | Low |
+
+## Revision 4 threats — M12 Python dependency resolution (2026-11-12)
+This section adds to Revisions 1 to 3, whose threats and decisions still apply. It covers requirements Revision 4 (G1 approved, event 299) and ADR-009 to ADR-012.
+
+**Status of every row below:** the mitigation is designed but not implemented or verified. A threat counts as mitigated only when its verification method has passed in M12. Severity is the inherent impact if the threat were unmitigated. Residual risk assumes the mitigations work as designed.
+
+### Assets
+- **A-R1, the host and its network neighbourhood:** host services, LAN, cloud metadata (169.254.169.254), the Docker gateway and API.
+- **A-R2, integrity of compatibility evidence and approval records:** a false COMPATIBLE leads to approval of a broken upgrade.
+- **A-R3, the developer's machine and CI:** these install the approved set outside DUA.
+- **A-R4, trust in the COMPATIBLE label and the FR-32 review data:** the comparison, upload dates and resolved list.
+- **A-R5, host resources:** CPU, memory, disk, Docker networks and the subnet pool.
+
+### Trust boundaries
+| ID | Boundary |
+|----|----------|
+| TB-R1 | Supervisor (trusted application) ↔ resolver container. Resolver stdout is untrusted data. |
+| TB-R2 | Resolver ↔ egress proxy, on the per-job `--internal` network. The proxy is the only route out. |
+| TB-R3 | Proxy ↔ Internet, via `dua-egress`. Allow-listed registries on global IPs only. |
+| TB-R4 | Supervisor ↔ PyPI, for independent metadata (hardened registry client, HTTPS, fixed hosts, bounded responses). |
+
+### Threats
+| ID | Boundary | Threat and attack scenario | Assets | Category | Mitigations (designed) | Severity | Residual risk | Verification method |
+|----|----------|----------------------------|--------|----------|------------------------|----------|---------------|---------------------|
+| T-27 | TB-R2, TB-R3 | Resolver traffic reaches internal services. Scenario: a crafted index response, or a compromised pip, makes the resolver connect to the metadata service, a host port, the LAN or the Docker API. | A-R1 | Information disclosure, Elevation of privilege | Internal network without a gateway; resolver DNS disabled; the proxy is the only route; `CONNECT` only to the allow-list on 443; non-global IPs refused; the proxy binds only its internal address; no Docker socket | High | Low | Criterion 8 live tests: direct TCP, DNS, 169.254.169.254, Docker gateway, host IP and an RFC 1918 address all refused; proxy unit tests |
+| T-28 | TB-R2 | DNS rebinding. Scenario: an allow-listed name resolves to a public address at check time and an internal one at connect time. | A-R1 | Spoofing | The proxy resolves once, checks `is_global`, and connects to that exact address | High | Low | Proxy unit tests with an injected resolver returning private or changing answers |
+| T-29 | TB-R2 | Leaving the allow-list via a redirect or alternate host. Scenario: an index response redirects to another host, plain HTTP or another port. | A-R1 | Spoofing | Each redirect is a new `CONNECT` and is checked again; plain HTTP, other ports and other methods are refused | Medium | Low | Criterion 8: disallowed host, `pypi.org:22` and plain HTTP refused and logged |
+| T-30 | TB-R1, host | Resource exhaustion. Scenario: a large or pathological dependency set causes long backtracking, memory growth or oversized output; or many resolution requests. | A-R5 | Denial of service | NFR-13 per-run limits (memory, CPU, processes, tmpfs) with ceilings; run deadline T and job deadline 2T; container killed at the deadline; stdout cap; pool of 2; one job per plan; 16 MB cap on supervisor index responses | Medium | Low | Criterion 9: run arguments, ceilings refused at start-up, forced timeout kills containers. Criterion 10: pool bound. |
+| T-31 | TB-R1 | Untrusted code forges authoritative resolution evidence or changes host state. Scenario: a build backend, or anything executing in the resolver, prints a fabricated all-COMPATIBLE report or writes host files. | A-R2 | Tampering | **Binary-only resolution:** no build backend, `setup.py` or package code is executed (ADR-009); source-only requirements are UNSUPPORTED. **Defence in depth:** stdout is the only output, size-capped; no writable host mount; the supervisor re-verifies hashes, hosts, the closure and `Requires-Python` against metadata it fetches itself (ADR-011); only the supervisor computes fingerprints and writes records; no access to the database, application, credentials or Docker socket. Two-stage source builds were evaluated and deferred (ADR-009). | Critical | Low. Would require a compromised digest-pinned pip image together with metadata that matches PyPI's. | Criterion 4: live sdist-only run gives UNSUPPORTED with no build activity; input checksum unchanged; `docker inspect` shows no writable mount. Criterion 5: forged-report matrix, including a resolver stand-in printing a fake report. Security test plan item 3: host state unchanged. |
+| T-32 | TB-1 | A client forges a resolution status, fingerprint, date or comparison in API requests. | A-R2, A-R4 | Tampering | All resolution data is server-only; client fields are ignored; the fingerprint is recomputed at every enforcement point | High | Low | Criterion 7: client-supplied fields ignored across all four actions |
+| T-33 | TB-R1 | Stale or mismatched evidence reused after the manifest, constraints, image or policy changes. | A-R2 | Tampering | Per-role fingerprints over all inputs and the environment (ADR-011); enforcement recomputes them; evidence expires with its plan | High | Low | Criterion 6: one test per fingerprint input; stale evidence blocks |
+| T-34 | Host | Orphaned containers or networks after a crash, cancel or cleanup failure, exhausting resources or the subnet pool. | A-R5 | Denial of service | Labels; kill at the deadline and on cancel; 30 s cleanup bound; `dua-res-*` sweep at start-up and before each job | Medium | Low | Criterion 10: cancel cleanup, restart sweep, INTERRUPTED with no evidence |
+| T-35 | TB-R3, downstream | **Malicious package content reaches the resolved set.** See the T-35 analysis below. | A-R3, A-R4 | Tampering, Elevation of privilege | FR-32 safeguards and existing controls, listed below | High | **Medium** | Criterion 14: disclosure present, introduced-package highlighting, upload dates, complete list in the UI and export; copy test that no UI or export text claims safety |
+| T-36 | Proxy | Proxy bug, or the proxy used as an open relay by other containers or networks. | A-R1 | Elevation of privilege | Minimal stdlib code; non-root, read-only, capabilities dropped, limits; binds only the internal address on a per-job network; `dua-egress` carries proxies only; removed with the job | Medium | Low | Criterion 8: proxy unreachable from a container on another network; unit tests with malformed requests |
+| T-37 | TB-R2 | DNS as an exfiltration or side channel. | A-R1 | Information disclosure | Resolver DNS disabled (`--dns 127.0.0.1`); the proxy checks the allow-list before resolving, so disallowed names are never looked up; no third-party code runs | Low | Low | Criterion 8: DNS lookup fails in the resolver. Unit test: disallowed names are never resolved. |
+| T-38 | TB-R1, TB-R4 | A malicious wheel metadata file, index response or report exploits a parser in pip (inside the container) or in the supervisor. | A-R2, A-R1 | Tampering | pip runs contained; the supervisor parses with `json` and `packaging` under size caps (report, 16 MB index) and strict RFC 3339 date parsing, and treats every parse failure as RESOLUTION_FAILED or `date unavailable`; archives are never downloaded or opened on the host | High | Low | Criterion 5: malformed and oversized reports. Criterion 14: unparseable upload times give `date unavailable`. Unit tests: malformed metadata and index JSON. |
+
+### T-35 analysis: compatibility is not trustworthiness
+- **Threat:** a malicious version of a package becomes part of the resolved set, and DUA reports the set as COMPATIBLE.
+- **Scenarios:**
+  - **Malicious publication:** an attacker publishes a release containing malicious import-time or install-time code.
+  - **Compromised maintainer:** a legitimate package's account is taken over and a malicious release is published under the trusted name.
+  - **Malicious transitive dependency:** a legitimate package's new version adds a `Requires-Dist` on an attacker-controlled package.
+  - **Typosquatting:** a look-alike name enters through a transitive dependency.
+  - **Outcome:** in each case DUA reports COMPATIBLE, the developer approves and exports, then installs the set on a workstation or in CI, where the code runs.
+- **Assets:** the developer's machine and CI (A-R3), and trust in the COMPATIBLE label and review data (A-R4).
+- **Existing controls and their limits:**
+  1. **Binary-only resolution** means no package code runs *during resolution*. It says nothing about what the code does when installed or imported later.
+  2. **PyPI hash checks** confirm that the selected file is the one PyPI serves, which detects transport or mirror tampering. A malicious file uploaded by a compromised maintainer has a valid PyPI hash, so hashes don't establish trustworthiness.
+  3. **Sandbox validation** (no network, non-root) limits harm while tests run inside DUA. It is not malware detection: malicious code can stay dormant, detect the sandbox, or act only outside it.
+  4. **Planner scope:** the planner proposes only new versions of packages already in the manifest, never a new top-level name. This does not cover transitive additions.
+  5. **Prereleases** are excluded unless explicitly pinned.
+- **FR-32 safeguards** (approved in G1 Revision 4):
+  - **(a) Disclosure:** every COMPATIBLE result in the UI and the Markdown export states that compatibility means the complete set resolves. It does not mean the packages are vetted or safe, and DUA does not perform malware detection.
+  - **(b) Introduced packages:** packages in the proposed resolved set but absent from the original manifest's resolved set are highlighted. These are the most likely route for new malicious or typosquatted dependencies.
+  - **(c) Upload dates:** exact versions are shown with the verified upload date of the exact selected file (or `date unavailable`). This helps reviewers spot very recent releases.
+  - **(d) Complete list:** the full resolved dependency list is available in the UI and the export for review.
+- **Why risk remains:** DUA does not inspect package contents, check vulnerability advisories (OSV is deferred to M13) or verify publisher identity. A reviewer may not notice a malicious introduced package or a suspicious release date.
+- **Likelihood:** low to medium. PyPI supply-chain incidents recur, but any single project is rarely targeted. **Impact:** high once installed outside DUA.
+- **Residual risk:** Medium.
+- **Why it is proposed as acceptable:**
+  - DUA adds no exposure beyond the developer running `pip install` on the same set, and it runs nothing during resolution.
+  - It makes new packages and their dates visible, which a bare `pip install` doesn't.
+  - It never presents COMPATIBLE as a security endorsement.
+  - Malicious-package detection is outside the product's scope, as recorded in G1.
+- **Status: proposed for owner acceptance at G2.** It is not accepted until the owner approves G2.
+
+### Out-of-scope threats (Revision 4)
+- **Malware detection, package vetting and vulnerability advisories:** not performed; OSV is deferred to M13 (T-35).
+- **Compromise of PyPI itself or of the TLS certificate system.**
+- **Compromise of the digest-pinned base image:** the image supply chain is accepted as in ADR-002.
+- **Source-build threats:** these don't arise in M12, because source builds are UNSUPPORTED (ADR-009).
