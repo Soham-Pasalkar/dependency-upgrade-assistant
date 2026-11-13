@@ -3,13 +3,13 @@
   "project": "Dependency Upgrade Assistant 2.0",
   "tier": 3,
   "mode": "brownfield",
-  "phase": "construction",
+  "phase": "operations",
   "config": {
     "strict_approvals": true,
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-13T04:08:25Z",
+  "updated": "2026-11-13T04:15:10Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -1257,7 +1257,7 @@
       "depends_on": [
         "M11"
       ],
-      "status": "awaiting_approval",
+      "status": "done",
       "criteria": [
         {
           "text": "C1 Real pip resolution, compatible and conflicting. Verified: `numpy==1.24.0`, `scipy==1.10.0`, `pandas==1.5.3` gives COMPATIBLE; `numpy==2.1.0` with `scipy==1.10.0` gives CONFLICT naming `scipy 1.10.0 depends on numpy<1.27.0` Evidence: `tests/test_resolution_live.py::test_numpy_scipy_compatible` and `::test_numpy_scipy_conflict`. Type: Integration. Docker: Yes.",
@@ -1402,7 +1402,11 @@
           "sha256": null
         }
       ],
-      "approval": null,
+      "approval": {
+        "at": "2026-11-13T04:15:10Z",
+        "note": "Owner approval: M12 implementation and all 14 acceptance criteria reviewed. CI evidence and live Docker integration results reviewed. Approved.",
+        "actor": "human-tty"
+      },
       "rework": 0,
       "started": "2026-11-12T17:18:05Z",
       "note": null
@@ -1466,5 +1470,5 @@
       "at": "2026-11-12T05:40:30Z"
     }
   ],
-  "head": "9447ca236401289f3e82f38bda2b4c68f08ed8cc5f5829df5c9b70bef00dbd5f"
+  "head": "71e7db3823c7723483eebca3337233407fb2a72acdc47412bbe807bd235846cb"
 }
