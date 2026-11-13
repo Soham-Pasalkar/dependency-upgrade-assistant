@@ -103,8 +103,8 @@ def test_run_command_enforces_mandatory_security_flags(
 
     assert res.is_success is True
 
-    # Inspect command array passed to subprocess.run
-    called_cmd = mock_run.call_args[0][0]
+    # Inspect command array passed to subprocess.run for docker run
+    called_cmd = mock_run.call_args_list[0][0][0]
     cmd_str = " ".join(called_cmd)
 
     # 1. Non-root user execution
@@ -161,3 +161,145 @@ def test_run_command_timeout(mock_run: MagicMock, mock_avail: MagicMock, tmp_pat
     assert res.timed_out is True
     assert res.exit_code == 124
     assert "timed out after 10s" in str(res.error_message)
+
+
+@patch.object(DockerSandboxManager, "check_availability")
+@patch("src.validation.sandbox_manager.subprocess.run")
+def test_legacy_sandbox_manager_unconditionally_enforces_network_none(
+    mock_run: MagicMock,
+    mock_avail: MagicMock,
+    tmp_path: Path,
+):
+    """CRITICAL SECURITY REGRESSION: Legacy manager MUST NOT enable bridge networking even if network_enabled=True."""
+    mock_avail.return_value = DockerAvailability(is_available=True)
+    mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    # Pass network_enabled=True
+    config = SandboxSecurityConfig(network_enabled=True)
+    manager = DockerSandboxManager(config=config)
+
+    manager.run_command(command_args=["python", "-V"], working_dir=work_dir)
+
+    called_cmd = mock_run.call_args_list[0][0][0]
+    assert "--network=none" in called_cmd
+    assert "--network=bridge" not in called_cmd
+
+
+@patch.object(DockerSandboxManager, "check_availability")
+@patch("src.validation.sandbox_manager.subprocess.run")
+def test_legacy_sandbox_manager_enforces_read_only_and_cap_drop(
+    mock_run: MagicMock,
+    mock_avail: MagicMock,
+    tmp_path: Path,
+):
+    """CRITICAL SECURITY REGRESSION: Legacy manager must enforce read-only root and dropped capabilities."""
+    mock_avail.return_value = DockerAvailability(is_available=True)
+    mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    manager = DockerSandboxManager()
+    manager.run_command(command_args=["python", "-V"], working_dir=work_dir)
+
+    called_cmd = mock_run.call_args_list[0][0][0]
+    assert "--read-only" in called_cmd
+    assert "--cap-drop=ALL" in called_cmd
+    assert "--security-opt=no-new-privileges:true" in called_cmd
+    assert any("--tmpfs=/tmp" in a for a in called_cmd)
+
+
+@patch.object(DockerSandboxManager, "check_availability")
+def test_legacy_sandbox_manager_rejects_root_user(mock_avail: MagicMock, tmp_path: Path):
+    """CRITICAL SECURITY REGRESSION: Legacy manager must reject root container execution fail-closed."""
+    mock_avail.return_value = DockerAvailability(is_available=True)
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    config = SandboxSecurityConfig(user="0")
+    manager = DockerSandboxManager(config=config)
+
+    with pytest.raises(ValueError, match="Root container execution .* is strictly forbidden"):
+        manager.run_command(command_args=["python", "-V"], working_dir=work_dir)
+
+
+@patch.object(DockerSandboxManager, "check_availability")
+@patch("src.validation.sandbox_manager.subprocess.run")
+def test_legacy_sandbox_manager_timeout_forces_container_termination(
+    mock_run: MagicMock,
+    mock_avail: MagicMock,
+    tmp_path: Path,
+):
+    """Verify that timeout in legacy manager forcefully removes the specific named container."""
+    mock_avail.return_value = DockerAvailability(is_available=True)
+
+    # First call is docker run (which raises TimeoutExpired), second/third is docker rm -f
+    mock_run.side_effect = [
+        subprocess.TimeoutExpired(cmd="docker run", timeout=10),
+        MagicMock(returncode=0),
+        MagicMock(returncode=0),
+    ]
+
+    work_dir = tmp_path / "work_timeout"
+    work_dir.mkdir()
+
+    manager = DockerSandboxManager()
+    res = manager.run_command(command_args=["pytest"], working_dir=work_dir, timeout=10)
+
+    assert res.timed_out is True
+    assert res.exit_code == 124
+
+    # Verify docker rm -f was called with the specific dua-legacy container name
+    rm_calls = [
+        call for call in mock_run.call_args_list
+        if len(call[0]) > 0 and len(call[0][0]) >= 3 and call[0][0][1] == "rm" and call[0][0][2] == "-f"
+    ]
+    assert len(rm_calls) >= 1
+    c_name = rm_calls[0][0][0][3]
+    assert c_name.startswith("dua-legacy-")
+
+
+@patch.object(DockerSandboxManager, "check_availability")
+@patch("src.validation.sandbox_manager.subprocess.run")
+def test_legacy_sandbox_manager_interruption_cleans_up_in_finally(
+    mock_run: MagicMock,
+    mock_avail: MagicMock,
+    tmp_path: Path,
+):
+    """Verify that abnormal exception/interruption guarantees container removal in finally."""
+    mock_avail.return_value = DockerAvailability(is_available=True)
+
+    mock_run.side_effect = [
+        RuntimeError("Simulated system interruption"),
+        MagicMock(returncode=0),
+        MagicMock(returncode=0),
+    ]
+
+    work_dir = tmp_path / "work_interrupt"
+    work_dir.mkdir()
+
+    manager = DockerSandboxManager()
+    res = manager.run_command(command_args=["pytest"], working_dir=work_dir)
+
+    assert res.is_runnable is False
+    assert "Simulated system interruption" in res.error_message
+
+    rm_calls = [
+        call for call in mock_run.call_args_list
+        if len(call[0]) > 0 and len(call[0][0]) >= 3 and call[0][0][1] == "rm" and call[0][0][2] == "-f"
+    ]
+    assert len(rm_calls) >= 1
+    assert rm_calls[0][0][0][3].startswith("dua-legacy-")
+
+
+@patch("src.validation.sandbox_manager.subprocess.run")
+def test_legacy_sandbox_manager_terminate_method(mock_run: MagicMock):
+    """Verify manager.terminate forcefully terminates given container name."""
+    mock_run.return_value = MagicMock(returncode=0)
+    manager = DockerSandboxManager(docker_binary="docker")
+    assert manager.terminate("dua-legacy-target-123") is True
+    called_cmd = mock_run.call_args_list[0][0][0]
+    assert called_cmd == ["docker", "rm", "-f", "dua-legacy-target-123"]

@@ -28,7 +28,13 @@ def test_client_initialization_defaults_and_custom_url():
     default_client = OllamaClient()
     assert default_client.base_url == "http://127.0.0.1:11434"
 
-    custom_client = OllamaClient(base_url="http://custom-host:11434/")
+    # Explicit remote hostname without authorization MUST raise OllamaSecurityError
+    from src.services.ollama_client import OllamaSecurityError
+    with pytest.raises(OllamaSecurityError, match="Remote Ollama host"):
+        OllamaClient(base_url="http://custom-host:11434/")
+
+    # Explicit remote hostname with allow_remote=True succeeds and normalizes trailing slash
+    custom_client = OllamaClient(base_url="http://custom-host:11434/", allow_remote=True)
     assert custom_client.base_url == "http://custom-host:11434"
 
     no_scheme_client = OllamaClient(base_url="localhost:11434")
@@ -421,4 +427,133 @@ def test_chat_input_validation():
 
     with pytest.raises(ValueError, match="Invalid message format"):
         client.chat(model="llama3.1:8b", messages=["not a dict or ChatMessage"])  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# Endpoint Security & Redirect Rejection Tests
+# ---------------------------------------------------------------------------
+
+def test_validate_and_sanitize_ollama_endpoint_loopback():
+    from src.services.ollama_client import validate_and_sanitize_ollama_endpoint
+    assert validate_and_sanitize_ollama_endpoint("http://127.0.0.1:11434") == "http://127.0.0.1:11434"
+    assert validate_and_sanitize_ollama_endpoint("http://localhost:11434/") == "http://localhost:11434"
+    assert validate_and_sanitize_ollama_endpoint("http://[::1]:11434") == "http://[::1]:11434"
+
+
+def test_validate_and_sanitize_ollama_endpoint_credentials_rejected():
+    from src.services.ollama_client import OllamaSecurityError, validate_and_sanitize_ollama_endpoint
+    with pytest.raises(OllamaSecurityError, match="Embedded credentials"):
+        validate_and_sanitize_ollama_endpoint("http://user:pass@127.0.0.1:11434")
+
+
+def test_validate_and_sanitize_ollama_endpoint_scheme_rejected():
+    from src.services.ollama_client import OllamaSecurityError, validate_and_sanitize_ollama_endpoint
+    with pytest.raises(OllamaSecurityError, match="Unsupported scheme"):
+        validate_and_sanitize_ollama_endpoint("ftp://127.0.0.1:11434")
+
+
+def test_validate_and_sanitize_ollama_endpoint_remote_rejected_by_default():
+    from src.services.ollama_client import OllamaSecurityError, validate_and_sanitize_ollama_endpoint
+    with pytest.raises(OllamaSecurityError, match="Remote Ollama host"):
+        validate_and_sanitize_ollama_endpoint("http://external-server.com:11434", allow_remote=False)
+
+
+def test_validate_and_sanitize_ollama_endpoint_remote_allowed_when_explicit():
+    from src.services.ollama_client import validate_and_sanitize_ollama_endpoint
+    res = validate_and_sanitize_ollama_endpoint("http://external-server.com:11434", allow_remote=True)
+    assert res == "http://external-server.com:11434"
+
+
+def test_validate_and_sanitize_ollama_endpoint_strips_query_and_fragment():
+    from src.services.ollama_client import validate_and_sanitize_ollama_endpoint
+    res = validate_and_sanitize_ollama_endpoint("http://127.0.0.1:11434/api/v1?token=secret#hash")
+    assert res == "http://127.0.0.1:11434"
+
+
+@patch.object(requests.Session, "get")
+def test_client_rejects_redirect_in_health_check(mock_get: MagicMock):
+    mock_resp = MagicMock()
+    mock_resp.is_redirect = True
+    mock_resp.status_code = 301
+    mock_get.return_value = mock_resp
+
+    client = OllamaClient()
+    health = client.check_health()
+    assert health.is_available is False
+    assert "Redirect disallowed" in str(health.error_message)
+
+
+@patch.object(requests.Session, "post")
+def test_client_rejects_redirect_in_chat(mock_post: MagicMock):
+    from src.services.ollama_client import OllamaSecurityError
+    mock_resp = MagicMock()
+    mock_resp.is_redirect = True
+    mock_resp.status_code = 302
+    mock_post.return_value = mock_resp
+
+    client = OllamaClient()
+    with pytest.raises(OllamaSecurityError, match="Redirects are disallowed"):
+        client.chat(model="llama3.1:8b", messages=[{"role": "user", "content": "hi"}])
+
+
+# ---------------------------------------------------------------------------
+# Remote Access Security Contract Tests
+# ---------------------------------------------------------------------------
+
+def test_default_client_uses_local_loopback():
+    """Verify default client uses local loopback with allow_remote=False."""
+    client = OllamaClient()
+    assert client.base_url == "http://127.0.0.1:11434"
+    assert client.allow_remote is False
+
+
+def test_explicit_remote_hostname_without_authorization_raises_security_error():
+    """Verify explicit remote hostname without allow_remote raises OllamaSecurityError."""
+    from src.services.ollama_client import OllamaSecurityError
+    with pytest.raises(OllamaSecurityError, match="Remote Ollama host"):
+        OllamaClient(base_url="http://remote-server.internal:11434")
+
+
+def test_explicit_remote_hostname_with_allow_remote_true_succeeds():
+    """Verify explicit remote hostname with allow_remote=True succeeds."""
+    client = OllamaClient(base_url="http://remote-server.internal:11434", allow_remote=True)
+    assert client.base_url == "http://remote-server.internal:11434"
+    assert client.allow_remote is True
+
+
+def test_environment_variable_enables_remote_authorization(monkeypatch):
+    """Verify ALLOW_REMOTE_OLLAMA=true enables remote hostname access when allow_remote is None."""
+    monkeypatch.setenv("ALLOW_REMOTE_OLLAMA", "true")
+    client = OllamaClient(base_url="http://remote-server.internal:11434")
+    assert client.base_url == "http://remote-server.internal:11434"
+    assert client.allow_remote is True
+
+
+def test_explicit_allow_remote_false_overrides_environment_variable(monkeypatch):
+    """Verify explicit allow_remote=False overrides ALLOW_REMOTE_OLLAMA=true."""
+    from src.services.ollama_client import OllamaSecurityError
+    monkeypatch.setenv("ALLOW_REMOTE_OLLAMA", "true")
+    with pytest.raises(OllamaSecurityError, match="Remote Ollama host"):
+        OllamaClient(base_url="http://remote-server.internal:11434", allow_remote=False)
+
+
+def test_app_settings_defaults_to_remote_access_disabled():
+    """Verify central application configuration defaults ALLOW_REMOTE_OLLAMA to False."""
+    from src.api.config import Settings
+    settings = Settings()
+    assert settings.ALLOW_REMOTE_OLLAMA is False
+
+
+def test_loopback_variants_allowed_without_remote_flag():
+    """Verify standard loopback addresses are allowed without remote authorization."""
+    c1 = OllamaClient(base_url="http://127.0.0.1:11434", allow_remote=False)
+    assert c1.base_url == "http://127.0.0.1:11434"
+
+    c2 = OllamaClient(base_url="http://localhost:11434", allow_remote=False)
+    assert c2.base_url == "http://localhost:11434"
+
+    c3 = OllamaClient(base_url="http://[::1]:11434", allow_remote=False)
+    assert c3.base_url == "http://[::1]:11434"
+
+
 

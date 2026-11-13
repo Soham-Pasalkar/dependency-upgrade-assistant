@@ -1,0 +1,59 @@
+{
+ "captured_at": "2026-11-12T17:37:40Z",
+ "pip": "pip 26.2.2",
+ "runs": {
+  "conflict_numpy_scipy": {
+   "command": "-m pip install --dry-run --ignore-installed --only-binary=:all: --isolated --no-input --disable-pip-version-check --index-url https://pypi.org/simple --python-version 3.11.18 --implementation cp --abi cp311 --platform manylinux_2_41_x86_64 --platform manylinux_2_28_x86_64 --platform manylinux_2_17_x86_64 --platform manylinux2014_x86_64 --platform manylinux_2_5_x86_64 --platform manylinux1_x86_64 --platform linux_x86_64 --target <tmp>/t --report <tmp>/conflict_numpy_scipy.json numpy==2.1.0 scipy==1.10.0",
+   "exit_code": 1,
+   "requirements": [
+    "numpy==2.1.0",
+    "scipy==1.10.0"
+   ]
+  },
+  "flask_original": {
+   "command": "-m pip install --dry-run --ignore-installed --only-binary=:all: --isolated --no-input --disable-pip-version-check --index-url https://pypi.org/simple --python-version 3.11.18 --implementation cp --abi cp311 --platform manylinux_2_41_x86_64 --platform manylinux_2_28_x86_64 --platform manylinux_2_17_x86_64 --platform manylinux2014_x86_64 --platform manylinux_2_5_x86_64 --platform manylinux1_x86_64 --platform linux_x86_64 --target <tmp>/t --report <tmp>/flask_original.json Flask==2.0.3",
+   "exit_code": 0,
+   "requirements": [
+    "Flask==2.0.3"
+   ]
+  },
+  "flask_proposed": {
+   "command": "-m pip install --dry-run --ignore-installed --only-binary=:all: --isolated --no-input --disable-pip-version-check --index-url https://pypi.org/simple --python-version 3.11.18 --implementation cp --abi cp311 --platform manylinux_2_41_x86_64 --platform manylinux_2_28_x86_64 --platform manylinux_2_17_x86_64 --platform manylinux2014_x86_64 --platform manylinux_2_5_x86_64 --platform manylinux1_x86_64 --platform linux_x86_64 --target <tmp>/t --report <tmp>/flask_proposed.json Flask==3.0.3",
+   "exit_code": 0,
+   "requirements": [
+    "Flask==3.0.3"
+   ]
+  },
+  "numpy_scipy_pandas": {
+   "command": "-m pip install --dry-run --ignore-installed --only-binary=:all: --isolated --no-input --disable-pip-version-check --index-url https://pypi.org/simple --python-version 3.11.18 --implementation cp --abi cp311 --platform manylinux_2_41_x86_64 --platform manylinux_2_28_x86_64 --platform manylinux_2_17_x86_64 --platform manylinux2014_x86_64 --platform manylinux_2_5_x86_64 --platform manylinux1_x86_64 --platform linux_x86_64 --target <tmp>/t --report <tmp>/numpy_scipy_pandas.json numpy==1.24.0 scipy==1.10.0 pandas==1.5.3",
+   "exit_code": 0,
+   "requirements": [
+    "numpy==1.24.0",
+    "scipy==1.10.0",
+    "pandas==1.5.3"
+   ]
+  },
+  "requests_socks": {
+   "command": "-m pip install --dry-run --ignore-installed --only-binary=:all: --isolated --no-input --disable-pip-version-check --index-url https://pypi.org/simple --python-version 3.11.18 --implementation cp --abi cp311 --platform manylinux_2_41_x86_64 --platform manylinux_2_28_x86_64 --platform manylinux_2_17_x86_64 --platform manylinux2014_x86_64 --platform manylinux_2_5_x86_64 --platform manylinux1_x86_64 --platform linux_x86_64 --target <tmp>/t --report <tmp>/requests_socks.json requests[socks]==2.32.3",
+   "exit_code": 0,
+   "requirements": [
+    "requests[socks]==2.32.3"
+   ]
+  },
+  "requires_python": {
+   "command": "-m pip install --dry-run --ignore-installed --only-binary=:all: --isolated --no-input --disable-pip-version-check --index-url https://pypi.org/simple --python-version 3.11.18 --implementation cp --abi cp311 --platform manylinux_2_41_x86_64 --platform manylinux_2_28_x86_64 --platform manylinux_2_17_x86_64 --platform manylinux2014_x86_64 --platform manylinux_2_5_x86_64 --platform manylinux1_x86_64 --platform linux_x86_64 --target <tmp>/t --report <tmp>/requires_python.json Django==6.0",
+   "exit_code": 1,
+   "requirements": [
+    "Django==6.0"
+   ]
+  },
+  "sdist_only": {
+   "command": "-m pip install --dry-run --ignore-installed --only-binary=:all: --isolated --no-input --disable-pip-version-check --index-url https://pypi.org/simple --python-version 3.11.18 --implementation cp --abi cp311 --platform manylinux_2_41_x86_64 --platform manylinux_2_28_x86_64 --platform manylinux_2_17_x86_64 --platform manylinux2014_x86_64 --platform manylinux_2_5_x86_64 --platform manylinux1_x86_64 --platform linux_x86_64 --target <tmp>/t --report <tmp>/sdist_only.json pycrypto==2.6.1",
+   "exit_code": 1,
+   "requirements": [
+    "pycrypto==2.6.1"
+   ]
+  }
+ },
+ "target_arch": "x86_64"
+}

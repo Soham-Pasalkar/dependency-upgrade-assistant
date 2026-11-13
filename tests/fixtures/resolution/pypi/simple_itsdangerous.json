@@ -1,0 +1,47 @@
+{
+ "files": [
+  {
+   "core-metadata": {
+    "sha256": "d2b934fb56708a1b94e439f0255c0f5a8108e3258ec827b18a1dc9c991db9611"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "d2b934fb56708a1b94e439f0255c0f5a8108e3258ec827b18a1dc9c991db9611"
+   },
+   "filename": "itsdangerous-2.2.0-py3-none-any.whl",
+   "hashes": {
+    "sha256": "c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef"
+   },
+   "provenance": null,
+   "requires-python": ">=3.8",
+   "size": 16234,
+   "upload-time": "2024-04-16T21:28:14.499616Z",
+   "url": "https://files.pythonhosted.org/packages/04/96/92447566d16df59b2a776c0fb82dbc4d9e07cd95062562af01e408583fc4/itsdangerous-2.2.0-py3-none-any.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": false,
+   "data-dist-info-metadata": false,
+   "filename": "itsdangerous-2.2.0.tar.gz",
+   "hashes": {
+    "sha256": "e0050c0b7da1eea53ffaf149c0cfbb5c6e2e2b69c4bef22c81fa6eb73e5f6173"
+   },
+   "provenance": null,
+   "requires-python": ">=3.8",
+   "size": 54410,
+   "upload-time": "2024-04-16T21:28:15.614771Z",
+   "url": "https://files.pythonhosted.org/packages/9c/cb/8ac0172223afbccb63986cc25049b154ecfb5e85932587206f42317be31d/itsdangerous-2.2.0.tar.gz",
+   "yanked": false
+  }
+ ],
+ "meta": {
+  "_last-serial": 22795405,
+  "api-version": "1.4"
+ },
+ "name": "itsdangerous",
+ "project-status": {
+  "status": "active"
+ },
+ "versions": [
+  "2.2.0"
+ ]
+}

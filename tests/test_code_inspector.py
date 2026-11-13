@@ -23,13 +23,13 @@ def test_contains_likely_secrets():
     clean_code = "def add(a, b):\n    return a + b\n"
     assert contains_likely_secrets(clean_code) is False
 
-    key_code = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0...\n-----END RSA PRIVATE KEY-----"
+    key_code = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0...\n-----END RSA PRIVATE KEY-----"  # aidlc:allow-secret (synthetic test fixture for AST secret detection)
     assert contains_likely_secrets(key_code) is True
 
-    secret_code = "api_key = 'abcdef1234567890abcdef1234567890'"
+    secret_code = "api_key = 'abcdef1234567890abcdef1234567890'"  # aidlc:allow-secret (synthetic test fixture for AST secret detection)
     assert contains_likely_secrets(secret_code) is True
 
-    ghp_code = "token = 'ghp_123456789012345678901234567890123456'"
+    ghp_code = "token = 'ghp_123456789012345678901234567890123456'"  # aidlc:allow-secret (synthetic test fixture for AST secret detection)
     assert contains_likely_secrets(ghp_code) is True
 
 
@@ -71,7 +71,7 @@ def test_discover_and_prioritize_files_limit_and_exclusions(tmp_path: Path):
     (venv_dir / "lib.py").write_text("ignored", encoding="utf-8")
 
     secret_file = repo / "config.py"
-    secret_file.write_text("api_key = 'secret12345678901234567890'", encoding="utf-8")
+    secret_file.write_text("api_key = 'secret12345678901234567890'", encoding="utf-8")  # aidlc:allow-secret (synthetic test fixture for AST secret detection)
 
     large_file = repo / "large_data.py"
     large_file.write_text("x = 1\n" * 60000, encoding="utf-8")  # ~360 KB

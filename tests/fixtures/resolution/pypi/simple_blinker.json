@@ -1,0 +1,47 @@
+{
+ "files": [
+  {
+   "core-metadata": {
+    "sha256": "b8846233cc238db1e40ad6c2c93bdcb54dfb200664d2411ee64c4095dd5dbf30"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "b8846233cc238db1e40ad6c2c93bdcb54dfb200664d2411ee64c4095dd5dbf30"
+   },
+   "filename": "blinker-1.9.0-py3-none-any.whl",
+   "hashes": {
+    "sha256": "ba0efaa9080b619ff2f3459d1d500c57bddea4a6b424b60a91141db6fd2f08bc"
+   },
+   "provenance": "https://pypi.org/integrity/blinker/1.9.0/blinker-1.9.0-py3-none-any.whl/provenance",
+   "requires-python": ">=3.9",
+   "size": 8458,
+   "upload-time": "2024-11-08T17:25:46.184412Z",
+   "url": "https://files.pythonhosted.org/packages/10/cb/f2ad4230dc2eb1a74edf38f1a38b9b52277f75bef262d8908e60d957e13c/blinker-1.9.0-py3-none-any.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": false,
+   "data-dist-info-metadata": false,
+   "filename": "blinker-1.9.0.tar.gz",
+   "hashes": {
+    "sha256": "b4ce2265a7abece45e7cc896e98dbebe6cead56bcf805a3d23136d145f5445bf"
+   },
+   "provenance": "https://pypi.org/integrity/blinker/1.9.0/blinker-1.9.0.tar.gz/provenance",
+   "requires-python": ">=3.9",
+   "size": 22460,
+   "upload-time": "2024-11-08T17:25:47.436760Z",
+   "url": "https://files.pythonhosted.org/packages/21/28/9b3f50ce0e048515135495f198351908d99540d69bfdc8c1d15b73dc55ce/blinker-1.9.0.tar.gz",
+   "yanked": false
+  }
+ ],
+ "meta": {
+  "_last-serial": 25894302,
+  "api-version": "1.4"
+ },
+ "name": "blinker",
+ "project-status": {
+  "status": "active"
+ },
+ "versions": [
+  "1.9.0"
+ ]
+}

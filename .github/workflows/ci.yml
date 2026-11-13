@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "feature/dependency-upgrade-assistant-2.0" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "feature/dependency-upgrade-assistant-2.0" ]
 
 jobs:
   test:
@@ -29,8 +29,109 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -e ".[dev]"
 
       - name: Run pytest test suite
+        # Live M12 resolver/egress tests run once, in the Docker job below, where Docker is required.
         run: |
-          pytest -v
+          pytest -v -m "not live_resolution"
+
+  docker-sandbox-validation:
+    name: Sandboxed Docker Container Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Pull pinned Docker sandbox images
+        run: |
+          docker pull python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
+          docker pull node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
+
+      - name: Run Sandboxed Validation Integration Tests
+        run: |
+          pytest -v tests/test_sandbox_security.py tests/test_sandbox_runner.py tests/test_validation_api.py
+
+      - name: Run offline staging and container install integration tests (Python and npm)
+        env:
+          DUA_REQUIRE_DOCKER: "1"
+        run: |
+          pytest -v -rA -s tests/test_docker_staging_integration.py tests/test_dependency_staging.py
+
+      - name: Run M12 live resolver and egress isolation tests (Docker required)
+        env:
+          DUA_REQUIRE_DOCKER: "1"
+        run: |
+          docker version --format 'docker {{.Server.Version}}'
+          pytest -v -rA tests/test_egress_live.py tests/test_resolution_live.py
+
+      - name: Set up Node.js for the browser journey
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Browser journey to a verified COMPATIBLE plan (real backend, resolver and headless Chrome)
+        run: |
+          npm --prefix frontend ci
+          pip install "websockets==15.0.1"   # test tooling for the DevTools driver only
+          mkdir -p journey
+          python -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000 > journey/backend.log 2>&1 &
+          npm --prefix frontend run dev -- --port 5173 --strictPort > journey/vite.log 2>&1 &
+          google-chrome --headless=new --remote-debugging-port=9222 --no-first-run --disable-gpu \
+            --user-data-dir="$RUNNER_TEMP/chrome" about:blank > journey/chrome.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8000/api/health > /dev/null && curl -sf http://localhost:5173 > /dev/null \
+              && curl -sf http://127.0.0.1:9222/json > /dev/null && break
+            sleep 1
+          done
+          python tests/e2e/browser_journey.py compatible journey 1440 900
+          python tests/e2e/browser_journey.py compatible journey 390 844
+
+      - name: Upload browser journey screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m12-browser-journey
+          path: journey/
+
+  frontend:
+    name: Frontend tests, lint and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build

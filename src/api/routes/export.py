@@ -1,0 +1,217 @@
+"""FastAPI endpoints for deliverable artifact export, checksum verification, and downloads."""
+from __future__ import annotations
+
+import logging
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
+
+from src.models.export import (
+    ArtifactType,
+    ExportMetadataResponse,
+    ExportRequest,
+)
+from src.services.exporter import (
+    ArtifactExporter,
+    get_artifact_exporter,
+)
+from src.services.proposal_registry import (
+    ProposalRegistry,
+    get_proposal_registry,
+)
+from src.services.sandbox_service import (
+    SandboxService,
+    get_sandbox_service,
+)
+from src.services.secret_scanner import SecretLeakageError
+from src.services.approval_service import ApprovalError, ensure_registered, require_approved_proposal
+from src.services.retention import maybe_run_retention
+from src.services.run_store import RunStore, get_run_store
+from src.api.observability import internal_error
+
+logger = logging.getLogger("dua.api.export")
+
+def _resolution_payload(approved, store: RunStore):
+    """FR-32d: the verified proposed evidence the approval covers, plus the original baseline of the same job."""
+    from src.resolution.models import ResolutionRole
+    from src.services.exporter import resolution_export_payload
+
+    proposed = approved.resolution
+    original = store.latest_resolution(proposed.proposal_id, ResolutionRole.ORIGINAL)
+    if original is not None and original.job_id != proposed.job_id:
+        original = None
+    return resolution_export_payload(proposed.report, original.report if original else None)
+
+
+router = APIRouter(tags=["Artifact Export & Deliverables"])
+
+
+@router.post(
+    "/export",
+    response_model=ExportMetadataResponse,
+    summary="Generate Verified Deliverables Export",
+    description=(
+        "Bundles verified dependency upgrades into a Git-compatible .patch, a structured JSON execution summary, "
+        "sanitized validation logs, a SHA-256 checksums manifest, and a validated ZIP archive. "
+        "Strictly verifies zero credential leakage before exporting deliverables."
+    ),
+)
+async def create_export(
+    request: ExportRequest,
+    exporter: Annotated[ArtifactExporter, Depends(get_artifact_exporter)],
+    registry: Annotated[ProposalRegistry, Depends(get_proposal_registry)],
+    sandbox: Annotated[SandboxService, Depends(get_sandbox_service)],
+    store: Annotated[RunStore, Depends(get_run_store)],
+) -> ExportMetadataResponse:
+    """Construct verified deliverable bundle for a proposal and optional validation run."""
+    if not request.proposal_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A valid 'proposal_id' is required to generate deliverables.",
+        )
+
+    # 1. Retrieve server-authoritative proposal (restored from SQLite after a restart if needed)
+    stored_proposal = await run_in_threadpool(ensure_registered, request.proposal_id, store, registry)
+    if not stored_proposal:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Proposal '{request.proposal_id}' was not found or has expired.",
+        )
+
+    # 1b. Server-recorded approval of this exact diff is mandatory (FR-16)
+    try:
+        approved = await run_in_threadpool(
+            require_approved_proposal, request.proposal_id, store, registry, "export"
+        )
+    except ApprovalError as err:
+        raise HTTPException(status_code=err.status_code, detail=err.message)
+
+    # 2. Retrieve optional validation report
+    validation_report = None
+    if request.execution_id:
+        validation_report = sandbox.get_execution(request.execution_id)
+        if not validation_report:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Validation execution '{request.execution_id}' was not found.",
+            )
+        if validation_report.proposal_id != request.proposal_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This validation run belongs to a different plan.",
+            )
+        if validation_report.validation_fingerprint != approved.approval.validation_fingerprint:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This validation run did not use the approved validation settings.",
+            )
+
+    await run_in_threadpool(maybe_run_retention)
+
+    # 3. Export deliverables in worker thread pool
+    try:
+        bundle = await run_in_threadpool(
+            exporter.export_proposal,
+            proposal=stored_proposal.proposal,
+            validation_report=validation_report,
+            run_id=approved.binding.run_id,
+            custom_notes=request.custom_notes,
+            resolution=_resolution_payload(approved, store),
+        )
+        return bundle.to_response()
+    except SecretLeakageError as err:
+        logger.error(f"Deliverable export rejected due to secret leakage: {err}")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(err),
+        )
+    except ValueError as err:
+        logger.warning(f"Invalid export request parameter: {err}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(err),
+        )
+    except Exception as err:
+        logger.exception(f"Unexpected error constructing export deliverables: {err}")
+        raise internal_error(logger, "Export", err) from err
+
+
+@router.get(
+    "/export/{export_id}",
+    response_model=ExportMetadataResponse,
+    summary="Get Export Metadata and Checksums",
+    description="Retrieves metadata, download URLs, and SHA-256 checksums for an existing export bundle.",
+)
+async def get_export_metadata(
+    export_id: str,
+    exporter: Annotated[ArtifactExporter, Depends(get_artifact_exporter)],
+) -> ExportMetadataResponse:
+    """Retrieve metadata and deliverable checksums for an export bundle."""
+    bundle = exporter.get_export(export_id)
+    if not bundle:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Export bundle '{export_id}' was not found.",
+        )
+    return bundle.to_response()
+
+
+@router.get(
+    "/export/{export_id}/download/{artifact_type}",
+    summary="Download Deliverable Artifact File",
+    description="Streams an individual deliverable file (.patch, summary.json, execution.log, checksums, or .zip).",
+)
+async def download_artifact(
+    export_id: str,
+    artifact_type: str,
+    exporter: Annotated[ArtifactExporter, Depends(get_artifact_exporter)],
+) -> FileResponse:
+    """Stream an exported deliverable file with safe Content-Disposition and SHA-256 header."""
+    try:
+        file_path, filename, mime_type, sha256 = exporter.get_artifact_file(
+            export_id=export_id,
+            artifact_type=artifact_type,
+        )
+        return FileResponse(
+            path=file_path,
+            media_type=mime_type,
+            filename=filename,
+            headers={
+                "X-Checksum-SHA256": sha256,
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+    except FileNotFoundError as err:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(err),
+        )
+    except ValueError as err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(err),
+        )
+    except Exception as err:
+        logger.exception(f"Error serving export artifact '{artifact_type}': {err}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error retrieving artifact file.",
+        )
+
+
+@router.get(
+    "/export/{export_id}/{artifact_type}",
+    summary="Download Deliverable Artifact (Alias)",
+    description="Convenience download alias for deliverable artifacts.",
+    include_in_schema=False,
+)
+async def download_artifact_alias(
+    export_id: str,
+    artifact_type: str,
+    exporter: Annotated[ArtifactExporter, Depends(get_artifact_exporter)],
+) -> FileResponse:
+    """Convenience alias route matching /export/{export_id}/{artifact_type}."""
+    return await download_artifact(export_id=export_id, artifact_type=artifact_type, exporter=exporter)
+

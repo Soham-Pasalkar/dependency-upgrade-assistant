@@ -1,0 +1,47 @@
+{
+ "files": [
+  {
+   "core-metadata": {
+    "sha256": "25de974e5d389a44fdedb89074f9ce19de3c7ab685b682e9a945d1ab36fc60a5"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "25de974e5d389a44fdedb89074f9ce19de3c7ab685b682e9a945d1ab36fc60a5"
+   },
+   "filename": "pytz-2026.6-py2.py3-none-any.whl",
+   "hashes": {
+    "sha256": "7fed3fee8fd6bd4a2b7b75a8d56021d0624127bf69bd5691f115db929ac570b3"
+   },
+   "provenance": "https://pypi.org/integrity/pytz/2026.6/pytz-2026.6-py2.py3-none-any.whl/provenance",
+   "requires-python": null,
+   "size": 506321,
+   "upload-time": "2026-10-29T09:05:45.140432Z",
+   "url": "https://files.pythonhosted.org/packages/b6/25/564f3fc5b70c1398d706c51f2b1470d0ea0b1b2f96fee67877b6f5bdf3b6/pytz-2026.6-py2.py3-none-any.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": false,
+   "data-dist-info-metadata": false,
+   "filename": "pytz-2026.6.tar.gz",
+   "hashes": {
+    "sha256": "3b0fc2727707663d6e517936f444fd8a8b240f1fc32f4bf7ee03274245945284"
+   },
+   "provenance": "https://pypi.org/integrity/pytz/2026.6/pytz-2026.6.tar.gz/provenance",
+   "requires-python": null,
+   "size": 318520,
+   "upload-time": "2026-10-29T09:05:47.011737Z",
+   "url": "https://files.pythonhosted.org/packages/f5/b0/168030b0bfcc334cf09fa3313afdb888d892c8a0027324683d1de0ec277e/pytz-2026.6.tar.gz",
+   "yanked": false
+  }
+ ],
+ "meta": {
+  "_last-serial": 42906249,
+  "api-version": "1.4"
+ },
+ "name": "pytz",
+ "project-status": {
+  "status": "active"
+ },
+ "versions": [
+  "2026.6"
+ ]
+}

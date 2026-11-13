@@ -59,5 +59,13 @@ coverage.xml
 # Editor directories
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
+
+# Local SQLite databases and environments
+*.db
+*.db-wal
+*.db-shm
+.env
+

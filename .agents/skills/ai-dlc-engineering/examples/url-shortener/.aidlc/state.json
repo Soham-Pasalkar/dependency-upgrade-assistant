@@ -1,0 +1,217 @@
+{
+  "schema_version": 1,
+  "project": "url-shortener",
+  "tier": 2,
+  "mode": "greenfield",
+  "phase": "construction",
+  "config": {
+    "strict_approvals": false,
+    "hook_enforcement": true
+  },
+  "created": "2026-11-01T13:39:03Z",
+  "updated": "2026-11-01T13:39:04Z",
+  "gates": {
+    "G1": {
+      "name": "Requirements",
+      "status": "approved",
+      "note": "user: approved, go ahead with that scope",
+      "at": "2026-11-01T13:39:03Z"
+    },
+    "G2": {
+      "name": "Architecture and threat model",
+      "status": "approved",
+      "note": "user: design approved, T-3 residual risk accepted",
+      "at": "2026-11-01T13:39:03Z"
+    },
+    "G3": {
+      "name": "Milestone plan",
+      "status": "approved",
+      "note": "user: plan approved",
+      "at": "2026-11-01T13:39:04Z"
+    },
+    "G5": {
+      "name": "Release",
+      "status": "pending",
+      "note": null,
+      "at": null
+    }
+  },
+  "milestones": [
+    {
+      "id": "M1",
+      "title": "Walking skeleton",
+      "depends_on": [],
+      "status": "done",
+      "criteria": [
+        {
+          "text": "App starts in a container and /healthz returns 200",
+          "verified": true,
+          "proof": "compose up then curl returned 200"
+        },
+        {
+          "text": "/healthz returns 503 when the database is unreachable",
+          "verified": true,
+          "proof": "db stopped, curl returned 503"
+        },
+        {
+          "text": "CI runs tests and lint on every push",
+          "verified": true,
+          "proof": "CI run green on push"
+        }
+      ],
+      "evidence": [
+        {
+          "at": "2026-11-01T13:39:04Z",
+          "cmd": "pytest -q",
+          "result": "4 passed",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-01T13:39:04Z",
+          "cmd": "docker compose stop db && curl localhost:8000/healthz",
+          "result": "HTTP 503",
+          "file": null,
+          "sha256": null
+        }
+      ],
+      "approval": {
+        "at": "2026-11-01T13:39:04Z",
+        "note": "user: M1 approved",
+        "actor": "agent"
+      },
+      "rework": 0,
+      "started": "2026-11-01T13:39:04Z",
+      "note": null
+    },
+    {
+      "id": "M2",
+      "title": "Create links safely",
+      "depends_on": [
+        "M1"
+      ],
+      "status": "done",
+      "criteria": [
+        {
+          "text": "FR-1: valid URL and key returns 201 with a 7-char code",
+          "verified": true,
+          "proof": "test_create_link_ok passes"
+        },
+        {
+          "text": "FR-3: unsafe URLs return 422 unsafe_url and store nothing",
+          "verified": true,
+          "proof": "24 urlcheck cases plus test_unsafe_not_stored pass"
+        },
+        {
+          "text": "API keys are stored hashed",
+          "verified": true,
+          "proof": "test_key_hash_only passes"
+        }
+      ],
+      "evidence": [
+        {
+          "at": "2026-11-01T13:39:04Z",
+          "cmd": "pytest -q",
+          "result": "31 passed",
+          "file": null,
+          "sha256": null
+        },
+        {
+          "at": "2026-11-01T13:39:04Z",
+          "cmd": "python scripts/scan_secrets.py .",
+          "result": "PASS: 0 finding(s)",
+          "file": null,
+          "sha256": null
+        }
+      ],
+      "approval": {
+        "at": "2026-11-01T13:39:04Z",
+        "note": "user: approved, nice catch on IPv6",
+        "actor": "agent"
+      },
+      "rework": 0,
+      "started": "2026-11-01T13:39:04Z",
+      "note": null
+    },
+    {
+      "id": "M3",
+      "title": "Redirect and rate limit",
+      "depends_on": [
+        "M2"
+      ],
+      "status": "in_progress",
+      "criteria": [
+        {
+          "text": "FR-2: existing code returns 302, unknown returns 404",
+          "verified": true,
+          "proof": "test_redirect_302 and test_unknown_404 pass"
+        },
+        {
+          "text": "61st write in a minute returns 429",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "p95 redirect latency under 50 ms at 100 rps",
+          "verified": false,
+          "proof": null
+        }
+      ],
+      "evidence": [
+        {
+          "at": "2026-11-01T13:39:04Z",
+          "cmd": "pytest tests/test_redirect.py -q",
+          "result": "6 passed",
+          "file": null,
+          "sha256": null
+        }
+      ],
+      "approval": null,
+      "rework": 0,
+      "started": "2026-11-01T13:39:04Z",
+      "note": null
+    },
+    {
+      "id": "M4",
+      "title": "Stats and hardening",
+      "depends_on": [
+        "M3"
+      ],
+      "status": "planned",
+      "criteria": [
+        {
+          "text": "FR-4: owner sees click count, other owners get 404",
+          "verified": false,
+          "proof": null
+        },
+        {
+          "text": "Dependency audit and secrets scan report no high findings",
+          "verified": false,
+          "proof": null
+        }
+      ],
+      "evidence": [],
+      "approval": null,
+      "rework": 0,
+      "started": null,
+      "note": null
+    }
+  ],
+  "notes": [
+    {
+      "id": "N1",
+      "kind": "risk",
+      "text": "Load test must run on the reference 2 vCPU VM, not a laptop, to be valid for NFR-1",
+      "status": "open",
+      "at": "2026-11-01T13:39:04Z"
+    },
+    {
+      "id": "N2",
+      "kind": "decision",
+      "text": "In-memory limiter is acceptable for a single instance; revisit if scaled out",
+      "status": "open",
+      "at": "2026-11-01T13:39:04Z"
+    }
+  ],
+  "head": "ed2dd0a81f43770a03149291ab3598563c53dcbeeae049dc45c537c31658d457"
+}

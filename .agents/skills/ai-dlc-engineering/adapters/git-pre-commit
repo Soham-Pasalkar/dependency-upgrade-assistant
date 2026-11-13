@@ -1,0 +1,9 @@
+#!/bin/sh
+# AI-DLC git pre-commit hook: works with every agent that commits through git.
+# Install: copy to .git/hooks/pre-commit and make it executable, or run scripts/install.py --git-hook.
+# Edit SKILL_DIR if the skill is installed somewhere else.
+SKILL_DIR="${AIDLC_SKILL_DIR:-.agents/skills/ai-dlc-engineering}"
+[ -f ".aidlc/state.json" ] || exit 0
+PY="$(command -v python3 || command -v python)"
+[ -n "$PY" ] || { echo "AI-DLC pre-commit: python not found, skipping" >&2; exit 0; }
+exec "$PY" "$SKILL_DIR/scripts/gate_hook.py" --git-pre-commit

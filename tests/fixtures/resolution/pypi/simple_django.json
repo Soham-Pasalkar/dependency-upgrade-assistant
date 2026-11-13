@@ -1,0 +1,47 @@
+{
+ "files": [
+  {
+   "core-metadata": {
+    "sha256": "d25cdfa5319a7e998ee1f778618467508c248c08a599891ab0e4e0ba40b18265"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "d25cdfa5319a7e998ee1f778618467508c248c08a599891ab0e4e0ba40b18265"
+   },
+   "filename": "django-6.0-py3-none-any.whl",
+   "hashes": {
+    "sha256": "1cc2c7344303bbfb7ba5070487c17f7fc0b7174bbb0a38cebf03c675f5f19b6d"
+   },
+   "provenance": null,
+   "requires-python": ">=3.12",
+   "size": 8339181,
+   "upload-time": "2025-12-03T16:26:16.231704Z",
+   "url": "https://files.pythonhosted.org/packages/d7/ae/f19e24789a5ad852670d6885f5480f5e5895576945fcc01817dfd9bc002a/django-6.0-py3-none-any.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": false,
+   "data-dist-info-metadata": false,
+   "filename": "django-6.0.tar.gz",
+   "hashes": {
+    "sha256": "7b0c1f50c0759bbe6331c6a39c89ae022a84672674aeda908784617ef47d8e26"
+   },
+   "provenance": null,
+   "requires-python": ">=3.12",
+   "size": 10932418,
+   "upload-time": "2025-12-03T16:26:21.878277Z",
+   "url": "https://files.pythonhosted.org/packages/15/75/19762bfc4ea556c303d9af8e36f0cd910ab17dff6c8774644314427a2120/django-6.0.tar.gz",
+   "yanked": false
+  }
+ ],
+ "meta": {
+  "_last-serial": 43145869,
+  "api-version": "1.4"
+ },
+ "name": "django",
+ "project-status": {
+  "status": "active"
+ },
+ "versions": [
+  "6.0"
+ ]
+}

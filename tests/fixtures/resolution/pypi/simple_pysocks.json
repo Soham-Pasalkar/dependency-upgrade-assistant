@@ -1,0 +1,65 @@
+{
+ "files": [
+  {
+   "core-metadata": {
+    "sha256": "cdb40c8b38cf38e3f80e1122117db85d78cdad8b88c45f54194a4dd2e14307a6"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "cdb40c8b38cf38e3f80e1122117db85d78cdad8b88c45f54194a4dd2e14307a6"
+   },
+   "filename": "PySocks-1.7.1-py27-none-any.whl",
+   "hashes": {
+    "sha256": "08e69f092cc6dbe92a0fdd16eeb9b9ffbc13cadfe5ca4c7bd92ffb078b293299"
+   },
+   "provenance": null,
+   "requires-python": ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*",
+   "size": 16726,
+   "upload-time": "2019-09-20T02:06:20.927323Z",
+   "url": "https://files.pythonhosted.org/packages/a2/4b/52123768624ae28d84c97515dd96c9958888e8c2d8f122074e31e2be878c/PySocks-1.7.1-py27-none-any.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "cdb40c8b38cf38e3f80e1122117db85d78cdad8b88c45f54194a4dd2e14307a6"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "cdb40c8b38cf38e3f80e1122117db85d78cdad8b88c45f54194a4dd2e14307a6"
+   },
+   "filename": "PySocks-1.7.1-py3-none-any.whl",
+   "hashes": {
+    "sha256": "2725bd0a9925919b9b51739eea5f9e2bae91e83288108a9ad338b2e3a4435ee5"
+   },
+   "provenance": null,
+   "requires-python": ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*",
+   "size": 16725,
+   "upload-time": "2019-09-20T02:06:22.938781Z",
+   "url": "https://files.pythonhosted.org/packages/8d/59/b4572118e098ac8e46e399a1dd0f2d85403ce8bbaad9ec79373ed6badaf9/PySocks-1.7.1-py3-none-any.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": false,
+   "data-dist-info-metadata": false,
+   "filename": "PySocks-1.7.1.tar.gz",
+   "hashes": {
+    "sha256": "3f8804571ebe159c380ac6de37643bb4685970655d3bba243530d6558b799aa0"
+   },
+   "provenance": null,
+   "requires-python": ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*",
+   "size": 284429,
+   "upload-time": "2019-09-20T02:07:35.714783Z",
+   "url": "https://files.pythonhosted.org/packages/bd/11/293dd436aea955d45fc4e8a35b6ae7270f5b8e00b53cf6c024c83b657a11/PySocks-1.7.1.tar.gz",
+   "yanked": false
+  }
+ ],
+ "meta": {
+  "_last-serial": 5859776,
+  "api-version": "1.4"
+ },
+ "name": "pysocks",
+ "project-status": {
+  "status": "active"
+ },
+ "versions": [
+  "1.7.1"
+ ]
+}

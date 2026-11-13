@@ -54,7 +54,7 @@ def generate_unified_diff(
         updated_lines,
         fromfile=fromfile,
         tofile=tofile,
-        lineterm="",
+        lineterm="\n",
     )
 
     return "".join(diff)

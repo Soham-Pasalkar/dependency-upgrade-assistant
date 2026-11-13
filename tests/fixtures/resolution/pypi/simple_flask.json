@@ -1,0 +1,80 @@
+{
+ "files": [
+  {
+   "core-metadata": {
+    "sha256": "8cae7462dc597ce0cb40ffc6175b0d1fa74e5d1088e5b04bac073ba56430b97c"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "8cae7462dc597ce0cb40ffc6175b0d1fa74e5d1088e5b04bac073ba56430b97c"
+   },
+   "filename": "Flask-2.0.3-py3-none-any.whl",
+   "hashes": {
+    "sha256": "59da8a3170004800a2837844bfa84d49b022550616070f7cb1a659682b2e7c9f"
+   },
+   "provenance": null,
+   "requires-python": ">=3.6",
+   "size": 95575,
+   "upload-time": "2022-02-14T20:01:06.923079Z",
+   "url": "https://files.pythonhosted.org/packages/cd/77/59df23681f4fd19b7cbbb5e92484d46ad587554f5d490f33ef907e456132/Flask-2.0.3-py3-none-any.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": false,
+   "data-dist-info-metadata": false,
+   "filename": "Flask-2.0.3.tar.gz",
+   "hashes": {
+    "sha256": "e1120c228ca2f553b470df4a5fa927ab66258467526069981b3eb0a91902687d"
+   },
+   "provenance": null,
+   "requires-python": ">=3.6",
+   "size": 629304,
+   "upload-time": "2022-02-14T20:01:09.281713Z",
+   "url": "https://files.pythonhosted.org/packages/84/9d/66347e6b3e2eb78647392d3969c23bdc2d8b2fdc32bd078c817c15cb81ad/Flask-2.0.3.tar.gz",
+   "yanked": false
+  },
+  {
+   "core-metadata": {
+    "sha256": "7b13da872e1a6a18d5fa662a77da9be4734ff21681fc8c53b9aa2da12bc2b5a8"
+   },
+   "data-dist-info-metadata": {
+    "sha256": "7b13da872e1a6a18d5fa662a77da9be4734ff21681fc8c53b9aa2da12bc2b5a8"
+   },
+   "filename": "flask-3.0.3-py3-none-any.whl",
+   "hashes": {
+    "sha256": "34e815dfaa43340d1d15a5c3a02b8476004037eb4840b34910c6e21679d288f3"
+   },
+   "provenance": null,
+   "requires-python": ">=3.8",
+   "size": 101735,
+   "upload-time": "2024-04-07T19:26:08.569305Z",
+   "url": "https://files.pythonhosted.org/packages/61/80/ffe1da13ad9300f87c93af113edd0638c75138c42a0994becfacac078c06/flask-3.0.3-py3-none-any.whl",
+   "yanked": false
+  },
+  {
+   "core-metadata": false,
+   "data-dist-info-metadata": false,
+   "filename": "flask-3.0.3.tar.gz",
+   "hashes": {
+    "sha256": "ceb27b0af3823ea2737928a4d99d125a06175b8512c445cbd9a9ce200ef76842"
+   },
+   "provenance": null,
+   "requires-python": ">=3.8",
+   "size": 676315,
+   "upload-time": "2024-04-07T19:26:11.035227Z",
+   "url": "https://files.pythonhosted.org/packages/41/e1/d104c83026f8d35dfd2c261df7d64738341067526406b40190bc063e829a/flask-3.0.3.tar.gz",
+   "yanked": false
+  }
+ ],
+ "meta": {
+  "_last-serial": 34432672,
+  "api-version": "1.4"
+ },
+ "name": "flask",
+ "project-status": {
+  "status": "active"
+ },
+ "versions": [
+  "2.0.3",
+  "3.0.3"
+ ]
+}
