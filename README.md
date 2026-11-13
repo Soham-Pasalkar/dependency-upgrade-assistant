@@ -72,49 +72,44 @@ DUA treats compatibility as something to **prove**, not assume:
 ## How it works
 
 ```mermaid
-flowchart LR
+flowchart TB
     user([Developer])
+    ui["React UI"]
+    user --> ui
 
-    subgraph browser["Browser"]
-        ui["React 19 UI<br/>analysis · plan · compatibility · approval"]
+    subgraph backend["FastAPI backend · trusted"]
+        direction TB
+        api["API + request protection"]
+        analysis["Acquisition · analysis · planning"]
+        jobs["Resolution jobs<br/>pool · deadlines · cancel"]
+        supervisor["Supervisor<br/>verify · fingerprint · compare"]
+        db[("SQLite")]
+        gate{{"Approval gate<br/>verified COMPATIBLE only"}}
+        out["Validation runner · exporter"]
     end
 
-    subgraph backend["FastAPI backend (trusted)"]
-        api["API + request protection<br/>Host, Origin, client header"]
-        analysis["Acquisition, analysis<br/>and planning"]
-        jobs["Resolution job service<br/>bounded pool, deadlines, cancel"]
-        supervisor["Supervisor<br/>verifies reports, fingerprints,<br/>comparison, upload dates"]
-        gate{{"Approval enforcement<br/>verified COMPATIBLE only"}}
-        sandbox["Validation sandbox runner"]
-        export["Exporter"]
-        db[("SQLite<br/>runs · plans · jobs ·<br/>evidence · approvals")]
-    end
-
-    subgraph docker["Docker host (untrusted execution)"]
-        subgraph jobnet["Per-job --internal network"]
-            resolver["Resolver container<br/>pip --dry-run --only-binary=:all:<br/>fresh per run"]
-            proxy["Egress proxy<br/>CONNECT :443, job token,<br/>public IPs only"]
+    subgraph docker["Docker host · untrusted execution"]
+        direction TB
+        subgraph jobnet["Per-job internal network"]
+            resolver["Resolver container<br/>pip, binary-only, fresh per run"]
+            proxy["Egress proxy<br/>:443 · job token · public IPs"]
         end
-        vbox["Validation container<br/>--network none"]
+        vbox["Validation container<br/>no network"]
     end
 
-    pypi[("pypi.org<br/>files.pythonhosted.org")]
-    github[("github.com")]
+    pypi[("PyPI")]
+    github[("GitHub")]
 
-    user --> ui --> api
-    api --> analysis
-    analysis --> github
-    analysis --> db
-    api --> jobs
-    jobs -->|"original, then proposed"| resolver
+    ui --> api
+    api --> analysis --> github
+    api --> jobs -->|"original, then proposed"| resolver
     resolver -->|"only route out"| proxy --> pypi
-    resolver -.->|"untrusted report<br/>(stdout)"| supervisor
-    supervisor -->|"independent metadata check"| pypi
+    resolver -.->|"untrusted report"| supervisor
+    supervisor -->|"independent check"| pypi
+    analysis --> db
     supervisor --> db
     user -->|"explicit approval"| gate
-    db --> gate
-    gate --> sandbox --> vbox
-    gate --> export
+    db --> gate --> out --> vbox
 ```
 
 The resolver and everything it prints are **untrusted**. The supervisor parses the report strictly,
