@@ -3,13 +3,13 @@
   "project": "Dependency Upgrade Assistant 2.0",
   "tier": 3,
   "mode": "brownfield",
-  "phase": "operations",
+  "phase": "released",
   "config": {
     "strict_approvals": true,
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-13T04:32:52Z",
+  "updated": "2026-11-13T04:35:04Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -31,9 +31,9 @@
     },
     "G5": {
       "name": "Release",
-      "status": "presented",
-      "note": null,
-      "at": "2026-11-13T04:32:52Z"
+      "status": "approved",
+      "note": "Owner approval: go ahead",
+      "at": "2026-11-13T04:35:04Z"
     }
   },
   "milestones": [
@@ -1470,5 +1470,5 @@
       "at": "2026-11-12T05:40:30Z"
     }
   ],
-  "head": "39ed09be7b932e87f1483a66ca69870a4ab7144b913550d793435f0be9f9a9ba"
+  "head": "413879489a3e1556a045cf892778ab9bb2413dcbc8cc6dd645f6b7144817835b"
 }
