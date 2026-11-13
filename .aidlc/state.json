@@ -9,7 +9,7 @@
     "hook_enforcement": true
   },
   "created": "2026-11-09T11:00:09Z",
-  "updated": "2026-11-13T04:15:10Z",
+  "updated": "2026-11-13T04:32:52Z",
   "gates": {
     "G1": {
       "name": "Requirements",
@@ -31,9 +31,9 @@
     },
     "G5": {
       "name": "Release",
-      "status": "pending",
-      "note": "New intent (Inception round 2 / one-day sprint). Owner authorized: 'After the governance checkpoint is committed, proceed with the authorized G1 reset and requirements Revision 2 preparation.' and 'Keep the existing AI-DLC approval requirements. Compress governance preparation and approvals into the minimum necessary process.'",
-      "at": "2026-11-11T10:10:33Z"
+      "status": "presented",
+      "note": null,
+      "at": "2026-11-13T04:32:52Z"
     }
   },
   "milestones": [
@@ -1470,5 +1470,5 @@
       "at": "2026-11-12T05:40:30Z"
     }
   ],
-  "head": "71e7db3823c7723483eebca3337233407fb2a72acdc47412bbe807bd235846cb"
+  "head": "39ed09be7b932e87f1483a66ca69870a4ab7144b913550d793435f0be9f9a9ba"
 }
