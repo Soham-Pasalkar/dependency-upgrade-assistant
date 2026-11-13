@@ -1,322 +1,353 @@
-# Dependency Upgrade Assistant 📦
-### AI-Powered Repository Analysis and Improvement Platform
+<div align="center">
 
-[![CI](https://github.com/soham/dependency-upgrade-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/soham/dependency-upgrade-assistant/actions/workflows/ci.yml)
-[![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://www.python.org/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-146%20passed-brightgreen.svg)](tests/)
+<img src="docs/assets/dua-logo.svg" alt="Dependency Upgrade Assistant logo" width="96" height="96" />
 
-The **Dependency Upgrade Assistant** is an interactive, security-first developer platform designed to analyze Python repositories, evaluate dependency upgrade candidates, inspect source code for quality findings with local Ollama AI models, safely validate approved changes in an isolated Docker sandbox, and export verified, Git-compatible deliverables.
+<h1>DEPENDENCY UPGRADE ASSISTANT</h1>
 
-Developed under the **AI-Driven Development Life Cycle (AI-DLC)** with strict human-in-the-loop approval gating, deterministic verification, and full provenance traceability.
+<p><strong>Resolve the whole set. Verify the evidence. Approve the exact change.</strong></p>
 
----
+<p>A local, security-conscious workflow for upgrading Python dependencies: it resolves the complete
+proposed dependency set with pip inside an isolated container, verifies the result independently,
+and only then lets a human approve, validate and export the change.</p>
 
-## 1. Project Overview & Problem Statement
+<p>
+<a href="https://github.com/Soham-Pasalkar/dependency-upgrade-assistant/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Soham-Pasalkar/dependency-upgrade-assistant/actions/workflows/ci.yml/badge.svg" /></a>
+<img alt="Python 3.10 to 3.14" src="https://img.shields.io/badge/python-3.10%E2%80%933.14-3776AB?logo=python&logoColor=white" />
+<img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-backend-009688?logo=fastapi&logoColor=white" />
+<img alt="React 19" src="https://img.shields.io/badge/React-19-20232A?logo=react&logoColor=61DAFB" />
+<img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-frontend-3178C6?logo=typescript&logoColor=white" />
+<img alt="Docker" src="https://img.shields.io/badge/Docker-isolated%20resolver-2496ED?logo=docker&logoColor=white" />
+<img alt="SQLite" src="https://img.shields.io/badge/SQLite-persistence-003B57?logo=sqlite&logoColor=white" />
+</p>
 
-Maintaining open-source and enterprise Python repositories requires regular dependency updates and proactive refactoring. However:
-- Blindly bumping versions risks silent breakages, conflicting constraints, and runtime regressions.
-- Cloud-based AI refactoring tools often demand excessive repository permissions (forking, automated pull requests, remote commits) and risk leaking private tokens or proprietary intellectual property.
-- Running untrusted repository test suites directly on the host development machine exposes developers to malicious setup scripts and arbitrary code execution.
+<p>
+<a href="#how-it-works">How it works</a> ·
+<a href="#getting-started">Getting started</a> ·
+<a href="#api">API</a> ·
+<a href="#testing">Testing</a> ·
+<a href="#scope-and-limitations">Limitations</a> ·
+<a href="docs/RESOLUTION_ENGINE.md">Resolution engine</a>
+</p>
 
-The **Dependency Upgrade Assistant** solves this by providing a local, headless-capable, sandboxed platform that:
-1. Clones repositories into ephemeral, isolated workspaces while cryptographically preserving the original reference copy.
-2. Evaluates dependencies deterministically using PyPI metadata and local fallback catalogs.
-3. Provides advisory risk analysis and targeted code improvements via locally hosted Ollama LLMs.
-4. Enforces an unconditional **Human Approval Gate** before any modifications touch files.
-5. Safely validates changes inside a locked-down, unprivileged Docker container (or marks them `NOT_RUNNABLE` if Docker is unavailable).
-6. Delivers pre-validated unified patches (`.patch`), clean ZIP archives (`.zip`), and comprehensive Markdown audit reports (`.md`).
-
----
-
-## 2. Features & Capabilities
-
-### Tab 1: Repository Analysis & Improvement Platform (Phase 2)
-- **Git Acquisition:** Shallow clones (`--depth 1`) public or private GitHub repositories.
-- **In-Memory Credential Safety:** Personal Access Tokens (PATs) are held strictly in memory and delivered via `GIT_ASKPASS`. Tokens are never written to disk, CLI arguments, URLs, logs, or LLM prompts.
-- **Multi-Manifest Discovery:** Recursively detects `requirements.txt`, `requirements-dev.txt`, nested `-r`/`-c` files, and PEP 621 / PEP 735 / Poetry `pyproject.toml` manifests with circular reference safeguards.
-- **Deterministic 4-Tier Dependency Analysis:** Live PyPI metadata queries (with in-memory caching) and local catalog fallback; evaluates constraint satisfaction and cross-manifest conflicts.
-- **Advisory AI Compatibility Risk:** Evaluates breaking changes and deprecated APIs using local Ollama models.
-- **Priority Source Code Inspection:** Heuristically discovers and scores up to $N$ source files (default: 10), filtering out caches, virtual environments, binaries, and detected credentials.
-- **Static AST & AI Code Quality Scanning:** Detects dangerous calls (`eval`, `exec`, `subprocess(shell=True)`), bare `except:` clauses, and synthesizes targeted fixes.
-- **Strict AST Pre-Validation:** All proposed code improvements are verified with `ast.parse()` before being presented to the user.
-- **Human Approval Gate:** Users explicitly select which dependency bumps and code improvements to accept; zero suggestions are auto-applied.
-- **Isolated Docker Sandbox:** Executes test suites and syntax bytecode compilation inside a non-root container with `--network none`, resource limits, and read-only reference mounts.
-- **Verified Deliverables:** Produces a `.patch` verified via `git apply --check`, a clean `.zip` verified via `testzip()`, and a structured `.md` report.
-
-### Tab 2: Single Manifest Review (Phase 1 Baseline)
-- **Direct Ingestion:** Upload or paste `requirements.txt` manifests directly in the browser.
-- **Semantic Comparison:** PEP 440 semantic comparison via `packaging.version.Version`.
-- **Lossless Line Preservation:** Retains comments, blank lines, pip flags, URLs, and environment markers byte-for-byte.
-- **Interactive Review Table:** Select or deselect individual updates.
-- **Unified Diff Viewer:** Side-by-side git diff view with instant `.txt` manifest download.
+</div>
 
 ---
 
-## 3. System Architecture
+## Why this exists
 
-The application adopts a modular, headless-core architecture completely decoupled from Streamlit:
+Upgrading one package is rarely about that one package. `requests` 2.32 may exist on PyPI, but whether
+it works *with everything else your project already pins* depends on the full graph: transitive
+requirements, environment markers, extras, `Requires-Python`, constraints files and which releases
+actually ship a wheel for your platform. A version that exists is not a version that resolves.
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Streamlit Web Interface                         │
-│                              (src/app.py)                              │
-│   ├── Tab 1: Repository Analysis & Improvement Platform               │
-│   └── Tab 2: Single Manifest Review (Original Phase 1 Workflow)        │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ Pure Python API Calls
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Pipeline Orchestrator                           │
-│                    (src/pipeline/orchestrator.py)                      │
-│   Coordinates 8 discrete stages, state tracking, and callbacks         │
-└───────┬──────────┬──────────┬──────────┬──────────┬──────────┬─────────┘
-        │          │          │          │          │          │
-        ▼          ▼          ▼          ▼          ▼          ▼
- ┌────────────┐ ┌──────────┐ ┌──────────┐ ┌─────────┐ ┌────────┐ ┌────────┐
- │Git Service │ │Manifest  │ │Dependency│ │Ollama   │ │Code    │ │Sandbox │
- │& Workspace │ │Scanner   │ │Analyzer  │ │Client   │ │Improver│ │Runner &│
- │Manager     │ │& PyProject│ │(PyPI +   │ │(Local   │ │(AST pre│ │Exporter│
- │            │ │Parser    │ │ Catalog) │ │ Models) │ │ check) │ │        │
- └────────────┘ └──────────┘ └──────────┘ └─────────┘ └────────┘ └────────┘
-```
+DUA treats compatibility as something to **prove**, not assume:
 
----
+- pip's own resolver resolves the **complete proposed set** for a fixed target (CPython 3.11.18, Linux)
+  in a disposable container;
+- a trusted supervisor in the backend re-checks every selected file and every dependency edge against
+  PyPI before the result counts as evidence;
+- a person approves the **exact** diff, bound to that evidence, before anything is validated or exported;
+- validation runs the project's tests in a network-less sandbox, never on your machine.
 
-## 4. Pipeline Stages & Data Flow
+> [!IMPORTANT]
+> **Compatible means the complete dependency set resolves. It does not mean the packages are vetted or
+> safe.** DUA does not perform malware detection and does not check vulnerability advisories. Review the
+> packages an upgrade introduces before approving.
+
+## Features
+
+| Area | What DUA does |
+|---|---|
+| **Acquisition** | Shallow, hardened clone of a public GitHub repository (or a pasted/uploaded manifest); recursive discovery of `requirements*.txt`, `pyproject.toml` and `package.json` |
+| **Analysis** | Dependency parsing and registry lookups (PyPI, npm) with explicit data-source labels; optional local Ollama advisory notes with a deterministic fallback |
+| **Planning** | Upgrade recommendations, an upgrade plan and a unified diff with patch-integrity checks |
+| **Compatibility (Python)** | pip resolution of the original *and* the proposed manifest in fresh containers; direct and transitive packages; introduced-package comparison; exact-file upload dates; conflict causes; explicit `UNSUPPORTED` reasons |
+| **Isolation** | Digest-pinned image, non-root, read-only, no capabilities, no DNS, no host mounts beyond read-only inputs; egress only through a per-job allow-listing proxy to `pypi.org` and `files.pythonhosted.org` |
+| **Evidence** | Supervisor-verified reports with separate, server-computed fingerprints for each run; stale or replayed evidence never counts |
+| **Jobs** | SQLite-backed jobs with a bounded worker pool, cancellation, deadlines and restart recovery |
+| **Approval** | Explicit human approval bound to the diff checksum, the validation policy and the verified resolution fingerprint; no override |
+| **Validation** | The repository's tests in a Docker sandbox with `--network none` and offline-staged wheels |
+| **Export** | `.patch`, `summary.json`, `compatibility-report.md`, `execution.log`, `checksums.sha256` and a verified `.zip` |
+
+## How it works
 
 ```mermaid
-flowchart TD
-    S1["1. ACQUIRE_REPO\n(Shallow clone into isolated reference & working trees)"] --> S2["2. DISCOVER_MANIFESTS\n(Recursively scan requirements*.txt and pyproject.toml)"]
-    S2 --> S3["3. EVALUATE_DEPENDENCIES\n(Deterministic PyPI metadata & constraint evaluation)"]
-    S3 --> S4{"4. AI_RISK_ANALYSIS\n(Ollama advisory compatibility assessment)"}
-    S4 --> S5["5. INSPECT_SOURCE_CODE\n(Priority scoring, AST scan, & proposed diffs)"]
-    S5 --> GATE["HUMAN APPROVAL GATE\n(User selectively approves code fixes & version bumps)"]
-    GATE --> S6["6. APPLY_IMPROVEMENTS\n(Committed strictly to mutable working copy)"]
-    S6 --> S7["7. VALIDATE_CHANGES\n(Isolated Docker container: py_compile, pytest, ruff)"]
-    S7 --> S8["8. GENERATE_ARTIFACTS\n(Verified .patch, clean .zip, structured .md report)"]
+flowchart LR
+    user([Developer])
+
+    subgraph browser["Browser"]
+        ui["React 19 UI<br/>analysis · plan · compatibility · approval"]
+    end
+
+    subgraph backend["FastAPI backend (trusted)"]
+        api["API + request protection<br/>Host, Origin, client header"]
+        analysis["Acquisition, analysis<br/>and planning"]
+        jobs["Resolution job service<br/>bounded pool, deadlines, cancel"]
+        supervisor["Supervisor<br/>verifies reports, fingerprints,<br/>comparison, upload dates"]
+        gate{{"Approval enforcement<br/>verified COMPATIBLE only"}}
+        sandbox["Validation sandbox runner"]
+        export["Exporter"]
+        db[("SQLite<br/>runs · plans · jobs ·<br/>evidence · approvals")]
+    end
+
+    subgraph docker["Docker host (untrusted execution)"]
+        subgraph jobnet["Per-job --internal network"]
+            resolver["Resolver container<br/>pip --dry-run --only-binary=:all:<br/>fresh per run"]
+            proxy["Egress proxy<br/>CONNECT :443, job token,<br/>public IPs only"]
+        end
+        vbox["Validation container<br/>--network none"]
+    end
+
+    pypi[("pypi.org<br/>files.pythonhosted.org")]
+    github[("github.com")]
+
+    user --> ui --> api
+    api --> analysis
+    analysis --> github
+    analysis --> db
+    api --> jobs
+    jobs -->|"original, then proposed"| resolver
+    resolver -->|"only route out"| proxy --> pypi
+    resolver -.->|"untrusted report<br/>(stdout)"| supervisor
+    supervisor -->|"independent metadata check"| pypi
+    supervisor --> db
+    user -->|"explicit approval"| gate
+    db --> gate
+    gate --> sandbox --> vbox
+    gate --> export
 ```
 
-1. **`ACQUIRE_REPO`:** Validates GitHub URL, clones into `reference/`, creates `working/` mirror, records commit SHA.
-2. **`DISCOVER_MANIFESTS`:** Traverses workspace, handles `-r`/`-c` includes, avoids circular references.
-3. **`EVALUATE_DEPENDENCIES`:** Queries PyPI JSON API with in-memory cache, checks constraints, detects cross-manifest conflicts.
-4. **`AI_RISK_ANALYSIS`:** Queries local Ollama model for advisory breaking changes and deprecations.
-5. **`INSPECT_SOURCE_CODE`:** Prioritizes entry points and dependency-referencing files, runs static AST visitor, generates proposed diffs.
-6. **`APPLY_IMPROVEMENTS`:** Human-approval-gated application to `working/` copy only; cryptographically asserts `reference/` remains untouched.
-7. **`VALIDATE_CHANGES`:** Runs containerized syntax checks and test suites; falls back to `NOT_RUNNABLE` if Docker is unavailable.
-8. **`GENERATE_ARTIFACTS`:** Validates patch with `git apply --check`, tests ZIP with `testzip()`, and synthesizes full Markdown report.
+The resolver and everything it prints are **untrusted**. The supervisor parses the report strictly,
+matches every selected wheel by filename, URL and SHA-256 in PyPI's index, fetches each wheel's metadata
+itself and proves the closure (requirements, markers, extras, constraints, `Requires-Dist`,
+`Requires-Python`, nothing missing, nothing unrelated). Only an exit code of 0 plus a verified report can
+become `COMPATIBLE`. Approval, validation, apply and export all re-check that evidence on the server.
 
----
+### The workflow
 
-## 5. Project Directory Structure
+1. **Acquire** a public GitHub repository, or paste/upload a manifest.
+2. **Discover and analyze** the dependency manifests.
+3. **Recommend** upgrades.
+4. **Plan** the change and review the unified diff.
+5. **Resolve the original** dependency set (the baseline).
+6. **Resolve the proposed** dependency set (the evidence that matters).
+7. **Verify** both reports independently against PyPI.
+8. **Compare** the two resolved environments.
+9. **Review** the packages the upgrade introduces, with their exact upload dates.
+10. **Approve** the exact diff (offered only after a verified compatible result).
+11. **Validate** in the network-less sandbox.
+12. **Export** the patch, reports and checksums.
 
-```text
-dependency-upgrade-assistant/
-├── .github/workflows/ci.yml       # GitHub Actions CI matrix workflow
-├── aidlc-docs/                    # Formal AI-DLC governance, requirements & audit logs
-│   ├── approvals/                 # Human review approval log (Phase 1 & Phase 2)
-│   ├── prompts/                   # Prompt records and iteration logs
-│   └── requirements/              # Software Requirements Specifications (SRS)
-├── plan/                          # Architectural roadmaps and implementation plans
-├── sample-data/                   # Test fixtures and sample manifests
-│   ├── sample_repo/               # Complete controlled end-to-end fixture repository
-│   │   ├── requirements.txt       # Outdated and up-to-date dependency declarations
-│   │   ├── pyproject.toml         # PEP 621 package metadata
-│   │   ├── src/sample_app/        # Source code with intentional quality findings
-│   │   └── tests/test_sample.py   # Deterministic fixture test suite
-│   ├── requirements-outdated.txt  # Phase 1 outdated sample
-│   ├── requirements-clean.txt     # Phase 1 clean sample
-│   └── requirements-complex.txt   # Phase 1 complex sample (markers & flags)
-├── src/
-│   ├── analysis/                  # Source code and dependency analysis engines
-│   │   ├── code_improver.py       # AST pre-validated snippet replacer & diff generator
-│   │   ├── code_inspector.py      # File prioritization & static AST security scanner
-│   │   ├── dependency_analyzer.py # Cached PyPI client & multi-tier evaluation
-│   │   ├── manifest_scanner.py    # Recursive manifest discovery & include resolver
-│   │   └── pyproject_parser.py    # PEP 621, PEP 735 & Poetry TOML parser
-│   ├── core/                      # Phase 1 core logic (comparator, diff, parser)
-│   ├── data/                      # Local package catalog dataset and loader
-│   ├── pipeline/                  # Pipeline orchestration
-│   │   └── orchestrator.py        # Eight-stage state machine & callback coordinator
-│   ├── services/                  # External runtime & workspace integrations
-│   │   ├── exporter.py            # Verified .patch, .zip, and .md report exporter
-│   │   ├── git_service.py         # Secure shallow clone & GIT_ASKPASS credential handler
-│   │   ├── ollama_client.py       # Local Ollama client with dynamic model discovery
-│   │   └── workspace_manager.py   # Isolated dual-copy workspace manager
-│   ├── validation/                # Sandboxed validation engine
-│   │   ├── sandbox_manager.py     # Docker container sandbox (non-root, network: none)
-│   │   ├── test_runner.py         # Whitelisted validation runner (py_compile, pytest)
-│   │   └── validator.py           # Multi-stage validation coordinator
-│   └── app.py                     # Streamlit dual-tab web application
-├── tests/                         # Complete automated test suite (146 tests)
-│   ├── test_e2e_scenarios.py      # 13 end-to-end pipeline scenario tests
-│   ├── test_orchestrator_integration.py # Pipeline orchestrator integration tests
-│   └── test_*.py                  # Unit tests for all individual modules
-├── pyproject.toml                 # Root project metadata & dependencies
-├── requirements.txt               # Pinned project dependencies
-└── README.md                      # Comprehensive documentation
-```
+When the proposed set does not resolve, DUA shows pip's conflict causes and keeps approval locked.
+Unsupported input (npm, `pyproject.toml`, `-r`, `-e`, URLs, index options, source-only packages) is
+reported item by item. If Docker is unavailable, the check reports **Resolver unavailable**; nothing can
+be approved until a check succeeds. A failed or timed-out check is never shown as compatible.
 
----
+Full details: [docs/RESOLUTION_ENGINE.md](docs/RESOLUTION_ENGINE.md).
 
-## 6. Installation & Setup
+## Technology
+
+| Layer | Technology |
+|---|---|
+| Backend | Python 3.10+ (CI: 3.10–3.14), FastAPI, Pydantic v2 and pydantic-settings, Uvicorn, `packaging`, `requests` |
+| Frontend | React 19, TypeScript, Vite; Vitest and Testing Library; oxlint |
+| Persistence | SQLite (`dua_local.db` by default) |
+| Isolation | Docker; pinned `python:3.11-slim` and `node:20-slim` images by digest |
+| Resolution | pip (inside the pinned image) against PyPI |
+| Optional | Ollama for advisory notes (never used for compatibility decisions) |
+| CI | GitHub Actions: Python matrix, frontend, and a Docker job with live resolver, egress and browser tests |
+
+## Getting started
 
 ### Prerequisites
-- Python 3.10 through 3.14 (`python3 --version`).
-- Git 2.30+ (`git --version`).
-- Optional: Local [Ollama](https://ollama.com/) runtime for AI features.
-- Optional: [Docker](https://www.docker.com/) for isolated sandbox validation.
 
-### Setup Instructions
+| Requirement | Notes |
+|---|---|
+| Git | |
+| Python ≥ 3.10 | 3.10–3.14 are tested in CI |
+| Node.js 22 and npm | Node 22 is what CI uses |
+| Docker Engine or Docker Desktop | Required for compatibility checks and sandbox validation. The backend user must be able to run `docker`. Default limits: 1 GB RAM and 512 MB scratch per resolver run, up to two concurrent jobs |
+| Internet access | GitHub (acquisition), PyPI (analysis, resolution through the proxy, supervisor verification) |
+
+> [!NOTE]
+> The verified environment is Linux with Docker 29 (CI). Docker Desktop on macOS/Windows has not been
+> verified for the resolver's network isolation.
+
+### Install
+
 ```bash
-# 1. Clone the repository
-git clone https://github.com/soham/dependency-upgrade-assistant.git
+git clone https://github.com/Soham-Pasalkar/dependency-upgrade-assistant.git
 cd dependency-upgrade-assistant
 
-# 2. Create and activate a virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-# Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
 
-# 3. Install dependencies
-pip install --upgrade pip
-pip install -r requirements.txt
+npm --prefix frontend ci
+
+cp .env.example .env            # optional; every setting has a default
+
+# Resolver image, pinned by digest (otherwise pulled on first use)
+docker pull python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
 ```
 
----
-
-## 7. Streamlit Application Startup
-
-Launch the interactive dual-tab application locally:
+### Run
 
 ```bash
-streamlit run src/app.py
+# Terminal 1: backend on http://127.0.0.1:8000 (Swagger UI at /docs)
+source .venv/bin/activate
+python -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000
+
+# Terminal 2: frontend on http://localhost:5173 (proxies /api to the backend)
+npm --prefix frontend run dev
 ```
 
-The browser interface will open at `http://localhost:8501`:
-- **Tab 1: Repository Analysis & Improvement:** Paste any GitHub URL to run the complete 8-stage pipeline.
-- **Tab 2: Single Manifest Review:** Paste or upload `requirements.txt` to review dependency updates against the local catalog.
+Open <http://localhost:5173> and click **Analyze a repository**. Enter a public GitHub URL, or switch to
+**Manifest** and paste one such as:
 
----
+```text
+requests==2.28.0
+urllib3==1.26.5
+```
 
-## 8. Ollama Integration & Model Discovery
+Generate recommendations and a plan, click **Check compatibility**, review the result, approve, validate
+and export. A step-by-step demo is in [docs/SETUP_AND_DEMO_GUIDE.md](docs/SETUP_AND_DEMO_GUIDE.md).
 
-The platform connects to the locally installed Ollama daemon at `http://localhost:11434`:
-- **Dynamic Discovery:** Automatically queries `GET /api/tags` to populate available models. Does not assume hardcoded model names or trigger automatic downloads.
-- **Structured JSON Mode:** Enforces JSON schema output (`POST /api/chat` with `format: "json"`) with markdown code-block extraction fallback.
-- **Graceful Degradation:** If Ollama is offline or uninstalled, the application operates in deterministic mode without failing.
+### Configuration
 
-To install and pull models locally:
+Settings are read from the environment or `.env`. Resolver values outside their range stop the backend
+from starting.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ENVIRONMENT` | `development` | `production` requires explicit `CORS_ORIGINS` |
+| `HOST`, `PORT` | `127.0.0.1`, `8000` | API bind address |
+| `DATABASE_PATH` | `dua_local.db` | SQLite file |
+| `WORKSPACE_ROOT` | `~/.dua/workspaces` | Cloned repository workspaces |
+| `CORS_ORIGINS` | `[]` | Allowed browser origins (never `*`) |
+| `DEV_FRONTEND_PORTS` | `[5173,5174,4173,3000]` | Loopback ports trusted in development |
+| `ALLOWED_HOSTS` | `["localhost","127.0.0.1","::1"]` | Accepted `Host` headers |
+| `PLAN_RETENTION_HOURS` | `24` (≤ 720) | How long plans, approvals and evidence stay usable |
+| `EXPORT_RETENTION_HOURS` | `24` (≤ 8760) | Export retention |
+| `RUN_RETENTION_HOURS` | `168` (≤ 8760) | Analysis run retention |
+| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Optional advisory model server |
+| `OLLAMA_DEFAULT_MODEL` | `llama3:latest` | Advisory model |
+| `DOCKER_TIMEOUT_SECONDS`, `DOCKER_MAX_MEMORY_MB`, `DOCKER_MAX_CPUS` | `60`, `512`, `1.0` | Validation sandbox limits |
+| `RESOLVER_TIMEOUT_SECONDS` | `180` (1–600) | Per-run budget T; a job is bounded by 2T |
+| `RESOLVER_MEMORY_MB` | `1024` (1–4096) | Memory per resolver container |
+| `RESOLVER_CPUS` | `1` (1–4) | CPUs per resolver container |
+| `RESOLVER_PIDS_LIMIT` | `256` (1–1024) | Processes per resolver container |
+| `RESOLVER_TMPFS_MB` | `512` (1–2048) | Scratch space per resolver container |
+| `RESOLVER_MAX_CONCURRENT` | `2` (1–4) | Concurrent resolution jobs |
+| `RESOLVER_MAX_REPORT_MB` | `10` (1–50) | Resolver report size cap |
+| `RESOLVER_MAX_PACKAGES` | `500` (1–2000) | Packages per resolution |
+
+No secrets are required. Never commit `.env`.
+
+## Docker and isolation
+
+Running the app does not need Docker; **verifying compatibility and validating a change do.** Without
+Docker the UI still analyzes and plans, but every compatibility check reports *Resolver unavailable* and
+approval stays locked.
+
+For each check DUA creates a per-job Docker network with no route out and no address on the host, starts
+an egress proxy on it, and runs pip in a **fresh container per run** (original, then proposed). The
+resolver has no DNS and no direct network; it can reach only the proxy, which accepts encrypted
+connections to `pypi.org` and `files.pythonhosted.org` on port 443, checks the job's token, resolves
+names itself and refuses any private, loopback, link-local or metadata address. Resolution is
+**binary-only** (`--only-binary=:all:`), so no package build scripts run; packages available only as
+source are reported as unsupported. Containers and networks are removed after each job, and a labelled
+sweep cleans up after crashes.
+
+## API
+
+Interactive OpenAPI documentation is served at <http://127.0.0.1:8000/docs>. State-changing requests
+must come from an allowed origin and carry `X-DUA-Client: web` (the frontend does this).
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/health` | Health check |
+| `POST` | `/api/repositories/analyze` | Clone and analyze a public GitHub repository |
+| `POST` | `/api/runs/manifest` | Analyze a pasted or uploaded manifest |
+| `GET` | `/api/runs/{run_id}` | Analysis run |
+| `POST` | `/api/runs/{run_id}/manifests/{index}/recommendations` | Recommendations for a manifest |
+| `POST` | `/api/runs/{run_id}/manifests/{index}/plan` | Build the upgrade plan and diff |
+| `POST` | `/api/proposals/{proposal_id}/resolve` | Start the compatibility check (`202` with a job, or `200` when input is unsupported) |
+| `GET` | `/api/proposals/{proposal_id}/resolution` | Status, both resolved sets, comparison, upload dates, disclosure |
+| `GET` | `/api/jobs/{job_id}` | Resolution job status |
+| `POST` | `/api/jobs/{job_id}/cancel` | Cancel a resolution job |
+| `POST` | `/api/proposals/{proposal_id}/approve` | Approve the exact diff (requires verified `COMPATIBLE` evidence) |
+| `GET` | `/api/proposals/{proposal_id}/approval` | Approval state |
+| `GET` | `/api/validation/status` | Sandbox availability |
+| `POST` | `/api/validation/execute` | Validate an approved plan in the sandbox |
+| `GET` | `/api/validation/{execution_id}` (`/logs`, `/cancel`) | Validation report, logs, cancellation |
+| `POST` | `/api/plan/apply` | Apply an approved plan to the cloned workspace |
+| `POST` | `/api/export` | Generate the export bundle |
+| `GET` | `/api/export/{export_id}` | Export metadata and checksums |
+| `GET` | `/api/export/{export_id}/download/{artifact_type}` | Download an artifact |
+
+Earlier single-step endpoints (`/api/manifest/*`, `/api/recommendations/generate`, `/api/plan/generate`,
+`/api/plan/validate-patch`, `/api/ai/status`) remain available; plans created through them are not bound
+to a server-held analysis and cannot be approved.
+
 ```bash
-# Install Ollama (macOS/Linux)
-curl -fsSL https://ollama.com/install.sh | sh
-
-# Pull desired models
-ollama pull llama3.1:8b
-ollama pull gemma3:4b
+# Start a check and poll it
+curl -s -X POST http://127.0.0.1:8000/api/proposals/$PLAN/resolve \
+  -H 'Origin: http://localhost:5173' -H 'X-DUA-Client: web'
+curl -s http://127.0.0.1:8000/api/proposals/$PLAN/resolution | jq '.status, .comparison'
 ```
 
----
-
-## 9. Docker Sandbox Architecture & Security Restrictions
-
-Untrusted repository code is **never executed directly on the host development machine**:
-
-| Security Control | Implementation |
-| :--- | :--- |
-| **Execution Environment** | Locked-down Docker container (Default image: `python:3.11-slim`). |
-| **User Privileges** | Non-root user (`--user=1000:1000`). Root and `--privileged` strictly forbidden. |
-| **Network Access** | Completely disabled (`--network none`). No egress/ingress permitted. |
-| **Resource Limits** | `--memory=512m`, `--cpus=1.0`, `--pids-limit=64`. |
-| **Timeout Boundary** | Subprocess timeout strictly enforced (default: 30s syntax, 60s tests). |
-| **Volume Mounts** | Pristine `reference/` mounted **read-only** (`:ro`). `working/` mounted read-write (`:rw`). |
-| **Docker Socket** | Mounting `/var/run/docker.sock` is strictly rejected and throws security errors. |
-| **Fail-Closed Fallback** | If Docker is inactive, tests are categorized as `NOT_RUNNABLE` and skipped. |
-
----
-
-## 10. Dependency Analysis Methodology
-
-1. **Candidate Availability:** Queries the official PyPI JSON API (`https://pypi.org/pypi/<pkg>/json`). Responses are cached in memory to minimize external requests. Offline fallback to `src/data/package_catalog.json`.
-2. **Constraint Verification:** Evaluates version compatibility using `packaging.specifiers.SpecifierSet` and `packaging.version.Version`.
-3. **Cross-Manifest Conflict Detection:** Identifies conflicting versions declared across multiple manifests.
-4. **Advisory Risk Classification:** Categorizes upgrades as `LOW`, `MEDIUM`, or `HIGH` risk based on breaking change analysis.
-
----
-
-## 11. Human Approval Workflow
-
-The platform enforces strict human-in-the-loop governance:
-1. Proposed code fixes are generated as uncommitted snippets and unified diffs.
-2. In the Streamlit UI, findings are displayed with explanations, line ranges, and diff previews.
-3. Users toggle checkboxes to explicitly approve or reject individual fixes.
-4. Unchecked improvements are completely omitted from the working copy.
-
----
-
-## 12. Artifact Exporter & Deliverable Validation
-
-All outputs are validated before being made available for download:
-
-1. **Unified Patch (`.patch`):**
-   - Synthesizes Git-compatible diffs between `reference/` and `working/`.
-   - Pre-validated using `git apply --check` against an isolated clean copy of the reference repo.
-   - Detects binary changes and explicitly notes them as unsupported.
-2. **Improved Repository Archive (`.zip`):**
-   - Archives the improved working tree while strictly excluding `.git`, `.venv`, caches, build directories, and secrets (`.env`, `*.key`, `*.pem`).
-   - Verified intact using `zipfile.ZipFile.testzip()` CRC checks and isolated extraction testing.
-3. **Analysis Report (`.md`):**
-   - Detailed Markdown report logging all 8 stages, findings, metrics, and deliverable integrity statuses.
-
----
-
-## 13. Automated Test Execution
-
-Run the complete 146-test test suite:
+## Testing
 
 ```bash
-# Run all tests with verbose output
-pytest -v
+# Backend: unit, API and supervisor tests (no Docker needed)
+python -m pytest -q -m "not live_resolution"
 
-# Run only end-to-end scenario tests
-pytest -v tests/test_e2e_scenarios.py
+# Live: real Docker, real pip in the pinned image, real proxy, live PyPI
+DUA_REQUIRE_DOCKER=1 python -m pytest -v tests/test_egress_live.py tests/test_resolution_live.py
 
-# Run only orchestrator integration tests
-pytest -v tests/test_orchestrator_integration.py
+# Frontend
+npm --prefix frontend test
+npm --prefix frontend run lint
+(cd frontend && npx tsc -b)
+npm --prefix frontend run build
+
+# Governance and secrets
+python3 .agents/skills/ai-dlc-engineering/scripts/aidlc.py verify
+python3 .agents/skills/ai-dlc-engineering/scripts/validate_artifacts.py
+python3 .agents/skills/ai-dlc-engineering/scripts/scan_secrets.py .
 ```
 
-### Test Suite Breakdown & Verification Distinctions
-- **Phase 1 Baseline:** 27 tests (Parser, Comparator, Diff Generator, Catalog Loader).
-- **Milestone 1:** 16 tests (Git Acquisition & Workspace Management).
-- **Milestone 2:** 22 tests (Ollama Client & Dynamic Model Discovery).
-- **Milestone 3:** 21 tests (Manifest Scanner & PyProject Parser).
-- **Milestone 4:** 15 tests (Code Inspector & AI Code Improver).
-- **Milestone 5:** 13 tests (Docker Sandbox Manager & Validator).
-- **Milestone 6:** 8 tests (Artifact Exporter & Deliverable Validation).
-- **Milestone 7:** 11 tests (Pipeline Orchestrator & Streamlit UI Integration).
-- **Milestone 8:** 13 tests (End-to-End Scenario Verification against Fixtures).
-- **Total Local Unit & Integration Tests:** **146 passed in ~0.55s** (100% pass rate).
+Most backend tests replace Docker with test doubles **whose output still passes through the real
+supervisor**, so verification, fingerprints and enforcement are always exercised. Isolation itself is
+proven only by the live tests, which [CI](https://github.com/Soham-Pasalkar/dependency-upgrade-assistant/actions/workflows/ci.yml)
+runs in a dedicated Docker job where a missing Docker daemon fails the build. The same job drives a
+headless-Chrome journey from a pasted manifest to a verified compatible plan, approval, validation and
+export at desktop and mobile widths.
 
-### Verification Categories & Evidence
-- **Unit and Integration Tests:** 146 tests executed locally in the development virtualenv against Python 3.14.3.
-- **Mocked Security Verification:** Security policies (`--user=1000:1000`, `--network none`, resource limits, read-only reference mount `:ro`, Docker socket mount rejection) are verified via mocked unit tests in `tests/test_sandbox_manager.py` and `tests/test_validator.py`.
-- **Live Docker Verification:** When Docker is not present on the host, the engine empirically halts and classifies test execution as `NOT_RUNNABLE`. Live container runs were not performed on this host because no Docker binary is installed.
-- **Local CI-Equivalent Execution:** Executed locally via `pytest -v` in `.venv`.
-- **Remote CI Results:** Configured in `.github/workflows/ci.yml` across Python 3.10, 3.11, 3.12, 3.13, and 3.14. Remote matrix results are generated only upon pushing commits to GitHub.
+## Scope and limitations
 
----
+**Supported:** Python `requirements*.txt` resolution for CPython 3.11.18 on Linux (amd64/arm64), from
+PyPI, with repository-local constraints files.
 
-## 14. Known Limitations & Technical Caveats
+**Not supported (by design in this release):** npm/`package.json` resolution (analysis and planning work,
+approval does not), `pyproject.toml` resolution, private indexes, nested `-r` files, editable/URL/VCS
+requirements, packages available only as source distributions, and other Python versions or platforms.
 
-1. **Advisory AI Analysis:** Ollama LLM evaluations provide qualitative advisory guidance, not authoritative mathematical proof of software compatibility.
-2. **PyPI & Catalog Ground Truth:** Dependency availability and version ordering rely strictly on PyPI JSON metadata and PEP 440 packaging standards.
-3. **AST Pre-Validation:** Syntax pre-validation with `ast.parse()` verifies Python syntax correctness before disk writes, but does not prove semantic runtime correctness.
-4. **Docker Availability:** If Docker is not running on the host, repository tests will be reported as `NOT_RUNNABLE`. The tool will never execute untrusted code on the host machine.
-5. **Zero Remote Modification:** The tool never pushes commits, modifies branches, creates pull requests, or forks repositories on GitHub.
-6. **Reference Tree Ground Truth:** The pristine reference clone is read-only and cryptographically verified before and after improvements to ensure zero file mutation.
+**What "compatible" does not establish:** that packages are free of malware or known vulnerabilities,
+that they are trustworthy, that your application is correct, or that its tests will pass. Vulnerability
+advisory integration is planned for a future milestone. Results reflect PyPI at the time of the check.
 
----
+## Project status
 
-## License
+DUA 2.0 is developed under an AI-assisted lifecycle with human approval gates; requirements,
+architecture, threat model, decision records and milestone reports live in [`docs/aidlc/`](docs/aidlc/).
+Milestones M1–M12 are complete and approved; the final release gate is recorded in
+[`docs/aidlc/completion-report.md`](docs/aidlc/completion-report.md).
 
-This project is licensed under the MIT License.
+The legacy Streamlit prototype (`src/app.py`) is kept for reference and is not part of the 2.0 workflow.
+
+**Contributing:** open an issue or pull request against `main`. Keep changes scoped, add tests for new
+behaviour, and run the backend, frontend and (where relevant) live Docker suites before submitting.
+
+No license file is included yet; until one is added, the default copyright rules apply.

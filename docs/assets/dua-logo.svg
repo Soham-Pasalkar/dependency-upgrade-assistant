@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="112" height="112" viewBox="0 0 32 32" role="img" aria-labelledby="t">
+  <title id="t">Dependency Upgrade Assistant</title>
+  <!-- The application's existing brand mark (frontend/public/favicon.svg): a stepped upgrade path ending in a resolved node. -->
+  <rect width="32" height="32" rx="6" fill="#0B0B0C"/>
+  <rect x="0.5" y="0.5" width="31" height="31" rx="5.5" fill="none" stroke="#26292C"/>
+  <path d="M7 24h7v-7h7v-7h4" fill="none" stroke="#F05A28" stroke-width="2.4" stroke-linecap="square"/>
+  <circle cx="25" cy="10" r="2.2" fill="#EDEBE6"/>
+</svg>
